@@ -23,7 +23,7 @@ class Mesh():
         self.faces = faces
         self.transformation = transformation or np.eye(4)
         
-    def create_CGO(self) -> str:
+    def _create_CGO(self) -> str:
         """ Creates a CGO list from the mesh information. The base class assumes a triangle mesh.
             CGO constants are kept as strings to avoid importing the pymol module.
         

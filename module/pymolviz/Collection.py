@@ -1,5 +1,8 @@
 import numpy as np
+import logging
+from .meshes.Mesh import Mesh
 
+_pmv_collection_counter = 0
 class Collection:
     """ A Collection is a container for different meshes. All meshes in a collection are rendered as a single CGO object.
     
@@ -12,17 +15,40 @@ class Collection:
 
 
 
-    def __init__(self, name : str, meshes : list = None, transformation : np.array = None, opacity : float = 0) -> None:
-        self.name = name
+    def __init__(self, name : str = None, meshes : list = None, transformation : np.array = None, opacity : float = 0) -> None:
+        if name:
+            self.name = name
+        else:
+            global _pmv_collection_counter
+            logging.warning("No name provided for Collection. Using default name: Collection_{}. It is highly recommended to provide meaningful names.".format(_pmv_collection_counter))
+            self.name = "Collection_{}".format(_pmv_collection_counter)
+            _pmv_collection_counter += 1
+
         self.meshes = meshes if meshes else []
         self.transformation = transformation if transformation else []
         self.opacity = opacity
 
-    def add_mesh(self, mesh):
+
+
+    def add(self, mesh : Mesh):
         self.meshes.append(mesh)
 
-    def create_CGO_script(self) -> str:
-        """ Creates a CGO string from the mesh information. The base class assumes a triangle mesh.
+
+
+    def load(self):
+        """ Loads the collection into PyMOL.
+        
+        Returns:
+            None
+        """
+
+        from pymol import cmd
+        cmd.load_cgo(self._create_CGO(), self.name)
+        cmd.set("cgo_transparency", self.opacity, self.name)
+
+    
+    def _create_CGO_script(self) -> str:
+        """ Creates a CGO string from the meshes informations.
         
         Returns:
             None
@@ -36,7 +62,7 @@ class Collection:
 {cgo_name} = [
         """)
 
-        content = ",\n".join([",".join([str(e) for e in mesh.create_CGO()]) for mesh in self.meshes])
+        content = ",\n".join([",".join([str(e) for e in mesh._create_CGO()]) for mesh in self.meshes])
         cgo_string_builder.append(content)
 
         # ending
@@ -48,7 +74,8 @@ cmd.set("cgo_transparency", {self.opacity}, "{self.name}")
 
         return "\n".join(cgo_string_builder)
 
-    def as_CGO(self):
+
+    def _create_CGO(self):
         """ Creates a CGO object from the CGOProxy object.
         
         Returns:
@@ -78,4 +105,6 @@ cmd.set("cgo_transparency", {self.opacity}, "{self.name}")
 
         # create the CGO object
         return combined_list
+
+    
 

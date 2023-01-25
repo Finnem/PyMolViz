@@ -1,6 +1,6 @@
 from .Collection import Collection
 from .meshes import Mesh
-
+import logging
 class Script(object):
     """A collection of soon-to-be named CGO objects. The CGO objects are stored
     as dictionaries mapping vertex "positions" to a list of 3D coordinates,
@@ -13,36 +13,86 @@ class Script(object):
 
     """
 
-    cgo_proxies = []
+    collections = []
 
     def __init__(self, cgo_proxies : list = None) -> None:
         self.cgo_proxies = cgo_proxies if cgo_proxies else []
     
-    def add_proxy(self, cgo_proxy : Collection):
-        """ Adds a CGO proxy to the collection.
+    def add(self, object, name = None, **kwargs):
+        """ Adds a collection to this script.
         
         Args:
-            cgo_proxy (Collection): A CGO proxy object.
+            object: A Mesh, Collection of Meshes, list of meshes and collections or a dict mapping names to meshes and collections.
+                When passing a dictionary, the names provided will overwrite names previously assigned to the objects.
+            name (str): The name of the object. Should only be provided if object is a Mesh or a list of meshes.
             
         Returns:
             None
 
         """
+        if issubclass(type(object), Mesh):
+            if type(name) == str:
+                collection = Collection(name, [object], **kwargs)
+                self.collections.append(collection)
+                return
+        elif issubclass(type(object), Collection):
+            self.collections.append(object)
+            return
+        elif type(object) == list:
+            mesh_count = 0
+            for o in object:
+                if issubclass(type(o), Mesh):
+                    mesh_count += 1
+                    if name is None:
+                        collection = Collection(meshes = [o], **kwargs)
+                        self.collections.append(collection)
+                        logging.warning("No name provided for mesh when creating script. Try passing a name(s) to the add function or a dictionary mapping names to the objects.")
+                    if type(name) == str:
+                        collection = Collection(name, [o], **kwargs)
+                        self.collections.append(collection)
+                    elif type(name) == list:
+                        collection = Collection(name[mesh_count], [o], **kwargs)
+                        self.collections.append(collection)
+                elif issubclass(type(o), list):
+                    mesh_count += 1
+                    if name is None:
+                        collection = Collection(meshes = o, **kwargs)
+                        self.collections.append(collection)
+                        logging.warning("No name provided for mesh when creating script. Try passing a name(s) to the add function or a dictionary mapping names to the objects.")
+                    if type(name) == str:
+                        collection = Collection(name, o, **kwargs)
+                        self.collections.append(collection)
+                    elif type(name) == list:
+                        if not all([issubclass(type(mesh), Mesh) for mesh in o]):
+                            raise TypeError("Passed sublist contains object of type {}. Only Meshes are allowed as part of sublists.".format(type(o)))
+                        collection = Collection(name[mesh_count], o, **kwargs)
+                        self.collections.append(collection)
+                elif issubclass(type(o), Collection):
+                    self.collections.append(o)
+                else:
+                    raise TypeError("Passed list contains object of type {}. Only Meshes, Collections and lists of Meshes are allowed.".format(type(o)))
+            return
+        elif type(object) == dict:
+            for name, o in object.items():
+                if issubclass(type(o), Mesh):
+                    collection = Collection(name, [o], **kwargs)
+                    self.collections.append(collection)
+                elif issubclass(type(o), list):
+                    if not all([issubclass(type(mesh), Mesh) for mesh in o]):
+                        raise TypeError("Passed sublist contains object of type {}. Only Meshes are allowed as part of sublists.".format(type(o)))
+                    collection = Collection(name, o, **kwargs)
+                    self.collections.append(collection)
+                elif issubclass(type(o), Collection):
+                    o.name = name
+                    self.collections.append(o)
+                else:
+                    raise TypeError("Passed dictionary contains object of type {}. Only Meshes, Collections, and lists of Meshes are allowed.".format(type(o)))
+            return
+        else:
+            raise TypeError("Tried to add an object of type {} to a script. Only Meshes, Collections, lists of Meshes and lists of Collections are allowed.".format(type(object)))
 
-        self.cgo_proxies.append(cgo_proxy)
+        self.collections.append(collection)
 
-    def add_mesh(self, name : str, mesh : Mesh, **kwargs):
-        """ Adds a mesh to the collection.
-
-        Args:
-            name (str): The name of the CGO object.
-            mesh (Mesh): A Mesh object.
-
-        Returns:
-            None
-        """
-
-        self.cgo_proxies.append(Collection(name, [mesh], **kwargs))
 
     def create_CGO_script(self, out) -> str:
         """
@@ -62,8 +112,8 @@ from pymol import cmd
         '''
         ]
 
-        for cgo_proxy in self.cgo_proxies:
-            cgo_string_builder.append(cgo_proxy.create_CGO_script())
+        for collection in self.collections:
+            cgo_string_builder.append(collection._create_CGO_script())
 
         final_string = "\n".join(cgo_string_builder)
 

@@ -24,7 +24,7 @@ class Lines(Mesh):
         super().__init__(lines.reshape(-1, 3), color, None, None, transformation, **kwargs)
         self.linewidth = linewidth
 
-    def create_CGO(self) -> str:
+    def _create_CGO(self) -> str:
         """ Creates a CGO list from the mesh information. A line mesh will be created.
             CGO constants are kept as strings to avoid importing the pymol module.
         

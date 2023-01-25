@@ -19,7 +19,7 @@ class PointCloud(Mesh):
         self.render_as_spheres = render_as_spheres
         self.sphere_radius = sphere_radius
 
-    def create_CGO(self) -> str:
+    def _create_CGO(self) -> str:
         """ Creates a CGO list from the mesh information. Points can be displayed as spheres or as points.
 
         Args:
