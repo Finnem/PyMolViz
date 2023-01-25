@@ -1,9 +1,7 @@
 import numpy as np
 
-class CGOProxy:
-    """ CGOProxy is a proxy object for CGO objects. It is used to store the
-    CGO objects in the CGOCollection object. It holds the geometric information required
-    to create a CGO object. A single CGO may contain multiple geometric objects.
+class Collection:
+    """ A Collection is a container for different meshes. All meshes in a collection are rendered as a single CGO object.
     
     
     Attributes:

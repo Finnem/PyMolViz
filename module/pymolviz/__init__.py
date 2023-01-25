@@ -1,3 +1,3 @@
-from pymolviz import meshes
-from pymolviz.CGOCollection import CGOCollection
-from pymolviz.CGOProxy import CGOProxy
+from pymolviz.meshes import *
+from pymolviz.Script import Script
+from pymolviz.Collection import Collection

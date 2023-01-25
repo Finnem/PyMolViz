@@ -1,7 +1,7 @@
-from .CGOProxy import CGOProxy
+from .Collection import Collection
 from .meshes import Mesh
 
-class CGOCollection(object):
+class Script(object):
     """A collection of soon-to-be named CGO objects. The CGO objects are stored
     as dictionaries mapping vertex "positions" to a list of 3D coordinates,
     "faces" to a list of vertex indices, and "normals" to a list of 3D
@@ -18,11 +18,11 @@ class CGOCollection(object):
     def __init__(self, cgo_proxies : list = None) -> None:
         self.cgo_proxies = cgo_proxies if cgo_proxies else []
     
-    def add_proxy(self, cgo_proxy : CGOProxy):
+    def add_proxy(self, cgo_proxy : Collection):
         """ Adds a CGO proxy to the collection.
         
         Args:
-            cgo_proxy (CGOProxy): A CGO proxy object.
+            cgo_proxy (Collection): A CGO proxy object.
             
         Returns:
             None
@@ -42,7 +42,7 @@ class CGOCollection(object):
             None
         """
 
-        self.cgo_proxies.append(CGOProxy(name, [mesh], **kwargs))
+        self.cgo_proxies.append(Collection(name, [mesh], **kwargs))
 
     def create_CGO_script(self, out) -> str:
         """

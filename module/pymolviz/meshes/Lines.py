@@ -3,15 +3,13 @@ from __future__ import annotations
 import numpy as np
 from .Mesh import Mesh
 
-class LineMesh(Mesh):
+class Lines(Mesh):
     """ Class to store all relevant information required to create a CGO Line object.
     
     
     Attributes:
-        vertices (np.array): A 3xN array of vertices.
+        vertices (np.array): A 3xN array of vertices. Each line is defined by two vertices. Each beginning and end of a line should directly follow each other: [start1, end1, start2, end2, start3, end3] 
         color (np.array): A 3xN array of colors. May have a color for each line or each vertex.
-        normals (np.array): A 3xN array of normals.
-        faces (np.array): A 3xN array of faces.
         transformation (np.array): A 4x4 transformation matrix.
     """
 
@@ -58,7 +56,7 @@ class LineMesh(Mesh):
 
         return cgo_list
 
-    def from_o3d_lineset_mesh(o3d_mesh) -> LineMesh:
+    def from_o3d_lineset_mesh(o3d_mesh) -> Lines:
         """ Creates a Mesh object from an Open3D triangle mesh.
         
         Args:
@@ -72,6 +70,6 @@ class LineMesh(Mesh):
         lines = np.asarray(o3d_mesh.lines_normals)
         vertices = vertices[lines].reshape(-1, 3)
 
-        return LineMesh(vertices, color)
+        return Lines(vertices, color)
 
     
