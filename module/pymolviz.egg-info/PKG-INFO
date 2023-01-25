@@ -1,0 +1,11 @@
+Metadata-Version: 2.1
+Name: pymolviz
+Version: 0.1
+Summary: Library to create PyMOL scripts which create CGO to display arbitrary graphics in PyMOL.
+Home-page: UNKNOWN
+Author: Finn Mier
+License: MIT
+Platform: UNKNOWN
+
+UNKNOWN
+

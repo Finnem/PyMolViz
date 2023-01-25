@@ -1,0 +1,9 @@
+setup.py
+pymolviz/CGOCollection.py
+pymolviz/CGOProxy.py
+pymolviz/__init__.py
+pymolviz.egg-info/PKG-INFO
+pymolviz.egg-info/SOURCES.txt
+pymolviz.egg-info/dependency_links.txt
+pymolviz.egg-info/not-zip-safe
+pymolviz.egg-info/top_level.txt
