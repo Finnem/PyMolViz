@@ -4,7 +4,7 @@ import numpy as np
 import logging
 from .Mesh import Mesh
 
-class PointCloud(Mesh):
+class Points(Mesh):
     """ Class to store points and associated colors which can be displayed as a point cloud.
     
     
@@ -60,7 +60,7 @@ class PointCloud(Mesh):
 
         return cgo_list
 
-    def from_o3d_point_cloud(o3d_mesh) -> PointCloud:
+    def from_o3d_point_cloud(o3d_mesh) -> Points:
         """ Creates a Mesh object from an Open3D triangle mesh.
         
         Args:
@@ -76,6 +76,6 @@ class PointCloud(Mesh):
             o3d_mesh.estimate_normals()
         normals = np.asarray(o3d_mesh.normals)
 
-        return PointCloud(vertices, color, normals)
+        return Points(vertices, color, normals)
 
     

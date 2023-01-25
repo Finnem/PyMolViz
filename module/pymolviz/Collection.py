@@ -34,6 +34,15 @@ class Collection:
         self.meshes.append(mesh)
 
 
+    def to_script(self):
+        """ Creates a script from the collection.
+        
+        Returns:
+            Script: A script object.
+        """
+        from .Script import Script
+        return Script([self])
+
 
     def load(self):
         """ Loads the collection into PyMOL.

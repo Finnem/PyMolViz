@@ -4,6 +4,8 @@ from ..util.element_colors import get_AA_color, get_element_color
 import logging
 import numpy as np
 
+_pmv_mesh_counter = 0
+
 class Mesh():
     """ Class to store all relevant information required to create a CGO object.
     
@@ -23,6 +25,25 @@ class Mesh():
         self.faces = faces
         self.transformation = transformation or np.eye(4)
         
+    def load(self, name = None):
+        """ Loads the mesh into PyMOL. """
+        from pymol import cmd
+        if not name:
+            global _pmv_mesh_counter
+            logging.warning("No name provided for Mesh. Using default name: Mesh_{}. It is highly recommended to provide meaningful names.".format(_pmv_mesh_counter))
+            name = "Mesh_{}".format(_pmv_mesh_counter)
+            _pmv_mesh_counter += 1
+        cmd.load_cgo(self._create_CGO(), name)
+
+    def to_script(self, name = None):
+        """ Creates a script from the mesh.
+        
+        Returns:
+            Script: A script object.
+        """
+        from ..Script import Script
+        return Script([self], name = name)
+
     def _create_CGO(self) -> str:
         """ Creates a CGO list from the mesh information. The base class assumes a triangle mesh.
             CGO constants are kept as strings to avoid importing the pymol module.

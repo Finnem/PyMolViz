@@ -2,21 +2,18 @@ from .Collection import Collection
 from .meshes import Mesh
 import logging
 class Script(object):
-    """A collection of soon-to-be named CGO objects. The CGO objects are stored
-    as dictionaries mapping vertex "positions" to a list of 3D coordinates,
-    "faces" to a list of vertex indices, and "normals" to a list of 3D
-    coordinates. The "faces" and "normals" are optional. The "positions" are
-    required. The "faces" are required if "normals" are provided.
+    """A class wrapping one or multiple collections to be added with a single script. Use write function to write the script to a file.
 
     Attributes:
-        cgo_proxies (list): A list of CGO proxies.
+        collections (list): A list of collections.
 
     """
 
-    collections = []
 
-    def __init__(self, cgo_proxies : list = None) -> None:
-        self.cgo_proxies = cgo_proxies if cgo_proxies else []
+    def __init__(self, collections : list = None, **kwargs) -> None:
+        self.collections = []
+        if collections:
+            self.add(collections, **kwargs)
     
     def add(self, object, name = None, **kwargs):
         """ Adds a collection to this script.
@@ -94,7 +91,16 @@ class Script(object):
         self.collections.append(collection)
 
 
-    def create_CGO_script(self, out) -> str:
+    def load(self):
+        """
+        
+        Loads all collections in this script into the current PyMOL session.
+        
+        """
+        for collection in self.collections:
+            collection.load()
+
+    def write(self, out) -> str:
         """
         Creates a CGO script from the CGO proxies.
         
@@ -105,6 +111,10 @@ class Script(object):
             None
         """
 
+        with open(out, "w") as f:
+            f.write(str(self))
+
+    def __repr__(self) -> str:
         cgo_string_builder = ['''
 from pymol.cgo import *
 from pymol import cmd
@@ -116,6 +126,4 @@ from pymol import cmd
             cgo_string_builder.append(collection._create_CGO_script())
 
         final_string = "\n".join(cgo_string_builder)
-
-        with open(out, "w") as f:
-            f.write(final_string)
+        return final_string
