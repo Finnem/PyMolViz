@@ -29,7 +29,7 @@ class Script(object):
         """
         if issubclass(type(object), Mesh):
             if type(name) == str:
-                collection = Collection(name, [object], **kwargs)
+                collection = Collection([object], name, **kwargs)
                 self.collections.append(collection)
                 return
         elif issubclass(type(object), Collection):
@@ -45,10 +45,10 @@ class Script(object):
                         self.collections.append(collection)
                         logging.warning("No name provided for mesh when creating script. Try passing a name(s) to the add function or a dictionary mapping names to the objects.")
                     if type(name) == str:
-                        collection = Collection(name, [o], **kwargs)
+                        collection = Collection([o], name, **kwargs)
                         self.collections.append(collection)
                     elif type(name) == list:
-                        collection = Collection(name[mesh_count], [o], **kwargs)
+                        collection = Collection([o], name[mesh_count], **kwargs)
                         self.collections.append(collection)
                 elif issubclass(type(o), list):
                     mesh_count += 1
@@ -57,12 +57,12 @@ class Script(object):
                         self.collections.append(collection)
                         logging.warning("No name provided for mesh when creating script. Try passing a name(s) to the add function or a dictionary mapping names to the objects.")
                     if type(name) == str:
-                        collection = Collection(name, o, **kwargs)
+                        collection = Collection(o, name, **kwargs)
                         self.collections.append(collection)
                     elif type(name) == list:
                         if not all([issubclass(type(mesh), Mesh) for mesh in o]):
                             raise TypeError("Passed sublist contains object of type {}. Only Meshes are allowed as part of sublists.".format(type(o)))
-                        collection = Collection(name[mesh_count], o, **kwargs)
+                        collection = Collection(o, name[mesh_count], **kwargs)
                         self.collections.append(collection)
                 elif issubclass(type(o), Collection):
                     self.collections.append(o)
@@ -72,12 +72,12 @@ class Script(object):
         elif type(object) == dict:
             for name, o in object.items():
                 if issubclass(type(o), Mesh):
-                    collection = Collection(name, [o], **kwargs)
+                    collection = Collection([o], name, **kwargs)
                     self.collections.append(collection)
                 elif issubclass(type(o), list):
                     if not all([issubclass(type(mesh), Mesh) for mesh in o]):
                         raise TypeError("Passed sublist contains object of type {}. Only Meshes are allowed as part of sublists.".format(type(o)))
-                    collection = Collection(name, o, **kwargs)
+                    collection = Collection(o, name, **kwargs)
                     self.collections.append(collection)
                 elif issubclass(type(o), Collection):
                     o.name = name

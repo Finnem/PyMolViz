@@ -15,7 +15,7 @@ class Collection:
 
 
 
-    def __init__(self, name : str = None, meshes : list = None, transformation : np.array = None, opacity : float = 0) -> None:
+    def __init__(self, meshes : list = None, name : str = None, transformation : np.array = None, opacity : float = 0) -> None:
         if name:
             self.name = name
         else:
