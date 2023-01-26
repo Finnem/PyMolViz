@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ..util.geometries import get_surface_from_points
 from ..util.element_colors import get_AA_color, get_element_color
 import logging
 import numpy as np
@@ -186,3 +187,49 @@ class Mesh():
         else:
             raise ValueError(f"Color has type {type(color)} but should be str or np.array")
         return color_array
+
+
+    def merge(meshes, tolerance = 1e-4):
+        """
+        Merges (convex hulls of) multiple meshes into one mesh.
+
+        Args:
+            meshes (list): List of meshes to merge.
+            tolerance (float, optional): Tolerance for the convex hull. Defaults to 1e-4.
+            
+        Returns:
+            Mesh: Merged mesh.
+
+        """
+        from scipy.spatial import Delaunay, ConvexHull
+
+        triangulations = [Delaunay(mesh.vertices) for mesh in meshes]
+        convex_hulls = [ConvexHull(mesh.vertices) for mesh in meshes]
+
+        def is_in_triangulation(index, points):
+            inside = np.zeros(len(points), dtype=bool)
+            for i, triangulation in enumerate(triangulations):
+                if i == index:
+                    continue
+                inside |= triangulation.find_simplex(points) >= 0
+            return inside
+
+        final_points = []
+        final_colors = []
+        final_normals = []
+        for i in range(len(meshes)):
+            vertex_indices = convex_hulls[i].vertices
+            points_to_check = convex_hulls[i].points[vertex_indices]
+            filter = ~is_in_triangulation(i, points_to_check)
+            final_points.append(points_to_check[filter])
+            indices = convex_hulls[i].vertices[filter]
+            final_colors.append(meshes[i].color[indices])
+            final_normals.append(meshes[i].normals[indices])
+            
+        final_points = np.vstack(final_points)
+        final_colors = np.vstack(final_colors)
+        final_normals = np.vstack(final_normals)
+
+        return get_surface_from_points(final_points, final_normals, final_colors)
+
+        
