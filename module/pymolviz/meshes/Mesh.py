@@ -18,22 +18,24 @@ class Mesh():
         transformation (np.array): A 4x4 transformation matrix.
     """
 
-    def __init__(self, vertices : np.array, color : np.array = None, normals : np.array = None, faces : np.array = None, transformation : np.array = None, colormap = None, clims = None) -> None:
+    def __init__(self, vertices : np.array, color : np.array = None, normals : np.array = None, faces : np.array = None, transformation : np.array = None, name = None, colormap = None, clims = None) -> None:
         self.vertices = vertices
         self.color = self._convert_color(color, colormap, clims)
         self.normals = normals
         self.faces = faces
+        self.name = name
         self.transformation = np.eye(4) if transformation is None else transformation
         
     def load(self, name = None):
         """ Loads the mesh into PyMOL. """
         from pymol import cmd
-        if not name:
+        if name: self.name = name
+        if not self.name:
             global _pmv_mesh_counter
             logging.warning("No name provided for Mesh. Using default name: Mesh_{}. It is highly recommended to provide meaningful names.".format(_pmv_mesh_counter))
-            name = "Mesh_{}".format(_pmv_mesh_counter)
+            self.name = "Mesh_{}".format(_pmv_mesh_counter)
             _pmv_mesh_counter += 1
-        cmd.load_cgo(self._create_CGO(), name)
+        cmd.load_cgo(self._create_CGO(), self.name)
 
     def to_script(self, name = None):
         """ Creates a script from the mesh.
@@ -41,8 +43,9 @@ class Mesh():
         Returns:
             Script: A script object.
         """
+        if name: self.name = name
         from ..Script import Script
-        return Script([self], name = name)
+        return Script([self], name = self.name)
 
     def _create_CGO(self) -> str:
         """ Creates a CGO list from the mesh information. The base class assumes a triangle mesh.
