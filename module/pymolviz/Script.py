@@ -97,6 +97,24 @@ class Script(object):
         Loads all collections in this script into the current PyMOL session.
         
         """
+        name_counter = {}
+        for collection in self.collections:
+            if collection.name in name_counter:
+                name_counter[collection.name] += 1
+            else:
+                name_counter[collection.name] = 1
+        for name, counter in name_counter.items():
+            if counter > 1:
+                logging.warning("Multiple collections with the name {} found. Adding to multiple states...".format(name))
+            cur_counter = 0
+            for collection in self.collections:
+                if collection.name == name:
+                    if collection.state is None:
+                        collection.state = cur_counter
+                        cur_counter += 1
+                    else:
+                        ValueError("State only set for some collections with the name {}. State must be set for all collections with the same name, or for none.".format(name))
+        
         for collection in self.collections:
             collection.load()
 

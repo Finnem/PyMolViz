@@ -15,12 +15,16 @@ class Collection:
 
 
 
-    def __init__(self, meshes : list = None, name : str = None, transformation : np.array = None, opacity : float = 0) -> None:
+    def __init__(self, meshes : list = None, name : str = None, state : int = None, transformation : np.array = None, opacity : float = 0) -> None:
+        self.state = state
         if name:
             self.name = name
         else:
             global _pmv_collection_counter
-            logging.warning("No name provided for Collection. Using default name: Collection_{}. It is highly recommended to provide meaningful names.".format(_pmv_collection_counter))
+            if not (state is None):
+                logging.warning("State but no name provided. Using default name: Collection_{}. It is highly recommended to provide meaningful names.".format(_pmv_collection_counter))
+            else:
+                logging.warning("No name provided for Collection. Using default name: Collection_{}. It is highly recommended to provide meaningful names.".format(_pmv_collection_counter))
             self.name = "Collection_{}".format(_pmv_collection_counter)
             _pmv_collection_counter += 1
 
@@ -44,19 +48,21 @@ class Collection:
         return Script([self])
 
 
-    def load(self):
+    def load(self, state : int = None):
         """ Loads the collection into PyMOL.
         
         Returns:
             None
         """
 
+        self.state = state
+
         from pymol import cmd
-        cmd.load_cgo(self._create_CGO(), self.name)
+        cmd.load_cgo(self._create_CGO(), self.name, self.state)
         cmd.set("cgo_transparency", self.opacity, self.name)
 
     
-    def _create_CGO_script(self) -> str:
+    def _create_CGO_script(self, state : int = None) -> str:
         """ Creates a CGO string from the meshes informations.
         
         Returns:
@@ -65,6 +71,13 @@ class Collection:
 
         cgo_string_builder = []
         
+        self.state = state
+
+        if state is None:
+            state_string = ""
+        else:
+            state_string = ", state={}".format(state)
+
         cgo_name = self.name.replace(" ", "_")
 
         cgo_string_builder.append(f"""
@@ -77,7 +90,7 @@ class Collection:
         # ending
         cgo_string_builder.append(f"""
             ]
-cmd.load_cgo({cgo_name}, "{self.name}")
+cmd.load_cgo({cgo_name}, "{self.name}"{state_string})
 cmd.set("cgo_transparency", {self.opacity}, "{self.name}")
         """)
 
