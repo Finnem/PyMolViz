@@ -60,6 +60,18 @@ class Points(Mesh):
 
         return cgo_list
 
+
+    def from_mesh(mesh, *args, **kwargs) -> Points:
+        """ Creates a Points object from a Mesh object.
+        
+        Args:
+            mesh (Mesh): A Mesh object.
+        
+        Returns:
+            Points: A Points object.
+        """
+        return Points(mesh.vertices, mesh.color, mesh.normals, mesh.transformation, *args, **kwargs)
+
     def from_o3d_point_cloud(o3d_mesh) -> Points:
         """ Creates a Mesh object from an Open3D triangle mesh.
         

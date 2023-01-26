@@ -23,7 +23,7 @@ class Mesh():
         self.color = self._convert_color(color, colormap, clims)
         self.normals = normals
         self.faces = faces
-        self.transformation = transformation or np.eye(4)
+        self.transformation = np.eye(4) if transformation is None else transformation
         
     def load(self, name = None):
         """ Loads the mesh into PyMOL. """

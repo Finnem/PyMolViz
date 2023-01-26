@@ -1,5 +1,4 @@
 import numpy as np
-import open3d as o3d
 from scipy.spatial.transform import Rotation
 
 # Create a sphere mesh
@@ -84,10 +83,14 @@ def get_arrow_mesh(position, direction = [0, 0, 1], length = 2, resolution = 10,
 
 # Reconstructs surface from a set of points using poisson reconstruction from open3d
 def get_surface_from_points(points, normals, colors):
+    from pymolviz import Mesh
+    import open3d as o3d
+
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(points)
     pcd.normals = o3d.utility.Vector3dVector(normals)
     pcd.colors = o3d.utility.Vector3dVector(colors)
     mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(pcd, depth=8)
     mesh.compute_vertex_normals()
-    return {"positions" : np.asarray(mesh.vertices), "faces" : np.asarray(mesh.triangles), "normals" : np.asarray(mesh.vertex_normals)}
+    return Mesh(np.asarray(mesh.vertices), faces = np.asarray(mesh.triangles),\
+         normals = np.asarray(mesh.vertex_normals), color = np.asarray(mesh.vertex_colors))

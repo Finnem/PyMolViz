@@ -10,10 +10,10 @@ class Script(object):
     """
 
 
-    def __init__(self, collections : list = None, **kwargs) -> None:
+    def __init__(self, collections : list = None, *args, **kwargs) -> None:
         self.collections = []
         if collections:
-            self.add(collections, **kwargs)
+            self.add(collections, *args, **kwargs)
     
     def add(self, object, name = None, **kwargs):
         """ Adds a collection to this script.
@@ -39,7 +39,6 @@ class Script(object):
             mesh_count = 0
             for o in object:
                 if issubclass(type(o), Mesh):
-                    mesh_count += 1
                     if name is None:
                         collection = Collection(meshes = [o], **kwargs)
                         self.collections.append(collection)
@@ -50,8 +49,8 @@ class Script(object):
                     elif type(name) == list:
                         collection = Collection([o], name[mesh_count], **kwargs)
                         self.collections.append(collection)
-                elif issubclass(type(o), list):
                     mesh_count += 1
+                elif issubclass(type(o), list):
                     if name is None:
                         collection = Collection(meshes = o, **kwargs)
                         self.collections.append(collection)
@@ -64,6 +63,7 @@ class Script(object):
                             raise TypeError("Passed sublist contains object of type {}. Only Meshes are allowed as part of sublists.".format(type(o)))
                         collection = Collection(o, name[mesh_count], **kwargs)
                         self.collections.append(collection)
+                    mesh_count += 1
                 elif issubclass(type(o), Collection):
                     self.collections.append(o)
                 else:
