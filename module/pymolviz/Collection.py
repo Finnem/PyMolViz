@@ -83,7 +83,6 @@ class Collection:
         cgo_string_builder.append(f"""
 {cgo_name} = [
         """)
-
         content = ",\n".join([",".join([str(e) for e in mesh._create_CGO()]) for mesh in self.meshes])
         cgo_string_builder.append(content)
 

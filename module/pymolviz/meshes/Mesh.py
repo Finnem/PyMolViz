@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from ..util.geometries import get_surface_from_points
-from ..util.element_colors import get_AA_color, get_element_color
 import logging
 import numpy as np
 
@@ -27,6 +25,46 @@ class Mesh():
         self.name = name
         self.transformation = np.eye(4) if transformation is None else transformation
         
+
+    def to_wireframe(self):
+        """ Converts the mesh to a wireframe.
+        
+        Returns:
+            Mesh: A wireframe mesh.
+        """
+        from .Lines import Lines
+        vertex_indices = []
+        for face in self.faces:
+            vertex_indices.extend([face[0], face[1], face[1], face[2], face[2], face[0]])
+        
+        return Lines(self.vertices[vertex_indices], self.color[vertex_indices], transformation = self.transformation, name = self.name)
+
+    def combine(meshes):
+        """ Combines multiple meshes into one.
+        
+        Args:
+            meshes (list): A list of meshes.
+        
+        Returns:
+            Mesh: A combined mesh.
+        """
+        if type(meshes) == Mesh:
+            return meshes
+        else:
+            from .Lines import Lines
+            if all([isinstance(mesh, Lines) for mesh in meshes]):
+                return Lines.combine(meshes)
+            elif any([isinstance(mesh, Lines) for mesh in meshes]):
+                raise ValueError("Cannot combine Lines with other mesh types.")
+            else:
+                vertices = np.vstack([mesh.vertices for mesh in meshes])
+                face_offsets = np.cumsum([0] + [len(mesh.vertices) for mesh in meshes])
+                faces = np.vstack([mesh.faces + face_offset for mesh, face_offset in zip(meshes, face_offsets)])
+                colors = np.vstack([mesh.color for mesh in meshes])
+                normals = np.vstack([mesh.normals for mesh in meshes])
+                return Mesh(vertices, colors, normals, faces)
+
+
     def load(self, name = None):
         """ Loads the mesh into PyMOL. """
         from pymol import cmd
@@ -63,7 +101,6 @@ class Mesh():
         cgo_normals = self.color[self.faces].reshape(-1, 3)
 
         cgo_list = []
-        
         
         cgo_list.extend(["BEGIN", "TRIANGLES"]),
 
@@ -136,7 +173,11 @@ class Mesh():
         if (color is None) or (len(color) == 0):
             return color_array
 
+        if isinstance(color, (list, tuple)):
+            color = np.array(color)
+
         if isinstance(color, str):
+            from ..util.element_colors import get_AA_color, get_element_color
             from matplotlib import colors
             if not (c := get_AA_color(color)) is None:
                 color = c
@@ -181,55 +222,10 @@ class Mesh():
                 color_array = self._colormap(self._norm(color))
 
             elif color.shape == (target_length, 3):
-                pass
+                color_array = color
             else:
                 raise ValueError(f"Color array has shape {color.shape} but should be (3,), ({target_length}) or ({target_length}, 3)")
         else:
             raise ValueError(f"Color has type {type(color)} but should be str or np.array")
         return color_array
 
-
-    def merge(meshes, tolerance = 1e-4):
-        """
-        Merges (convex hulls of) multiple meshes into one mesh.
-
-        Args:
-            meshes (list): List of meshes to merge.
-            tolerance (float, optional): Tolerance for the convex hull. Defaults to 1e-4.
-            
-        Returns:
-            Mesh: Merged mesh.
-
-        """
-        from scipy.spatial import Delaunay, ConvexHull
-
-        triangulations = [Delaunay(mesh.vertices) for mesh in meshes]
-        convex_hulls = [ConvexHull(mesh.vertices) for mesh in meshes]
-
-        def is_in_triangulation(index, points):
-            inside = np.zeros(len(points), dtype=bool)
-            for i, triangulation in enumerate(triangulations):
-                if i == index:
-                    continue
-                inside |= triangulation.find_simplex(points) >= 0
-            return inside
-
-        final_points = []
-        final_colors = []
-        final_normals = []
-        for i in range(len(meshes)):
-            vertex_indices = convex_hulls[i].vertices
-            points_to_check = convex_hulls[i].points[vertex_indices]
-            filter = ~is_in_triangulation(i, points_to_check)
-            final_points.append(points_to_check[filter])
-            indices = convex_hulls[i].vertices[filter]
-            final_colors.append(meshes[i].color[indices])
-            final_normals.append(meshes[i].normals[indices])
-            
-        final_points = np.vstack(final_points)
-        final_colors = np.vstack(final_colors)
-        final_normals = np.vstack(final_normals)
-
-        return get_surface_from_points(final_points, final_normals, final_colors)
-
-        

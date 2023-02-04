@@ -1,8 +1,7 @@
 from . import Mesh
 import numpy as np
-from ..util.geometries import get_surface_from_points
 class Sphere(Mesh):
-    def __init__(self, radius, position, color = "white", resolution = 20) -> None:
+    def __init__(self, position, radius, color = "white", resolution = 20) -> None:
         """ Creates a sphere mesh.
 
         Args:
@@ -17,13 +16,13 @@ class Sphere(Mesh):
         y = y.flatten()
         z = z.flatten()
         vertices = np.vstack((x, y, z)).T * radius
-        normals = -vertices / np.linalg.norm(vertices, axis=1)[:, None]
+        normals = vertices / np.linalg.norm(vertices, axis=1)[:, None]
         vertices = vertices + position
         faces = []
         for i in range(1, resolution):
             for j in range(1, resolution):
-                faces.append([i*resolution+j-1, i*resolution+j, (i-1)*resolution+j-1])
-                faces.append([i*resolution+j, (i-1)*resolution+j, (i-1)*resolution+j-1])
+                faces.append([i*resolution+j-1, (i-1)*resolution+j-1, i*resolution+j])
+                faces.append([i*resolution+j, (i-1)*resolution+j-1, (i-1)*resolution+j])
         faces = np.array(faces)
         self.position = position
         self.radius = radius

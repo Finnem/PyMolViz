@@ -49,13 +49,17 @@ def generate_cylinder(length, resolution, thickness):
     faces = []
     for i in range(resolution):
         offset = resolution + 2
-        faces.append([(i % resolution) + 1, ((i + 1) % resolution) + 1 , 0])
-        faces.append([((i + 1) % resolution) + offset, (i % resolution) + offset,  resolution + 1])
+        faces.append([(i % resolution) + 1, 0,  ((i + 1) % resolution) + 1])
+        faces.append([((i + 1) % resolution) + offset,  resolution + 1, (i % resolution) + offset])
         faces.append([(i % resolution) + 1, ((i + 1) % resolution) + 1, (i % resolution) + offset])
         faces.append([((i + 1) % resolution) + 1, ((i + 1) % resolution) + offset, (i % resolution) + offset])
     faces = np.array(faces)
     vertices = np.vstack([top_center[None,:], top_vertices, bottom_center[None,:], bottom_vertices])
-    return {"positions" : vertices, "faces" : faces}
+    center = np.array([0, 0, length/2])
+    #normals = np.vstack([np.array([0, 0, 1])[None, :],  top_vertices - top_center, np.array([0, 0, -1])[None, :], bottom_vertices - bottom_center])
+    normals = vertices - center
+    normals = normals / np.linalg.norm(normals, axis=1)[:, None]
+    return {"vertices" : vertices, "normals" : normals, "faces" : faces}
 
 def get_arrow_mesh(position, direction = [0, 0, 1], length = 2, resolution = 10, thickness = .25):
     # Create a mesh of an 3d arrow
@@ -94,3 +98,12 @@ def get_surface_from_points(points, normals, colors):
     mesh.compute_vertex_normals()
     return Mesh(np.asarray(mesh.vertices), faces = np.asarray(mesh.triangles),\
          normals = np.asarray(mesh.vertex_normals), color = np.asarray(mesh.vertex_colors))
+
+def get_perp(v):
+    if np.allclose(v, 0):
+        return np.array([0, 1, 0])
+    v = v / np.linalg.norm(v)
+    if np.allclose(v, [0, 0, 1]):
+        return np.array([0, 1, 0])
+    cross = np.cross(v, [0, 0, 1])
+    return cross / np.linalg.norm(cross)

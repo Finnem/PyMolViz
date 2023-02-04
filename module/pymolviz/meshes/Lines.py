@@ -14,13 +14,13 @@ class Lines(Mesh):
     """
 
     def __init__(self, lines : np.array, color : np.array = None, transformation : np.array = None, linewidth = 1, **kwargs) -> None:
-
+        if type(lines) == list:
+            lines = np.array(lines)
         if not color is None:
-            if len(color) == (len(lines.reshape(-1, 3)) / 2):
+            if (not type(color) is str) and (len(color) == (len(lines.reshape(-1, 3)) / 2)):
                 color = np.repeat(color, 2, axis = 0)
             else:
                 color = color
-
         super().__init__(lines.reshape(-1, 3), color, None, None, transformation, **kwargs)
         self.linewidth = linewidth
 
@@ -73,3 +73,16 @@ class Lines(Mesh):
         return Lines(vertices, color)
 
     
+
+    def combine(lines):
+        """ Combines multiple lines into one.
+        
+        Args:
+            lines (list): A list of lines.
+        
+        Returns:
+            Lines: A Lines object.
+        """
+        vertices = np.vstack([line.vertices for line in lines])
+        colors = np.vstack([line.color for line in lines])
+        return Lines(vertices, colors)
