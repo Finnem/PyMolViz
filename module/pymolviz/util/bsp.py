@@ -15,11 +15,12 @@ class BSP_Node():
             self.normal = None
             self.position = None
             return
+        polygons = list(polygons)
         # split along arbitrary polygon
         if plane is None:
             # heuristic to find a good splitting plane: use arbitrary normal
             # and center of original polygons if there are more than 50
-            orig_polys = [poly for poly in polygons if not poly.was_split]
+            orig_polys = [poly for poly in polygons if (poly.parent is None)]
             if len(orig_polys) > 50:
                 self.position = np.mean([poly.position for poly in orig_polys], axis=0)
                 self.normal = np.mean([poly.normal for poly in orig_polys], axis=0)
@@ -63,7 +64,7 @@ class BSP_Node():
         c1 = other.copy()
         c0.clip_to(c1)
         c1.clip_to(c0)
-        return BSP_Node(c0.all_polygons() + c1.all_polygons())
+        return BSP_Node(c0.all_polygons().union(c1.all_polygons()))
 
     def intersect(self, other):
         c0 = self.copy()
@@ -74,7 +75,7 @@ class BSP_Node():
         c1.clip_to(c0)
         c0.flip()
         c1.flip()
-        return BSP_Node(c0.all_polygons() + c1.all_polygons())
+        return BSP_Node(c0.all_polygons().union(c1.all_polygons()))
 
     def subtract(self, other): 
         c0 = self.copy()
@@ -83,7 +84,7 @@ class BSP_Node():
         c0.clip_to(c1)
         c1.clip_to(c0)
         c0.flip()
-        return BSP_Node(c0.all_polygons() + c1.all_polygons())
+        return BSP_Node(c0.all_polygons().union(c1.all_polygons()))
 
 
     def plane_mesh(self, scale = 5):
@@ -99,13 +100,13 @@ class BSP_Node():
         return Plane(self.position, self.normal, scale, "white")
         
 
-    def to_mesh(self):
+    def to_mesh(self, reconstruct = True):
         """ Creates a mesh from the BSP tree.
         
         Returns:
             Mesh: A Mesh object.
         """
-        polygons = self.all_polygons()
+        polygons = self.all_polygons(reconstruct=reconstruct)
         return Mesh.combine([poly.to_mesh() for poly in polygons])
 
     def to_normal_arrows(self):
@@ -150,20 +151,32 @@ class BSP_Node():
             polygons.append(BSP_Polygon(vertices, mesh.color[face], mesh.normals[face]))
         return BSP_Node(polygons)
 
-    def all_polygons(self):
+    def all_polygons(self, reconstruct = False):
         """ Returns all polygons in the BSP tree.
         
         Returns:
             list: A list of BSP_Polygons.
         """
 
-        polygons = list(self.polygons)
+        polygons = set(self.polygons)
         if self.front: 
             front_polygons = self.front.all_polygons()
-            polygons += front_polygons
+            polygons.update(front_polygons)
         if self.back: 
             back_polygons = self.back.all_polygons()
-            polygons += back_polygons
+            polygons.update(back_polygons)
+
+        if reconstruct:
+            new_polygons = set()
+            intact = set(polygons)
+            while len(polygons) > 0:
+                poly = polygons.pop()
+                checked, reconstructed = poly.reconstruct(intact)
+                polygons.difference_update(checked)
+                intact.add(reconstructed)
+                new_polygons.add(reconstructed)
+            polygons = new_polygons
+
         return polygons
 
     def clip_polygons(self, polygons):
@@ -225,11 +238,12 @@ class BSP_Node():
 
 class BSP_Polygon():
 
-    def __init__(self, vertices, colors, normals, was_split = False) -> None:
+    def __init__(self, vertices, colors, normals, parent = None) -> None:
         self.vertices = np.array(vertices)
         self.colors = np.array(colors)
         self.normals = np.array(normals)
-        self.was_split = was_split
+        self.parent = parent
+        self.children = []
         self.position = np.mean(vertices, axis = 0)
         if np.any(np.sum(np.linalg.norm(self.vertices[None, :, :] - self.vertices[:, None, :], axis = -1) == 0, axis = 0) > 1):
             self.normal = np.array([0, 0, 1])
@@ -241,6 +255,14 @@ class BSP_Polygon():
             print(f"{len(self.vertices): } had nan, defaulted normal to z axis")
             print(vertices)
             self.normal = np.array([0, 0, 1])
+
+    def __eq__(self, __o: object) -> bool:
+        if isinstance(__o, BSP_Polygon):
+            return np.all(self.vertices == __o.vertices) and np.all(self.colors == __o.colors) and np.all(self.normals == __o.normals)
+        return False
+
+    def __hash__(self) -> int:
+        return hash((tuple(self.vertices.flatten()), tuple(self.colors.flatten()), tuple(self.normals.flatten())))
 
     def normal_mesh(self):
         """ Returns a mesh of the normal.
@@ -262,7 +284,7 @@ class BSP_Polygon():
         Returns:
             BSP_Polygon: A copy of the polygon.
         """
-        return BSP_Polygon(self.vertices, self.colors, self.normals, self.was_split)
+        return BSP_Polygon(self.vertices, self.colors, self.normals, self.parent)
 
     def to_mesh(self):
         """ Converts the polygon to a list of faces.
@@ -292,6 +314,29 @@ class BSP_Polygon():
         self.colors = self.colors[::-1]
         self.normals = self.normals[::-1]
         self.normal *= -1
+
+    def reconstruct(self, intact, checked = None):
+        """ Reconstructs this polygons parent if all siblings are intact.
+        
+        Args:
+            intact (list): A list of intact polygons.
+            
+            Returns:
+                Reconstructed siblings, reconstructed polygon.
+
+        """
+        if checked is None:
+            checked = set()
+
+        if self.parent is None:
+            return checked, self
+
+
+        if all([sibling in intact for sibling in self.parent.children]):
+            checked.update(self.parent.children)
+            return self.parent.reconstruct(intact, checked)
+        else:
+            return checked, self
 
 
     def split(self, normal, position, tolerance = 1e-9):
@@ -359,18 +404,16 @@ class BSP_Polygon():
         front_vertices = np.array(front_vertices)
         back_vertices = np.array(back_vertices)
         
-        if len(front_vertices) >= 3:
-            front = BSP_Polygon(front_vertices, front_color, front_normals)
-        else:
-            front = None
-        if len(back_vertices) >= 3:
-            back = BSP_Polygon(back_vertices, back_color, back_normals)
-        else:
-            back = None
+        if (len(front_vertices) >= 3) and (len(back_vertices) >= 3):
+            front = BSP_Polygon(front_vertices, front_color, front_normals, parent=self)
+            back = BSP_Polygon(back_vertices, back_color, back_normals, parent=self)
+            self.children = [front, back]
+            return front, back, None
 
-        if (front is not None) and (back is not None):
-            front.was_split = True
-            back.was_split = True
-        return front, back, None
+        elif len(front_vertices) >= 3:
+            return self, None, None
+
+        elif len(back_vertices) >= 3:
+            return None, self, None
 
 

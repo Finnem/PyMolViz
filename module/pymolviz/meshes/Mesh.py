@@ -1,4 +1,5 @@
 from __future__ import annotations
+from collections import defaultdict
 
 import logging
 import numpy as np
@@ -63,6 +64,28 @@ class Mesh():
                 colors = np.vstack([mesh.color for mesh in meshes])
                 normals = np.vstack([mesh.normals for mesh in meshes])
                 return Mesh(vertices, colors, normals, faces)
+    
+    def union(self, mesh):
+        from ..util.bsp import BSP_Node
+        my_node = BSP_Node.from_mesh(self)
+        other_node = BSP_Node.from_mesh(mesh)
+        new_node = my_node.union(other_node)
+        return new_node.to_mesh()
+
+    def difference(self, mesh):
+        from ..util.bsp import BSP_Node
+        my_node = BSP_Node.from_mesh(self)
+        other_node = BSP_Node.from_mesh(mesh)
+        new_node = my_node.subtract(other_node)
+        return new_node.to_mesh()
+
+    def intersect(self, mesh):
+        from ..util.bsp import BSP_Node
+        my_node = BSP_Node.from_mesh(self)
+        other_node = BSP_Node.from_mesh(mesh)
+        new_node = my_node.intersect(other_node)
+        return new_node.to_mesh()
+
 
 
     def load(self, name = None):
@@ -229,3 +252,42 @@ class Mesh():
             raise ValueError(f"Color has type {type(color)} but should be str or np.array")
         return color_array
 
+    def remesh(self):
+        """Removes unused vertices and renumbers faces.
+        
+        Returns:
+            None
+        """
+
+        from scipy.spatial import Delaunay
+
+        vertex_indices_2_faces = defaultdict(list)
+        for i, face in enumerate(self.faces):
+            for vertex in face:
+                vertex_indices_2_faces[vertex].append(i)
+            
+        checked = set()
+        new_faces = []
+
+        for face in self.faces:
+            if face in checked:
+                continue
+            coplanar = [face]
+            to_check = [face]
+            while len(to_check) > 0:
+                face = to_check.pop()
+                for vertex in face:
+                    for face2 in vertex_indices_2_faces[vertex]:
+                        if face2 in coplanar:
+                            continue
+                        # check if face2 is coplanar with face: As they must share a vertex, we can just check the face plane normals
+                        if np.allclose(np.cross(self.vertices[face[0]] - self.vertices[face[1]], self.vertices[face[0]] - self.vertices[face[2]]),\
+                             np.cross(self.vertices[face2[0]] - self.vertices[face2[1]], self.vertices[face2[0]] - self.vertices[face2[2]])):
+                            coplanar.append(face2)
+                            to_check.append(face2)
+            checked.update(coplanar)
+
+
+        
+
+         

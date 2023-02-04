@@ -22,12 +22,16 @@ class Cylinder(Mesh):
         self.faces = base_cylinder["faces"]
         # rotate cylinder
         direction = end - start; direction = direction / np.linalg.norm(direction)
-        rot_axis = np.cross(np.array([0, 0, 1]), direction); rot_axis = rot_axis / np.linalg.norm(rot_axis)
-        rot_angle = np.arccos(np.dot(direction, np.array([0, 0, 1])))
-        rotation = Rotation.from_rotvec(rot_angle * rot_axis)
+        if not (np.allclose(direction, np.array([0, 0, 1]))):
+            if np.allclose(direction, np.array([0, 0, -1])):
+                rotation = Rotation.from_rotvec(np.pi * np.array([0, 1, 0]))
+            else:
+                rot_axis = np.cross(np.array([0, 0, 1]), direction); rot_axis = rot_axis / np.linalg.norm(rot_axis)
+                rot_angle = np.arccos(np.dot(direction, np.array([0, 0, 1])))
+                rotation = Rotation.from_rotvec(rot_angle * rot_axis)
 
-        self.vertices = rotation.apply(self.vertices)
-        self.normals = rotation.apply(self.normals)
+            self.vertices = rotation.apply(self.vertices)
+            self.normals = rotation.apply(self.normals)
 
         # translate cylinder
         self.vertices = self.vertices + start

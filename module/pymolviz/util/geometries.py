@@ -103,7 +103,7 @@ def get_perp(v):
     if np.allclose(v, 0):
         return np.array([0, 1, 0])
     v = v / np.linalg.norm(v)
-    if np.allclose(v, [0, 0, 1]):
+    if np.allclose(np.abs(v), [0, 0, 1]):
         return np.array([0, 1, 0])
     cross = np.cross(v, [0, 0, 1])
     return cross / np.linalg.norm(cross)
