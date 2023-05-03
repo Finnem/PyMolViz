@@ -39,13 +39,15 @@ def generate_cone(length, resolution, thickness):
     return {"positions" : vertices, "faces" : faces}
 
 
-def generate_cylinder(length, resolution, thickness):
+def generate_cylinder(length, resolution, thickness, curvature):
     top_vertices = generate_circle_points(resolution) * thickness
-    top_center = np.array([0, 0, length])
+    top_center = np.array([0, 0, length], dtype=np.float32)
     bottom_vertices = generate_circle_points(resolution) * thickness
-    bottom_center = np.array([0, 0, 0])
+    bottom_center = np.array([0, 0, 0], dtype=np.float32)
     top_vertices = np.hstack([top_vertices, np.full(top_vertices.shape[0], length)[:,None]])
     bottom_vertices = np.hstack([bottom_vertices, np.full(bottom_vertices.shape[0], 0)[:,None]])
+    bottom_center[2] -= float(curvature * length)
+    top_center[2] += float(curvature * length)
     faces = []
     for i in range(resolution):
         offset = resolution + 2

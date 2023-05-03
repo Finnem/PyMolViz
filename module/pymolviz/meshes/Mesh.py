@@ -11,16 +11,16 @@ class Mesh():
     
     
     Attributes:
-        vertices (np.array): A 3xN array of vertices.
-        color (np.array): A 3xN array of colors.
-        normals (np.array): A 3xN array of normals.
-        faces (np.array): A 3xN array of faces.
+        vertices (np.array): A Nx3 array of vertices.
+        color (np.array): A Nx3 array of colors.
+        normals (np.array): A Nx3 array of normals.
+        faces (np.array): A Nx3 array of faces.
         transformation (np.array): A 4x4 transformation matrix.
     """
 
-    def __init__(self, vertices : np.array, color : np.array = None, normals : np.array = None, faces : np.array = None, transformation : np.array = None, name = None, colormap = None, clims = None) -> None:
+    def __init__(self, vertices : np.array, color : np.array = None, normals : np.array = None, faces : np.array = None, transformation : np.array = None, name = None, colormap = None, clims = None, **kwargs) -> None:
         self.vertices = vertices
-        self.color = self._convert_color(color, colormap, clims)
+        self.color = self._convert_color(color, colormap, clims, **kwargs)
         self.normals = normals
         self.faces = faces
         self.name = name
@@ -40,7 +40,7 @@ class Mesh():
         
         return Lines(self.vertices[vertex_indices], self.color[vertex_indices], transformation = self.transformation, name = self.name)
 
-    def combine(meshes):
+    def combine(meshes, **kwargs):
         """ Combines multiple meshes into one.
         
         Args:
@@ -54,7 +54,14 @@ class Mesh():
         else:
             from .Lines import Lines
             if all([isinstance(mesh, Lines) for mesh in meshes]):
-                return Lines.combine(meshes)
+                result = Lines.combine(meshes)
+                norm_meshes = [mesh for mesh in meshes if hasattr(mesh, "_norm")]
+                if len(norm_meshes) > 0:
+                    result._norm = norm_meshes[0]._norm
+                colormap_meshes = [mesh for mesh in meshes if hasattr(mesh, "_colormap")]
+                if len(colormap_meshes) > 0:
+                    result._colormap = norm_meshes[0]._colormap
+                return result
             elif any([isinstance(mesh, Lines) for mesh in meshes]):
                 raise ValueError("Cannot combine Lines with other mesh types.")
             else:
@@ -63,7 +70,14 @@ class Mesh():
                 faces = np.vstack([mesh.faces + face_offset for mesh, face_offset in zip(meshes, face_offsets)])
                 colors = np.vstack([mesh.color for mesh in meshes])
                 normals = np.vstack([mesh.normals for mesh in meshes])
-                return Mesh(vertices, colors, normals, faces)
+                result = Mesh(vertices, colors, normals, faces, **kwargs)
+                norm_meshes = [mesh for mesh in meshes if hasattr(mesh, "_norm")]
+                if len(norm_meshes) > 0:
+                    result._norm = norm_meshes[0]._norm
+                colormap_meshes = [mesh for mesh in meshes if hasattr(mesh, "_colormap")]
+                if len(colormap_meshes) > 0:
+                    result._colormap = norm_meshes[0]._colormap
+                return result
     
     def union(self, mesh):
         from ..util.bsp import BSP_Node
@@ -118,11 +132,15 @@ class Mesh():
         """
 
         vertices = self.vertices @ self.transformation[:3,:3].T + self.transformation[:3,3]
-
+        if self.color.shape[1] == 4:
+            cgo_colors = self.color[:,:3]
+        else:
+            cgo_colors = self.color
         cgo_triangles = vertices[self.faces].reshape(-1, 3)
-        cgo_colors = self.color[self.faces].reshape(-1, 3)
-        cgo_normals = self.color[self.faces].reshape(-1, 3)
+        cgo_colors = cgo_colors[self.faces].reshape(-1, 3)
+        cgo_normals = self.normals[self.faces].reshape(-1, 3)
 
+        print(cgo_colors.shape, cgo_triangles.shape, cgo_normals.shape)
         cgo_list = []
         
         cgo_list.extend(["BEGIN", "TRIANGLES"]),
@@ -181,25 +199,7 @@ class Mesh():
         fig = self.get_color_map(figsize, **kwargs)
         fig.savefig(out, dpi = kwargs.get("dpi", dpi), bbox_inches = "tight")
 
-    
-    def _convert_color(self, color, colormap, clims):
-        """ Converts single color as string or numpy array to a 3xN array of colors.
-            MUST BE CALLED AFTER VERTICES ARE SET.
-        
-        Returns:
-            None
-        """
-
-        target_length = len(self.vertices)
-        color_array = np.ones((target_length, 3))
-
-        if (color is None) or (len(color) == 0):
-            return color_array
-
-        if isinstance(color, (list, tuple)):
-            color = np.array(color)
-
-        if isinstance(color, str):
+    def _convert_string_color(color):
             from ..util.element_colors import get_AA_color, get_element_color
             from matplotlib import colors
             if not (c := get_AA_color(color)) is None:
@@ -208,18 +208,52 @@ class Mesh():
                 color = c
             else:
                 color = colors.to_rgb(color)
-            color_array = np.full((target_length, 3), color)
+            return color
+    
+    def _convert_color(self, color, colormap, clims):
+        """ Converts single color as string or numpy array to a 3xN array of colors.
+            MUST BE CALLED AFTER VERTICES ARE SET.
+        
+        Returns:
+            None
+        """
+        from matplotlib import cm, colors
+
+        target_length = len(self.vertices)
+        color_array = np.ones((target_length, 3))
+
+        if (color is None):
+            return color_array
+
+        if isinstance(color, (list, tuple)):
+            if len(color) == 0:
+                return color_array
+            color = np.array(color)
+
+        if type(color) is np.ndarray:
+            color = color.squeeze()
+
+        if isinstance(color, (str, np.str_)):
+            color = Mesh._convert_string_color(color)
+            color_array = np.full((target_length, 3), color[:3])
+        elif np.isscalar(color) and (clims is not None):
+            self._norm = colors.Normalize(vmin = clims[0], vmax = clims[1])
+            if (colormap is None):
+                    colormap = "coolwarm"
+            self._colormap = cm.get_cmap(colormap)
+            color = self._colormap(self._norm(color))
+            color_array = np.full((target_length, 3), color[:3])
+            return color_array
         elif isinstance(color, np.ndarray):
-            if color.shape == (4,):
-                color_array = np.full((target_length, 3), color[:3])
-                logging.warning("Color was passed with an alpha value. Alpha can only be set explicitly and only for a whole CGO and is ignored here.")
-            elif color.shape == (3,):
+            if len(color) == 0:
+                return color_array
+            elif color.shape == (3,) and not (color.dtype.kind in ["U", "S"]):
+                print(color.dtype)
                 color_array = np.full((target_length, 3), color)
             elif color.shape == (target_length, 4):
                 color_array = color[:,:3]
                 logging.warning("Color was passed with an alpha value. Alpha can only be set explicitly and only for a whole CGO and is ignored here.")
             elif color.shape == (target_length,):
-                from matplotlib import cm, colors
                 factor = 1.0
                 if (colormap is None):
                     colormap = "coolwarm"
@@ -237,56 +271,27 @@ class Mesh():
                         color_segments = colormap(np.linspace(factor_offset, 1 - factor_offset, 256))
                         colormap = colors.LinearSegmentedColormap.from_list(colormap.name + "_shrunk", color_segments)
                 self._colormap = colormap
-                if clims is not None:
-                    self._norm = colors.Normalize(vmin = clims[0], vmax = clims[1]) 
+                color_numbers = np.array([c for c in color if not c.dtype.kind in ["S", "U"]])
+                if len(color_numbers) > 0:
+                    if clims is not None:
+                        self._norm = colors.Normalize(vmin = clims[0], vmax = clims[1]) 
+                    else:
+                        self._norm = colors.Normalize(vmin=color_numbers.min(), vmax=color_numbers.max())
+                    color_array = np.array([Mesh._convert_string_color(c) if c.dtype.kind in ["S", "U"] else self._colormap(self._norm(c)) for c in color])
                 else:
-                    self._norm = colors.Normalize(vmin=color.min(), vmax=color.max())
+                    color_array = np.array([Mesh._convert_string_color(c) for c in color])
 
-                color_array = self._colormap(self._norm(color))
-
-            elif color.shape == (target_length, 3):
+            elif color.shape == (target_length, 3) and not color.dtype.kind in ["S", "U"]:
                 color_array = color
+            elif color.shape == (4,) and not color.dtype.kind in ["S", "U"]:
+                color_array = np.full((target_length, 3), color[:3])
+                logging.warning("Color was passed with an alpha value. Alpha can only be set explicitly and only for a whole CGO and is ignored here.")
+            
             else:
                 raise ValueError(f"Color array has shape {color.shape} but should be (3,), ({target_length}) or ({target_length}, 3)")
         else:
             raise ValueError(f"Color has type {type(color)} but should be str or np.array")
         return color_array
-
-    def remesh(self):
-        """Removes unused vertices and renumbers faces.
-        
-        Returns:
-            None
-        """
-
-        from scipy.spatial import Delaunay
-
-        vertex_indices_2_faces = defaultdict(list)
-        for i, face in enumerate(self.faces):
-            for vertex in face:
-                vertex_indices_2_faces[vertex].append(i)
-            
-        checked = set()
-        new_faces = []
-
-        for face in self.faces:
-            if face in checked:
-                continue
-            coplanar = [face]
-            to_check = [face]
-            while len(to_check) > 0:
-                face = to_check.pop()
-                for vertex in face:
-                    for face2 in vertex_indices_2_faces[vertex]:
-                        if face2 in coplanar:
-                            continue
-                        # check if face2 is coplanar with face: As they must share a vertex, we can just check the face plane normals
-                        if np.allclose(np.cross(self.vertices[face[0]] - self.vertices[face[1]], self.vertices[face[0]] - self.vertices[face[2]]),\
-                             np.cross(self.vertices[face2[0]] - self.vertices[face2[1]], self.vertices[face2[0]] - self.vertices[face2[2]])):
-                            coplanar.append(face2)
-                            to_check.append(face2)
-            checked.update(coplanar)
-
 
         
 
