@@ -1,6 +1,6 @@
 from . import Mesh
 import numpy as np
-from ..util.geometries import get_perp
+from ..util.math import get_perp
 
 class Plane(Mesh):
     def __init__(self, position, normal, scale = 5, color = "white", resolution = 20) -> None:

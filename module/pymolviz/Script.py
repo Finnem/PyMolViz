@@ -1,6 +1,14 @@
-from .Collection import Collection
+from .meshes.MeshCollection import MeshCollection
 from .meshes import Mesh
+from .volumetric.Volume import Volume
+from .volumetric.IsoMesh import IsoMesh
+from .volumetric.IsoSurface import IsoSurface
+from .volumetric.RegularData import RegularData
+from .ColorRamp import ColorRamp
 import logging
+
+
+
 class Script(object):
     """A class wrapping one or multiple collections to be added with a single script. Use write function to write the script to a file.
 
@@ -9,6 +17,7 @@ class Script(object):
 
     """
 
+    core_types = [MeshCollection, Volume, IsoMesh, IsoSurface]
 
     def __init__(self, collections : list = None, *args, **kwargs) -> None:
         self.collections = []
@@ -29,10 +38,10 @@ class Script(object):
         """
         if issubclass(type(object), Mesh):
             if type(name) == str:
-                collection = Collection([object], name, **kwargs)
+                collection = MeshCollection([object], name, **kwargs)
                 self.collections.append(collection)
                 return
-        elif issubclass(type(object), Collection):
+        elif any([issubclass(type(object), core_type) for core_type in Script.core_types]):
             self.collections.append(object)
             return
         elif type(object) == list:
@@ -40,31 +49,31 @@ class Script(object):
             for o in object:
                 if issubclass(type(o), Mesh):
                     if name is None:
-                        collection = Collection(meshes = [o], **kwargs)
+                        collection = MeshCollection(meshes = [o], **kwargs)
                         self.collections.append(collection)
                         logging.warning("No name provided for mesh when creating script. Try passing a name(s) to the add function or a dictionary mapping names to the objects.")
                     if type(name) == str:
-                        collection = Collection([o], name, **kwargs)
+                        collection = MeshCollection([o], name, **kwargs)
                         self.collections.append(collection)
                     elif type(name) == list:
-                        collection = Collection([o], name[mesh_count], **kwargs)
+                        collection = MeshCollection([o], name[mesh_count], **kwargs)
                         self.collections.append(collection)
                     mesh_count += 1
                 elif issubclass(type(o), list):
                     if name is None:
-                        collection = Collection(meshes = o, **kwargs)
+                        collection = MeshCollection(meshes = o, **kwargs)
                         self.collections.append(collection)
                         logging.warning("No name provided for mesh when creating script. Try passing a name(s) to the add function or a dictionary mapping names to the objects.")
                     if type(name) == str:
-                        collection = Collection(o, name, **kwargs)
+                        collection = MeshCollection(o, name, **kwargs)
                         self.collections.append(collection)
                     elif type(name) == list:
                         if not all([issubclass(type(mesh), Mesh) for mesh in o]):
                             raise TypeError("Passed sublist contains object of type {}. Only Meshes are allowed as part of sublists.".format(type(o)))
-                        collection = Collection(o, name[mesh_count], **kwargs)
+                        collection = MeshCollection(o, name[mesh_count], **kwargs)
                         self.collections.append(collection)
                     mesh_count += 1
-                elif issubclass(type(o), Collection):
+                elif any([issubclass(type(o), core_type) for core_type in Script.core_types]):
                     self.collections.append(o)
                 else:
                     raise TypeError("Passed list contains object of type {}. Only Meshes, Collections and lists of Meshes are allowed.".format(type(o)))
@@ -72,21 +81,21 @@ class Script(object):
         elif type(object) == dict:
             for name, o in object.items():
                 if issubclass(type(o), Mesh):
-                    collection = Collection([o], name, **kwargs)
+                    collection = MeshCollection([o], name, **kwargs)
                     self.collections.append(collection)
                 elif issubclass(type(o), list):
                     if not all([issubclass(type(mesh), Mesh) for mesh in o]):
                         raise TypeError("Passed sublist contains object of type {}. Only Meshes are allowed as part of sublists.".format(type(o)))
-                    collection = Collection(o, name, **kwargs)
+                    collection = MeshCollection(o, name, **kwargs)
                     self.collections.append(collection)
-                elif issubclass(type(o), Collection):
+                elif any([issubclass(type(o), core_type) for core_type in Script.core_types]):
                     o.name = name
                     self.collections.append(o)
                 else:
-                    raise TypeError("Passed dictionary contains object of type {}. Only Meshes, Collections, and lists of Meshes are allowed.".format(type(o)))
+                    raise TypeError("Passed dictionary contains object of type {}. Only Meshes, Collections, Volumes, and lists of Meshes are allowed.".format(type(o)))
             return
         else:
-            raise TypeError("Tried to add an object of type {} to a script. Only Meshes, Collections, lists of Meshes and lists of Collections are allowed.".format(type(object)))
+            raise TypeError("Tried to add an object of type {} to a script. Only Meshes, Collections,Volumes, lists of Meshes and lists of Collections are allowed.".format(type(object)))
 
         self.collections.append(collection)
 
@@ -136,12 +145,28 @@ class Script(object):
         cgo_string_builder = ['''
 from pymol.cgo import *
 from pymol import cmd
+import numpy as np
+from chempy.brick import Brick
 
         '''
         ]
 
+        # determine regular data being used
+        used_regular_data = []
         for collection in self.collections:
-            cgo_string_builder.append(collection._create_CGO_script())
+            if hasattr(collection, "regular_data"):
+                if not (collection.regular_data, collection.value_label) in used_regular_data:
+                    used_regular_data.append((collection.regular_data, collection.value_label))
+                    cgo_string_builder.append(collection.regular_data._create_script(collection.value_label))
+            if hasattr(collection, "color") and isinstance(collection.color, ColorRamp):
+                if isinstance(collection.color.data, RegularData):
+                    if not (collection.color.data, collection.color.value_label) in used_regular_data:
+                        used_regular_data.append((collection.color.data, collection.color.value_label))
+                        cgo_string_builder.append(collection.color.data._create_script(collection.color.value_label))
+
+
+        for collection in self.collections:
+            cgo_string_builder.append(collection._create_script())
 
         final_string = "\n".join(cgo_string_builder)
         return final_string

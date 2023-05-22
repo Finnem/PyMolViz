@@ -101,11 +101,3 @@ def get_surface_from_points(points, normals, colors):
     return Mesh(np.asarray(mesh.vertices), faces = np.asarray(mesh.triangles),\
          normals = np.asarray(mesh.vertex_normals), color = np.asarray(mesh.vertex_colors))
 
-def get_perp(v):
-    if np.allclose(v, 0):
-        return np.array([0, 1, 0])
-    v = v / np.linalg.norm(v)
-    if np.allclose(np.abs(v), [0, 0, 1]):
-        return np.array([0, 1, 0])
-    cross = np.cross(v, [0, 0, 1])
-    return cross / np.linalg.norm(cross)

@@ -2,7 +2,7 @@ import numpy as np
 
 from ..meshes.Mesh import Mesh
 from ..meshes.Arrows import Arrows
-from ..util.geometries import get_perp
+from ..util.math import get_perp
 
 
 class BSP_Node():

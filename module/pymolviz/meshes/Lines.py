@@ -68,7 +68,7 @@ class Lines(Mesh):
         
         """
         from .Cylinder import Cylinder
-        from ..Collection import Collection
+        from .MeshCollection import Collection
 
         lines = self.vertices.reshape(-1, 12)
         if colors is None:

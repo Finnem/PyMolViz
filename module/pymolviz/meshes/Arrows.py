@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 from .Lines import Lines
-from ..util.geometries import get_perp
+from ..util.math import get_perp
 
 class Arrows(Lines):
     """ Class to store all relevant information required to create a CGO Line object.

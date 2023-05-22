@@ -199,16 +199,7 @@ class Mesh():
         fig = self.get_color_map(figsize, **kwargs)
         fig.savefig(out, dpi = kwargs.get("dpi", dpi), bbox_inches = "tight")
 
-    def _convert_string_color(color):
-            from ..util.element_colors import get_AA_color, get_element_color
-            from matplotlib import colors
-            if not (c := get_AA_color(color)) is None:
-                color = c
-            elif not (c := get_element_color(color)) is None:
-                color = c
-            else:
-                color = colors.to_rgb(color)
-            return color
+    
     
     def _convert_color(self, color, colormap, clims):
         """ Converts single color as string or numpy array to a 3xN array of colors.
@@ -234,7 +225,8 @@ class Mesh():
             color = color.squeeze()
 
         if isinstance(color, (str, np.str_)):
-            color = Mesh._convert_string_color(color)
+            from ..util.colors import _convert_string_color
+            color = _convert_string_color(color)
             color_array = np.full((target_length, 3), color[:3])
         elif np.isscalar(color) and (clims is not None):
             self._norm = colors.Normalize(vmin = clims[0], vmax = clims[1])
@@ -272,14 +264,15 @@ class Mesh():
                         colormap = colors.LinearSegmentedColormap.from_list(colormap.name + "_shrunk", color_segments)
                 self._colormap = colormap
                 color_numbers = np.array([c for c in color if not c.dtype.kind in ["S", "U"]])
+                from ..util.colors import _convert_string_color
                 if len(color_numbers) > 0:
                     if clims is not None:
                         self._norm = colors.Normalize(vmin = clims[0], vmax = clims[1]) 
                     else:
                         self._norm = colors.Normalize(vmin=color_numbers.min(), vmax=color_numbers.max())
-                    color_array = np.array([Mesh._convert_string_color(c) if c.dtype.kind in ["S", "U"] else self._colormap(self._norm(c)) for c in color])
+                    color_array = np.array([_convert_string_color(c) if c.dtype.kind in ["S", "U"] else self._colormap(self._norm(c)) for c in color])
                 else:
-                    color_array = np.array([Mesh._convert_string_color(c) for c in color])
+                    color_array = np.array([_convert_string_color(c) for c in color])
 
             elif color.shape == (target_length, 3) and not color.dtype.kind in ["S", "U"]:
                 color_array = color

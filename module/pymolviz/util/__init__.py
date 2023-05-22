@@ -1,3 +1,4 @@
 from . import geometries
-from . import element_colors
+from . import colors
 from . import bsp
+from . import math
