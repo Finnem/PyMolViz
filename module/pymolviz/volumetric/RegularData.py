@@ -47,7 +47,7 @@ class RegularData():
             differences = np.absolute(self.positions[0] - self.positions)
             self.step_size = np.array([np.min(differences[:, 0][differences[:,0] != 0]), np.min(differences[:, 1][differences[:,1] != 0]), np.min(differences[:, 2][differences[:,2] != 0])])
         if self.step_count is None:
-            self.step_count = np.ceil((self.positions.max(axis=0) - self.positions.min(axis=0)) / self.step_size)
+            self.step_count = np.floor((self.positions.max(axis=0) - self.positions.min(axis=0)) / self.step_size) + 1
 
         else:
             self.step_size = np.max(positions, axis=0) - np.min(positions, axis=0)

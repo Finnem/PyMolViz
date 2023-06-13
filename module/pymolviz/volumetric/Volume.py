@@ -7,7 +7,7 @@ from ..util.colors import _convert_string_color
 _pmv_volume_counter = 0
 
 class Volume():
-    def __init__(self, regular_data : RegularData, name = None, value_label = None, colormap = None, alphas = None, clims = None, selection = None, carve = None):
+    def __init__(self, regular_data : RegularData, name = None, value_label = None, colormap = None, alphas = None, clims = None, selection = None, carve = None, state = 1):
         """ 
         Computes and collects pymol commands to load in regular data and display it volumetrically.
 
@@ -28,6 +28,7 @@ class Volume():
         self.value_label = value_label
         self.selection = selection
         self.carve = carve
+        self.state = state
         self.value_name = ("_" + value_label) if value_label else ""
         if name is None:
             self.name = "{}{}_Volume_{}".format(regular_data.name, self.value_name, _pmv_volume_counter)
@@ -60,7 +61,7 @@ class Volume():
 
         
 
-    def _create_script(self, state = 0):
+    def _create_script(self):
         """ Creates a pymol script to create a volume representation of the given regular data.
         
         Returns:
@@ -73,8 +74,8 @@ class Volume():
         if self.carve is not None:
             optional_arguments.append(f"carve = {self.carve}")
         result = f"""
-{self.color._create_script(state, self.alphas)}
-cmd.volume("{self.name}", "{self.regular_data.name}{self.value_name}", "{self.color.name}", {" , ".join(optional_arguments)}{"," if len(optional_arguments) > 0 else ""} state = {state})
+{self.color._create_script(self.state, self.alphas)}
+cmd.volume("{self.name}", "{self.regular_data.name}{self.value_name}", "{self.color.name}", {" , ".join(optional_arguments)}{"," if len(optional_arguments) > 0 else ""} state = {self.state})
         """
 
         return result

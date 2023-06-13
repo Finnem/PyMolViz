@@ -126,6 +126,21 @@ class ColorRamp():
             result = "\n".join(color_ramp_string_list)
         return result
 
+
+    def get_color_map(self, figsize : tuple = (1, 6)):
+        """ Returns a matplotlib fig displaying the colormap.
+        
+        Returns:
+            matplotlib.fig: The fig.
+        """
+
+        import matplotlib.pyplot as plt
+        from matplotlib import cm, colors
+        fig, ax = plt.subplots(figsize=figsize)
+        norm = colors.Normalize(vmin=self.clims[0], vmax=self.clims[-1])
+        cb = fig.colorbar(cm.ScalarMappable(norm=norm, cmap=self.colormap), cax=ax)
+        return fig
+
     def to_script(self, state = 0):
         """ Creates a pymolviz script to create a volume representation of the given regular data.
         

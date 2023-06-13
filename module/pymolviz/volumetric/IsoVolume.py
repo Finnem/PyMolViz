@@ -7,7 +7,7 @@ from ..util.colors import _convert_string_color
 _pmv_isovolume_counter= 0
 
 class IsoVolume(Volume):
-    def __init__(self, regular_data : RegularData, name = None, value_label = None, colormap = None, alphas = None, clims = None, selection = None, carve = None, margin = 0.05):
+    def __init__(self, regular_data : RegularData, name = None, value_label = None, colormap = None, alphas = None, clims = None, selection = None, carve = None, margin = 0.05, state = 0):
         """ 
         Computes and collects pymol commands to load in regular data and display it as multiple, transparent, same colored iso-surfaces using PyMOLs volume command.
 
@@ -32,6 +32,7 @@ class IsoVolume(Volume):
         else:
             self.name = name
 
+        self.regular_data = regular_data
         if clims is None:
             if value_label is None:
                 values = self.regular_data._values[self.regular_data._values.__iter__().__next__()]
@@ -59,7 +60,7 @@ class IsoVolume(Volume):
         alphas = new_alphas
         clims = new_clims
 
-        super().__init__(regular_data, name, value_label, colormap, alphas, clims, selection, carve)
+        super().__init__(regular_data, name, value_label, colormap, alphas, clims, selection, carve, state)
         
        
 

@@ -106,7 +106,7 @@ cmd.set("cgo_transparency", {self.opacity}, "{self.name}")
         # combine all meshes' cgo_lists into a single cgo_list
         combined_list = []
         for mesh in self.meshes:
-            combined_list.extend(mesh.create_CGO())
+            combined_list.extend(mesh._create_CGO())
 
         # convert cgo constant strings to actual constants
         from pymol.cgo import BEGIN, END, TRIANGLES, COLOR, VERTEX, NORMAL, SPHERE, POINTS, LINES, LINEWIDTH
