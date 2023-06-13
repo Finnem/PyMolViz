@@ -3,6 +3,7 @@ import logging
 from .RegularData import RegularData
 from .Volume import Volume
 from ..util.colors import _convert_string_color
+import pandas as pd
 
 _pmv_isovolume_counter= 0
 
@@ -22,8 +23,13 @@ class IsoVolume(Volume):
             carve (float, optional): The carve to use. Defaults to None.
         """
         global _pmv_isovolume_counter
+        if clims is None:
+            clims = list(pd.qcut(regular_data.values[value_label], 7, retbins=True)[1])
+        else:
+            self.clims = clims
+
         if alphas is None:
-            alphas = [0.1, 0.5, 0.8]
+            alphas = np.linspace(0.1, 0.8, len(clims))
         self.value_name = ("_" + value_label) if value_label else ""
         if name is None:
             name = "{}{}_IsoVolume_{}".format(regular_data.name, self.value_name, _pmv_isovolume_counter)
@@ -33,17 +39,6 @@ class IsoVolume(Volume):
             self.name = name
 
         self.regular_data = regular_data
-        if clims is None:
-            if value_label is None:
-                values = self.regular_data._values[self.regular_data._values.__iter__().__next__()]
-            else:
-                values = self.regular_data.values[value_label]
-
-            std = np.std(values)
-            mean = np.mean(values)
-            self.clims = [mean - 2 * std, mean, mean + 2 * std]
-        else:
-            self.clims = clims
 
         new_clims = []
         new_alphas = []
