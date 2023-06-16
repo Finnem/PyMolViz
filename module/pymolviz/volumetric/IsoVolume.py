@@ -50,8 +50,16 @@ class IsoVolume(Volume):
             new_clims.append(self.clims[i] + difference)
             new_alphas.append(0)
             new_clims.append(self.clims[i + 1] - difference)
+        if type(colormap) is list:
+            new_colormap = []
+            for c in colormap:
+                new_colormap.append(c)
+                new_colormap.append(c)
+
         new_alphas.append(alphas[-1])
         new_clims.append(self.clims[-1])
+        new_colormap.append(colormap[-1])
+        colormap = new_colormap
         alphas = new_alphas
         clims = new_clims
 

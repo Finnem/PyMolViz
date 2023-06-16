@@ -7,7 +7,7 @@ from ..util.colors import _convert_string_color
 _pmv_volume_counter = 0
 
 class Volume():
-    def __init__(self, regular_data : RegularData, name = None, value_label = None, colormap = None, alphas = None, clims = None, selection = None, carve = None, state = 1):
+    def __init__(self, regular_data : RegularData, name = None, value_label = None, colormap = None, alphas = None, clims = None, selection = None, carve = None, state = 1, color_ramp = None):
         """ 
         Computes and collects pymol commands to load in regular data and display it volumetrically.
 
@@ -50,7 +50,10 @@ class Volume():
         else:
             self.clims = clims
 
-        self.color = ColorRamp(self.regular_data, name = self.name + "_ColorRamp", value_label = self.value_label, colormap=colormap, clims = self.clims)
+        if color_ramp is None:
+            self.color = ColorRamp(self.regular_data, name = self.name + "_ColorRamp", value_label = self.value_label, colormap=colormap, clims = self.clims)
+        else:
+            self.color = color_ramp
 
         if alphas is None:
             self.alphas = [0.03, 0.005, 0.1]
