@@ -67,13 +67,15 @@ class ColorRamp():
             from matplotlib import cm
             colormap = cm.get_cmap(colormap)
         elif type(colormap) is list:
+            mapped_clims = self.clims - self.clims[0]
+            mapped_clims /= mapped_clims[-1] - self.clims[0]
             if len(colormap) == len(self.clims):
                 from matplotlib.colors import LinearSegmentedColormap
                 colors = []
                 for i, c in enumerate(colormap):
                     if type(c) is str:
                         c = _convert_string_color(c)
-                    colors.append((self.clims[i], c))
+                    colors.append((mapped_clims[i], c))
 
                 colormap = LinearSegmentedColormap.from_list(self.name, colors)
             else:
