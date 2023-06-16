@@ -55,11 +55,12 @@ class IsoVolume(Volume):
             for c in colormap:
                 new_colormap.append(c)
                 new_colormap.append(c)
+                new_colormap.append(c)
+            new_colormap.append(colormap[-1])
+            colormap = new_colormap
 
         new_alphas.append(alphas[-1])
         new_clims.append(self.clims[-1])
-        new_colormap.append(colormap[-1])
-        colormap = new_colormap
         alphas = new_alphas
         clims = new_clims
 
