@@ -22,10 +22,22 @@ class Mesh():
         self.vertices = vertices
         self.color = self._convert_color(color, colormap, clims, **kwargs)
         self.normals = normals
-        self.faces = faces
+        self.faces = faces.reshape(-1, 3) if faces is not None else None
         self.name = name
         self.transformation = np.eye(4) if transformation is None else transformation
         
+
+    def write(self, filename : str, name : str = None):
+        """ Writes the mesh to a file.
+
+        Args:
+            filename (str): The filename to write to.
+            name (str): The name of the object in the file.
+
+        Returns:
+            None
+        """
+        self.to_script(name).write(filename)
 
     def to_wireframe(self):
         """ Converts the mesh to a wireframe.
@@ -140,7 +152,6 @@ class Mesh():
         cgo_colors = cgo_colors[self.faces].reshape(-1, 3)
         cgo_normals = self.normals[self.faces].reshape(-1, 3)
 
-        print(cgo_colors.shape, cgo_triangles.shape, cgo_normals.shape)
         cgo_list = []
         
         cgo_list.extend(["BEGIN", "TRIANGLES"]),
@@ -232,7 +243,8 @@ class Mesh():
             self._norm = colors.Normalize(vmin = clims[0], vmax = clims[1])
             if (colormap is None):
                     colormap = "coolwarm"
-            self._colormap = cm.get_cmap(colormap)
+            from ..util.colors import get_colormap
+            self._colormap = get_colormap(colormap)
             color = self._colormap(self._norm(color))
             color_array = np.full((target_length, 3), color[:3])
             return color_array
@@ -251,7 +263,9 @@ class Mesh():
                     colormap = "coolwarm"
                 if isinstance(colormap, str):
                     try:
-                        colormap = cm.get_cmap(colormap)
+                        from ..util.colors import get_colormap
+                        self._colormap = get_colormap(colormap)
+                        colormap = self._colormap
                     except ValueError:
                         seperated_colormap = colormap.split("_")
                         factor = float(seperated_colormap[-1])

@@ -1,6 +1,0 @@
-
-from pymol.cgo import *
-from pymol import cmd
-from chempy import Brick
-
-print(dir(Brick))

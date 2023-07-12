@@ -25,6 +25,7 @@ class IsoVolume(Volume):
         global _pmv_isovolume_counter
         if clims is None:
             clims = list(pd.qcut(regular_data.values[value_label], 7, retbins=True)[1])
+            self.clims = clims
         else:
             self.clims = clims
 
