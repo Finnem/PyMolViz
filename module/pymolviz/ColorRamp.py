@@ -64,8 +64,8 @@ class ColorRamp():
         if colormap is None:
             colormap = "coolwarm"
         if type(colormap) is str:
-            from matplotlib import cm
-            colormap = cm.get_cmap(colormap)
+            from .util.colors import get_colormap
+            colormap = get_colormap(colormap)
         elif type(colormap) is list:
             mapped_clims = self.clims - self.clims[0]
             mapped_clims /= mapped_clims[-1] - self.clims[0]
