@@ -8,7 +8,7 @@ class Lines(Points):
     """ Class to store all relevant information required to create a CGO Line object.
 
     Attributes:
-        vertices (array-like): An array-like of vertex positions.
+        lines (array-like): An array-like of vertex positions.
         color (array-like): Optional. Defaults to red. An array like of colors. Can be a single color, a list of colors, or a list of values to be mapped to a colormap. Lists of colors may either be for each vertex or for each line.
         name (str): Optional. Defaults to None. The name of the object.
         state (int): Optional. Defaults to 1. The state of the object.

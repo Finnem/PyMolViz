@@ -3,7 +3,7 @@ import numpy as np
 from ..util.math import get_perp
 
 class Plane(Mesh):
-    def __init__(self, position, normal, scale = 5, color = "white", resolution = 20) -> None:
+    def __init__(self, position, normal, scale = 5, color = "red", *args, **kwargs) -> None:
         """ Creates a plane mesh at the given position and with the given normal.
         
         Args:
@@ -26,4 +26,4 @@ class Plane(Mesh):
         normals = np.full(vertices.shape, normal)
         
 
-        super().__init__(vertices, color, normals, faces = faces)
+        super().__init__(vertices, color, normals, faces = faces, *args, **kwargs)
