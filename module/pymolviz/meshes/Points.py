@@ -1,53 +1,66 @@
 from __future__ import annotations
 
-import numpy as np
 import logging
-from .Mesh import Mesh
+import numpy as np
 
-class Points(Mesh):
+from ..ColorMap import ColorMap
+from ..Displayable import Displayable
+
+class Points(Displayable):
     """ Class to store points and associated colors which can be displayed as a point cloud.
     
     
     Attributes:
-        vertices (np.array): A 3xN array of vertices.
-        color (np.array): A 3xN array of colors.
-        transformation (np.array): A 4x4 transformation matrix.
+        vertices (array-like): An array-like of vertex positions.
+        color (array-like): Optional. Defaults to red. An array like of colors. Can be a single color, a list of colors, or a list of values to be mapped to a colormap.
+        name (str): Optional. Defaults to None. The name of the object.
+        state (int): Optional. Defaults to 1. The state of the object.
+        transparency (float): Optional. Defaults to 0. The transparency value of the object.
+        colormap: Optional. Defaults to "RdYlBu_r". Name of a colormap or a matplotlib colormap or a pymolviz.ColorMap object. Used to map values to colors.
+        vertex_as (str): Optional. Defaults to "Spheres". How to display the points. Can be "Spheres" or "Dots" or None. If None, the points are not displayed.
+        radius (float): Optional. Defaults to .3. Only relevant if vertex_as is "Spheres". The radius of the spheres.
     """
 
-    def __init__(self, vertices : np.array, color : np.array = None, normals = None, transformation : np.array = None, render_as_spheres = False, sphere_radius = .1, **kwargs) -> None:
-        super().__init__(vertices, color, normals, None, transformation, **kwargs)
-        self.render_as_spheres = render_as_spheres
-        self.sphere_radius = sphere_radius
+    def __init__(self, vertices, color = "red", name = None, state = 1, transparency = 0, colormap = "RdYlBu_r", vertex_as = "Spheres", radius = .3, **kwargs) -> None:
+        super().__init__(name)
+        if type(colormap) != ColorMap:
+            self.colormap = ColorMap(color, colormap, **kwargs)
+        else:
+            self.colormap = colormap
+        if "single" in self.colormap._color_type: # colors were not inferred
+            self.color = np.arange(vertices.shape[0]) # color is just the index
+        else:
+            self.color = color.flatten()
 
-    def _create_CGO(self) -> str:
+        self.vertices = np.array(vertices, dtype=float).reshape(-1, 3)
+        self.vertex_as = vertex_as
+        self.radius = radius
+        self.state = state
+        self.transparency = transparency
+
+    def _create_CGO_list(self) -> list:
         """ Creates a CGO list from the mesh information. Points can be displayed as spheres or as points.
 
-        Args:
-            as_spheres (bool, optional): If True, the points are displayed as spheres. Defaults to False.
-            radius (float, optional): Only relevant is as_spheres is True. The radius of the spheres. Defaults to .1.
-        
         Returns:
-            None
+            List of str: The CGO list.
         """
 
-        vertices = self.vertices @ self.transformation[:3,:3].T + self.transformation[:3,3]
-
-        cgo_points = vertices
-        cgo_colors = self.color
+        cgo_points = self.vertices
+        cgo_colors = self.colormap.get_color(self.color)
 
         cgo_list = []
         
         
-        if self.render_as_spheres:
+        if self.vertex_as == "Spheres":
             #vertices
             point_meshes = np.hstack([
                 np.full(cgo_points.shape[0], "COLOR")[:,None], cgo_colors, \
                 np.full(cgo_points.shape[0], "SPHERE")[:,None], cgo_points, \
-                np.full(cgo_points.shape[0], self.sphere_radius)[:,None], \
+                np.full(cgo_points.shape[0], self.radius)[:,None], \
                 ]).flatten()
             cgo_list.extend(point_meshes)
 
-        else:
+        elif self.vertex_as == "Dots":
             cgo_list.extend(["BEGIN", "POINTS"])
             #vertices
             points = np.hstack([
@@ -60,34 +73,20 @@ class Points(Mesh):
 
         return cgo_list
 
+    def _script_string(self):
+        cgo_string_builder = []
+        state = "" if self.state is None else f", state={self.state}"
+        cgo_name = self.name.replace(" ", "_")
+        cgo_string_builder.append(f"""
+{cgo_name} = [
+        """)
+        content = ",".join([str(e) for e in self._create_CGO_list()])
+        cgo_string_builder.append(content)
 
-    def from_mesh(mesh, *args, **kwargs) -> Points:
-        """ Creates a Points object from a Mesh object.
-        
-        Args:
-            mesh (Mesh): A Mesh object.
-        
-        Returns:
-            Points: A Points object.
-        """
-        return Points(mesh.vertices, mesh.color, mesh.normals, mesh.transformation, *args, **kwargs)
-
-    def from_o3d_point_cloud(o3d_mesh) -> Points:
-        """ Creates a Mesh object from an Open3D triangle mesh.
-        
-        Args:
-            o3d_mesh (o3d.geometry.TriangleMesh): An Open3D triangle mesh.
-        
-        Returns:
-            Mesh: A Mesh object.
-        """
-        vertices = np.asarray(o3d_mesh.points)
-        color = np.asarray(o3d_mesh.colors)
-        if not o3d_mesh.has_normals():
-            logging.info("No normals found in point cloud. Computing normals.")
-            o3d_mesh.estimate_normals()
-        normals = np.asarray(o3d_mesh.normals)
-
-        return Points(vertices, color, normals)
-
-    
+        # ending
+        cgo_string_builder.append(f"""
+            ]
+cmd.load_cgo({cgo_name}, "{cgo_name}"{state})
+cmd.set("cgo_transparency", {self.transparency}, "{cgo_name}")
+        """)
+        return "\n".join(cgo_string_builder)

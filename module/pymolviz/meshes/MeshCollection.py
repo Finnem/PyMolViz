@@ -83,7 +83,7 @@ class MeshCollection:
         cgo_string_builder.append(f"""
 {cgo_name} = [
         """)
-        content = ",\n".join([",".join([str(e) for e in mesh._create_CGO()]) for mesh in self.meshes])
+        content = ",\n".join([",".join([str(e) for e in mesh._create_CGO_list()]) for mesh in self.meshes])
         cgo_string_builder.append(content)
 
         # ending
@@ -106,7 +106,7 @@ cmd.set("cgo_transparency", {self.opacity}, "{self.name}")
         # combine all meshes' cgo_lists into a single cgo_list
         combined_list = []
         for mesh in self.meshes:
-            combined_list.extend(mesh._create_CGO())
+            combined_list.extend(mesh._create_CGO_list())
 
         # convert cgo constant strings to actual constants
         from pymol.cgo import BEGIN, END, TRIANGLES, COLOR, VERTEX, NORMAL, SPHERE, POINTS, LINES, LINEWIDTH

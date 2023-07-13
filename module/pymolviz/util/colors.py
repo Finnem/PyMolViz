@@ -4,21 +4,21 @@ def get_colormap(colormap):
 	""" Infers a colormap from the given data."""
 	from matplotlib import cm
 
-	if colormap == "onwhite":
-		from matplotlib.colors import LinearSegmentedColormap
-		colors = list(reversed([np.array([165, 0, 38]), np.array([215, 48, 39]), np.array([244, 109, 67]), np.array([116, 173, 209]), np.array([69, 117, 180]), np.array([49, 54, 149])]))
-		colors = np.array(colors) / 255
-		colors = [(i / (len(colors) - 1), c) for i, c in enumerate(colors)]
-		colormap = LinearSegmentedColormap.from_list("onwhite", colors)
-	elif colormap == "onwhite_r":
-		from matplotlib.colors import LinearSegmentedColormap
-		colors = [np.array([165, 0, 38]), np.array([215, 48, 39]), np.array([244, 109, 67]), np.array([116, 173, 209]), np.array([69, 117, 180]), np.array([49, 54, 149])]
-		colors = np.array(colors) / 255
-		colors = [(i / (len(colors) - 1), c) for i, c in enumerate(colors)]
-		colormap = LinearSegmentedColormap.from_list("onwhite_r", colors)
-	else:
-		colormap = cm.get_cmap(colormap)
-	
+	if np.issubdtype(type(colormap), np.str_):
+		if colormap == "onwhite":
+			from matplotlib.colors import LinearSegmentedColormap
+			colors = list(reversed([np.array([165, 0, 38]), np.array([215, 48, 39]), np.array([244, 109, 67]), np.array([116, 173, 209]), np.array([69, 117, 180]), np.array([49, 54, 149])]))
+			colors = np.array(colors) / 255
+			colors = [(i / (len(colors) - 1), c) for i, c in enumerate(colors)]
+			colormap = LinearSegmentedColormap.from_list("onwhite", colors)
+		elif colormap == "onwhite_r":
+			from matplotlib.colors import LinearSegmentedColormap
+			colors = [np.array([165, 0, 38]), np.array([215, 48, 39]), np.array([244, 109, 67]), np.array([116, 173, 209]), np.array([69, 117, 180]), np.array([49, 54, 149])]
+			colors = np.array(colors) / 255
+			colors = [(i / (len(colors) - 1), c) for i, c in enumerate(colors)]
+			colormap = LinearSegmentedColormap.from_list("onwhite_r", colors)
+		else:
+			colormap = cm.get_cmap(colormap)
 	return colormap
 
 
