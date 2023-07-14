@@ -14,7 +14,7 @@ RegularData_0_data = np.array([[[0,1],
 RegularData_0 = Brick.from_numpy(RegularData_0_data, [1.,1.,1.], origin=[0,0,0])
 cmd.load_brick(RegularData_0, "RegularData_0")
 
-cmd.volume_ramp_new("IsoVolume_1_volume_color_ramp", [\
+cmd.volume_ramp_new("IsoVolume_0_volume_color_ramp", [\
     0, 0.19215686274509805,0.21176470588235294,0.5843137254901961, 0.1,\
     0.025, 0.19830834294502114,0.23114186851211072,0.5938485198000769, 0,\
     0.475, 0.37539407920030765,0.5836985774702039,0.7705497885428682, 0,\
@@ -33,5 +33,5 @@ cmd.volume_ramp_new("IsoVolume_1_volume_color_ramp", [\
     2.5, 0.9167243367935409,0.3430219146482122,0.22399077277970011, 0.8,\
 ])
 
-cmd.volume("IsoVolume_1", "RegularData_0", "IsoVolume_1_volume_color_ramp", )
+cmd.volume("IsoVolume_0", "RegularData_0", "IsoVolume_0_volume_color_ramp", )
         

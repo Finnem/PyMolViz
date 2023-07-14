@@ -51,6 +51,8 @@ class RegularData(Displayable):
 
         # sort values
         self.values = values[sorted_indices]
+        self.step_sizes = np.array(self.step_sizes)
+        self.step_counts = np.array(self.step_counts)
 
         super().__init__(name = name)
           
