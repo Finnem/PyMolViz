@@ -1,20 +1,18 @@
 import numpy as np
 import logging
 from .RegularData import RegularData
-from ..ColorRamp import ColorRamp
+from ..Displayable import Displayable
+from ..ColorMap import ColorMap
 from ..util.colors import _convert_string_color
 
-_pmv_volume_counter = 0
-
-class Volume():
-    def __init__(self, regular_data : RegularData, name = None, value_label = None, colormap = None, alphas = None, clims = None, selection = None, carve = None, state = 1, color_ramp = None):
+class Volume(Displayable):
+    def __init__(self, regular_data : RegularData, name = None, colormap = "RdYlBu_r", alphas = None, clims = None, selection = None, carve = None, state = 1):
         """ 
         Computes and collects pymol commands to load in regular data and display it volumetrically.
 
         Args:
             regular_data (pymolviz.RegularData): Regular data for which to show the volume.
             name (str, optional): The name of the volume as displayed in PyMOL. Defaults to {regular_data.name}_{value_label}_Volume_{i}.
-            value_label (str, optional): The name of the values to use from the regular data. Defaults to None. Must be passed if regular_data has multiple values.
             colormap (str, optional): The name of the colormap to use. Defaults to coolwarm.
             alphas (np.array, optional): The alphas to use. Defaults to [0.03, 0.005, 0.1].
             clims (np.array, optional): The clims to use. Defaults to [mean - 2 stddev, mean, mean + 2 stddev].
@@ -22,38 +20,24 @@ class Volume():
             carve (float, optional): The carve to use. Defaults to None.
         """
 
-        global _pmv_volume_counter
-
         self.regular_data = regular_data
-        self.value_label = value_label
         self.selection = selection
         self.carve = carve
         self.state = state
-        self.value_name = ("_" + value_label) if value_label else ""
-        if name is None:
-            self.name = "{}{}_Volume_{}".format(regular_data.name, self.value_name, _pmv_volume_counter)
-            logging.warning("No name provided for Volume. Using default name: {}. It is highly recommended to provide meaningful names.".format(self.name))
-            _pmv_volume_counter += 1
-        else:
-            self.name = name
 
+        super().__init__(name = name)
         
         if clims is None:
-            if value_label is None:
-                values = self.regular_data._values[self.regular_data._values.__iter__().__next__()]
-            else:
-                values = self.regular_data.values[value_label]
-
+            values = self.regular_data.values
             std = np.std(values)
             mean = np.mean(values)
             self.clims = [mean - 2 * std, mean, mean + 2 * std]
         else:
             self.clims = clims
 
-        if color_ramp is None:
-            self.color = ColorRamp(self.regular_data, name = self.name + "_ColorRamp", value_label = self.value_label, colormap=colormap, clims = self.clims)
-        else:
-            self.color = color_ramp
+        if not issubclass(type(colormap), ColorMap):
+            colormap = ColorMap(self.regular_data.values, colormap)
+        self.colormap = colormap
 
         if alphas is None:
             self.alphas = [0.03, 0.005, 0.1]
@@ -61,10 +45,12 @@ class Volume():
             self.alphas = alphas
         if len(self.alphas) != len(self.clims):
             raise Exception("Alphas and clims must have the same length.")
+        
+        self.dependencies.extend([self.regular_data])
 
         
 
-    def _create_script(self):
+    def _script_string(self):
         """ Creates a pymol script to create a volume representation of the given regular data.
         
         Returns:
@@ -76,11 +62,21 @@ class Volume():
             optional_arguments.append(f"selection = \"{self.selection}\"")
         if self.carve is not None:
             optional_arguments.append(f"carve = {self.carve}")
-        result = f"""
-{self.color._create_script(self.state, self.alphas)}
-cmd.volume("{self.name}", "{self.regular_data.name}{self.value_name}", "{self.color.name}", {" , ".join(optional_arguments)}{"," if len(optional_arguments) > 0 else ""} state = {self.state})
-        """
 
+        string_list = []
+
+
+        if len(self.alphas) != len(self.clims):
+                raise ValueError("The number of volume alphas must be equal to the number of clims.")
+        string_list = [f"""cmd.volume_ramp_new("{self.name}_volume_color_ramp", [\\"""]
+        for i, c in enumerate(self.clims):
+            string_list.append(f"""    {self.clims[i]}, {",".join([str(v) for v in self.colormap.get_color(c)[:3]])}, {self.alphas[i]},\\""")
+        string_list.append("])")
+        string_list.append(f"""
+cmd.volume("{self.name}", "{self.regular_data.name}", "{self.name}_volume_color_ramp", {" , ".join(optional_arguments)}{"," if len(optional_arguments) > 0 else ""})
+        """)
+
+        result = "\n".join(string_list)
         return result
 
     def to_script(self, state = 0):

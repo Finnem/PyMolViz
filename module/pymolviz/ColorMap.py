@@ -6,9 +6,10 @@ import matplotlib.pyplot as plt
 import matplotlib.colors 
 import matplotlib.cm 
 from matplotlib.colors import LinearSegmentedColormap
+from .Displayable import Displayable
 
-class ColorMap():
-    def __init__(self, values, colormap = "RdYlBu_r", values_are_single_color = None):
+class ColorMap(Displayable):
+    def __init__(self, values, colormap = "RdYlBu_r", values_are_single_color = None, name = None):
 
 
         # get colormap
@@ -97,6 +98,8 @@ class ColorMap():
         if self.colormap is None:
             raise ValueError("Could not infer a colormap from the given values.")
 
+        super().__init__(name = name)
+
     def get_color(self, values):
         return self.colormap(self._norm(values))
     
@@ -108,6 +111,24 @@ class ColorMap():
 
         fig.colorbar(matplotlib.cm.ScalarMappable(norm = self._norm, cmap = self.colormap), cax = ax, **kwargs)
 
+    def _script_string(self):
+        """ Creates a pymol script to create this colorbar as a pymol displayable.
+        
+        Returns:
+            str: The script.
+        """
+        from .volumetric.RegularData import RegularData
+        dummy_data = RegularData(np.zeros(8), name="cbar_dummy", step_sizes=(1e-8,1e-8,1e-8), step_counts=(2,2,2)) 
+        
+        sample_points = np.linspace(self.clims[0], self.clims[-1], 100)
+        colors = self.get_color(sample_points)[:,:3]
+        result = []
+        result.append(dummy_data._script_string())
+        result.append(f"""cmd.ramp_new("{self.name}", "{dummy_data.name}", range = [{",".join([str(c) for c in sample_points])}], color = [{", ".join(["[" + ", ".join([str(c) for c in color]) + "]" for color in colors])}])""")
+        result.append(f"""cmd.delete("{dummy_data.name}")""")
+
+        result = "\n".join(result)
+        return result
 
     def _value2color(self, value):
         color = None

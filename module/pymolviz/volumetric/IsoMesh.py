@@ -1,56 +1,9 @@
-import numpy as np
-import logging
-from .RegularData import RegularData
-from ..ColorRamp import ColorRamp
-from ..util.colors import _convert_string_color
+from .ColorRamp import ColorRamp
+from .IsoSurface import IsoSurface
 
-_pmv_isomesh_counter= 0
+class IsoMesh(IsoSurface):
 
-class IsoMesh():
-    def __init__(self, regular_data : RegularData, level: float, name = None, value_label = None, color = None, colormap = None, clims = None, selection = None, carve = None, in_sigma = False):
-        """ 
-        Computes and collects pymol commands to load in regular data and display an iso mesh at the given level.
-        Note that, since this is based on volumetric data it is different from the pmv.Mesh class.
-
-        Args:
-            regular_data (pymolviz.RegularData): Regular data for which to show the isomesh.
-            level (float): The level at which to display the isomesh.
-            name (str, optional): The name of the mesh as displayed in PyMOL. Defaults to {regular_data.name}_{value_label}_IsoMesh_{i}.
-            value_label (str, optional): The name of the value to use from the regular data. Defaults to None. Must be passed if regular_data has multiple values.
-            color (str or rgb or pymolviz.RegularData, optional): The name of the color to use or rgb values. Defaults to white. If regular data is passed, then a colormap and clims will be used.
-            colormap (str, optional): The name of the colormap to use in case RegularData is used for coloring. Defaults to coolwarm.
-            clims ([float], optional): color limits to use in case RegularData is used for coloring. Defaults to [mean - 2 stddev, mean + 2 stddev].
-            selection (str, optional): The selection to use. Defaults to None.
-            carve (float, optional): The carve to use. Defaults to None.
-            in_sigma (bool, optional): Whether the level is in sigma. Defaults to False.
-        """
-        global _pmv_isomesh_counter
-        self.value_name = ("_" + value_label) if value_label else ""
-        if name is None:
-            name = "{}{}_IsoMesh_{}".format(regular_data.name, self.value_name, _pmv_isomesh_counter)
-            logging.warning("No name provided for IsoMesh. Using default name: {}. It is highly recommended to provide meaningful names.".format(name))
-            _pmv_isomesh_counter += 1
-        else:
-            self.name = name
-        self.regular_data = regular_data
-        self.value_label = value_label
-        if in_sigma:
-            self.level = level
-        else:
-            if value_label is None:
-                values = self.regular_data._values[self.regular_data._values.__iter__().__next__()]
-            else:
-                values = self.regular_data.values[value_label]
-            std = np.std(values)
-            self.level = level / std
-        if isinstance(color, str):
-            self.color = _convert_string_color(color) if color else (1, 1, 1)
-        else:
-            self.color = color
-        self.selection = selection
-        self.carve = carve
-
-    def _create_script(self, state = 0):
+    def _script_string(self):
         """ Creates a pymol script to create an isomesh representation of the given regular data.
         
         Returns:
@@ -63,23 +16,18 @@ class IsoMesh():
         if self.carve is not None:
             optional_arguments.append(f"carve = {self.carve}")
 
-        if isinstance(self.color, ColorRamp):
-            color_string = self.color._create_script()
+        if issubclass(type(self.color), ColorRamp):
+            color_string = f'cmd.color("{self.color.name}", "{self.name}")'
         else:
-            color_string = f"""cmd.set_color("{self.name}_color", {self.color})"""
+            color_string = f'''cmd.set_color("{self.name}_color", {self.color})
+cmd.color("{self.name}_color", "{self.name}")
+'''
+
+        
         result = f"""
-cmd.isomesh("{self.name}", "{self.regular_data.name}{self.value_name}", {self.level}, {" , ".join(optional_arguments)}{"," if len(optional_arguments) > 0 else ""} state = {state})
+cmd.isomesh("{self.name}", "{self.regular_data.name}", {self.level}, {" , ".join(optional_arguments)}{"," if len(optional_arguments) > 0 else ""})
 {color_string}
-cmd.color("{self.color.name}", "{self.name}")
+cmd.set("transparency", {self.transparancy}, "{self.name}")
         """
         
         return result
-
-    def to_script(self, state = 0):
-        """ Creates a pymolviz script to create a volume representation of the given regular data.
-        
-        Returns:
-            pymolviz.Script: The script.
-        """
-        from ..Script import Script
-        return Script([self])
