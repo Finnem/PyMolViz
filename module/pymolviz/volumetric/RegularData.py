@@ -1,126 +1,95 @@
 import numpy as np
-from ..util.math import tanh_distance_weighting
-import logging
+from ..Displayable import Displayable
 from ..meshes.Points import Points
 
-_pmv_regular_data_counter = 0
-class RegularData():
-    def __init__(self, positions, values, name = None, step_size = None, step_count = None, offset = None):
-        """ Represents regular 3-dimensional data. If no step_size or step_count is passed, they will be inferred.
-
+class RegularData(Displayable):
+    def __init__(self, values, positions = None, step_sizes = None, step_counts = None, origin = None, name = None):
+        """ Represents regular 3-dimensional data. Either positions or step_size and step_count must be given.
 
         Args:
-            positions (np.array): The positions of the regular data. Will be resorted to be in ascending order.
-            values (np.array or {name : np.array}): The values of the data. If a dictionary is passed, the keys will be used as names for the values.
-            step_size (np.array, optional): The size of the steps. Defaults to None.
-            step_count (np.array, optional): The number of steps. Defaults to None.
-            offset (np.array, optional): The number of steps to the start. Defaults to None.
+            values (np.array): The values of the data.
+            positions (np.array): Optional. The positions of the regular data. Will be resorted to be in ascending order.
+            step_sizes (np.array): Optional. The size of the steps in each direction. Defaults to None.
+            step_counts (np.array): Optional. The number of steps in each direction. Defaults to None.
+            origin (np.array): Optional. Starting point of the grid. Defaults to None.
+            name (str): Optional. The name of the data. Defaults to None.
+
         """
 
-        # sort positions
-        positions = np.array(positions)
-        sorted_indices = np.lexsort((positions[:, 2], positions[:, 1], positions[:, 0]))
-        self.positions = positions[sorted_indices]
-        if isinstance(values, dict):
-            for key, value in values.items():
-                values[key] = value[sorted_indices]
-                self.values = values
-        elif isinstance(values, np.ndarray):
-            self.values = values[sorted_indices]
+        if origin is None:
+            origin = np.array([0, 0, 0])
+
+        self.step_sizes = step_sizes
+        self.step_counts = step_counts
+        self.origin = origin
+
+        # no grid points given: infer grid from parameters
+        if positions is None:
+            if (self.step_counts is None) or (self.step_sizes is None):
+                raise ValueError("Either positions or step_sizes and step_counts must be given.")
+            else:
+                sorted_indices = np.arange(len(values))
         else:
-            raise ValueError("Values must be a numpy array or a dictionary of numpy arrays.")  
-        self.step_size = step_size
-        if name is None:
-            global _pmv_regular_data_counter
-            self.name = "RegularData_{}".format(_pmv_regular_data_counter)
-            _pmv_regular_data_counter += 1
-        else:
-            self.name = name
-        if isinstance(step_size, float) or isinstance(step_size, int):
-            self.step_size = np.array([step_size, step_size, step_size])
-        self.step_count = step_count
-        if isinstance(step_count, float) or isinstance(step_count, int):
-            self.step_count = np.array([step_count, step_count, step_count])
+            positions = np.array(positions)
+            sorted_indices = np.lexsort((positions[:, 2], positions[:, 1], positions[:, 0]))
+            # determine step_size
+            if self.step_sizes is None:
+                self.step_sizes = np.zeros(3)
+                for i in range(3):
+                    unique = np.unique(positions[:, i])
+                    sorted = np.sort(unique)
+                    self.step_sizes[i] = np.max(np.diff(sorted))
+            # determine step_count
+            if self.step_counts is None:
+                self.step_counts = np.zeros(3)
+                for i in range(3):
+                    length = np.max(positions[:, i]) - np.min(positions[:, i])
+                    self.step_counts[i] = np.round(length / self.step_sizes[i]) + 1
+            # determine origin
+            if self.origin is None:
+                self.origin = np.min(positions, axis=0)
 
-        if self.step_count is None and self.step_size is None:
-            # inferring step_size
-            differences = np.absolute(self.positions[0] - self.positions)
-            self.step_size = np.array([np.min(differences[:, 0][differences[:,0] != 0]), np.min(differences[:, 1][differences[:,1] != 0]), np.min(differences[:, 2][differences[:,2] != 0])])
-        if self.step_count is None:
-            self.step_count = np.floor((self.positions.max(axis=0) - self.positions.min(axis=0)) / self.step_size) + 1
+        # sort values
+        self.values = values[sorted_indices]
 
-        else:
-            self.step_size = np.max(positions, axis=0) - np.min(positions, axis=0)
-            self.step_size = self.step_size / (self.step_count - 1)
-        
-        if offset is None:
-            self.offset = np.min(self.positions, axis=0)
-        else:
-            self.offset = offset
-        
-    @property
-    def values(self):
-        """Values of the data.
-        
-        If only a single set of values was passed, this will be a numpy array.
-        Otherwise it will return a dictionary, mapping names of values to numpy arrays.
-        """
+        super().__init__(name = name)
+          
 
-        if len(self._values) == 1:
-            return self._values[self._values.__iter__().__next__()]
-        else:
-            return self._values
-
-    @values.setter 
-    def values(self, values):
-        if isinstance(values, dict):
-            self._values = values
-        else:
-            self._values = {"values" : values}
-
-
-
-    def to_point_cloud(self, filter = None, value_label = None, *args, **kwargs):
+    def to_point_cloud(self, filter = None, *args, **kwargs):
         """
         Returns a point cloud representation of the data, filtered by the passed function.
 
         Args:
-            filter (function, optional): A function that takes a numpy array and returns a boolean array.
-            value_label (str, optional): The name of the value to use for the point cloud. Defaults to None.
-
+            filter (function, optional): A function that takes a numpy array and returns a boolean array. Applied to values to determine positions to show.
 
         Returns:
             pymolviz.Points: A point cloud representation of the data.
         """
 
-        if value_label is None:
-            values = self._values[self._values.__iter__().__next__()]
-        else:
-            values = self.values[value_label]
+        # create grid
+        x = np.linspace(self.origin[0], self.origin[0] + self.step_sizes[0] * self.step_counts[0], self.step_counts[0])
+        y = np.linspace(self.origin[1], self.origin[1] + self.step_sizes[1] * self.step_counts[1], self.step_counts[1])
+        z = np.linspace(self.origin[2], self.origin[2] + self.step_sizes[2] * self.step_counts[2], self.step_counts[2])
+        xx, yy, zz = np.meshgrid(x, y, z)
+        positions = np.array([xx.flatten(), yy.flatten(), zz.flatten()]).T
 
         # filter
         if filter is None:
-            filtered_positions = self.positions
-            filtered_values = values
+            filtered_positions = positions
+            filtered_values = self.values
         else:
-            filtered_positions = self.positions[filter(values)]
-            filtered_values = values[filter(values)]
+            filtered_positions = positions[filter(self.values)]
+            filtered_values = self.values[filter(self.values)]
 
         return Points(filtered_positions, filtered_values, *args, **kwargs)
     
-    def _create_script(self, value_label = None):
-        if value_label is None:
-            value_name = ""
-            values = self._values[self._values.__iter__().__next__()]
-        else:
-            value_name = "_" + value_label
-            values = self.values[value_label]
-        values = values.reshape(self.step_count.astype(int))
-        #values = np.swapaxes(values, 0, 2) # why is this only sometimes necessary?
+
+    def _script_string(self):
+        values = self.values.reshape(self.step_counts.astype(int))
         result = f"""
-{self.name}{value_name}_data = np.array({np.array2string(values, threshold=1e15, separator=",")})
-{self.name}{value_name} = Brick.from_numpy({self.name}{value_name}_data, {np.array2string(self.step_size, separator = ",")}, origin={np.array2string(self.offset, separator=",")})
-cmd.load_brick({self.name}{value_name}, "{self.name}{value_name}")
+{self.name}_data = np.array({np.array2string(values, threshold=1e15, separator=",")})
+{self.name} = Brick.from_numpy({self.name}_data, {np.array2string(self.step_sizes, separator = ",")}, origin={np.array2string(self.origin, separator=",")})
+cmd.load_brick({self.name}, "{self.name}")
 """
         return result
 
