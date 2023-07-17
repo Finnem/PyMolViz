@@ -3,9 +3,10 @@ from collections import defaultdict
 
 _pmv_default_name_counter = defaultdict(int)
 class Displayable():
-    def __init__(self, name = None, dependencies = None):
-        self._name = name
+    def __init__(self, name = None, dependencies = None, *args, **kwargs):
+        self.name = name
         self.dependencies = dependencies if dependencies else []
+        super().__init__(*args, **kwargs) # multiple inheritance support
 
     def _script_string(self):
         raise NotImplementedError
@@ -24,7 +25,14 @@ class Displayable():
 
     @name.setter
     def name(self, value):
-        self._name = value
+        if value is None:
+            self._name = None
+            return
+        new_name = str(value).replace(" ", "_")
+        if any(s in new_name for s in ["(", ")", "[", "]"]):
+            logging.warning(f"Name {new_name} contains parentheses. This may cause issues with PyMol. Consider changing the name.")
+        self._name = new_name.replace("(", "_").replace(")", "_").replace("[", "_").replace("]", "_")
+        self._name = str(value).replace(" ", "_")
 
     def to_script(self):
         from .Script import Script

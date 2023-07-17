@@ -7,7 +7,7 @@ from ..util.colors import _convert_string_color
 
 
 class IsoSurface(Displayable):
-    def __init__(self, regular_data : RegularData, level: float, name = None, color = None, transparancy = 0, selection = None, carve = None, side = 1, in_sigma = False):
+    def __init__(self, regular_data : RegularData, level: float, name = None, color = None, transparancy = 0, selection = None, carve = None, side = 1):
         """ 
         Computes and collects pymol commands to load in regular data and display an iso mesh at the given level.
         Note that, since this is based on volumetric data it is different from the pmv.Mesh class.
@@ -29,11 +29,7 @@ class IsoSurface(Displayable):
         self.transparancy = transparancy
         self.regular_data = regular_data
 
-        if in_sigma:
-            self.level = level
-        else:
-            self.level = level / np.std(self.regular_data.values)
-
+        self.level = level
         color = [1, 1, 1] if color is None else color
         if isinstance(color, str):
             self.color = _convert_string_color(color)

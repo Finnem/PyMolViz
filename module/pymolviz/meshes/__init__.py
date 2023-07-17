@@ -4,4 +4,4 @@ from .Mesh import Mesh
 from .Sphere import Sphere
 from .Plane import Plane
 from .Arrows import Arrows
-from .MeshCollection import MeshCollection
+from .CGOCollection import CGOCollection

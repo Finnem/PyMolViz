@@ -24,18 +24,17 @@ class Script(object):
             None
 
         """
-
-        try:
-            for obj in displayable:
-                self.add(obj, **kwargs)
-        except TypeError:
-            if isinstance(displayable, Displayable):
-                for dependency in displayable.dependencies:
-                    if dependency not in self.displayables:
-                        self.add(dependency, **kwargs)
-                self.displayables.append(displayable)
-            else:
-                raise TypeError(f"Object {displayable.name} is not a Displayable instance.")
+        if isinstance(displayable, Displayable):
+            for dependency in displayable.dependencies:
+                if dependency not in self.displayables:
+                    self.add(dependency, **kwargs)
+            self.displayables.append(displayable)
+        else:
+            try:    
+                for obj in displayable:
+                    self.add(obj, **kwargs)
+            except TypeError:
+               raise TypeError(f"Object {displayable.name} is not a Displayable instance.")
             
 
     def load(self):
