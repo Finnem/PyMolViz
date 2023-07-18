@@ -113,7 +113,7 @@ cmd.load_brick({self.name}, "{self.name}")
         import gemmi
 
 
-    def from_mtz(path):
+    def from_mtz(path, factor_column = "FWT", phase_column = "PHWT", sample_rate = 2.6, min_pos = [0, 0, 0], max_pos = [1, 1, 1], step_size = [1., 1., 1.], name = None):
         """
         Creates a RegularData object from an MTZ file.
         
@@ -123,8 +123,9 @@ cmd.load_brick({self.name}, "{self.name}")
         Returns:
             RegularData: The created RegularData object.
         """
+        from ..util.io import grid_from_mtz
+        return grid_from_mtz(path, factor_column, phase_column, sample_rate, min_pos, max_pos, step_size, name)
 
-        import gemmi
 
 
     def from_xyz(path):

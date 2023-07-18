@@ -22,7 +22,7 @@ class IsoVolume(Volume):
         """
         if clims is None:
             # for some reason it seems that isolines are only shown on 16th of 5*std + mean
-            self.clims = np.linspace(0, np.std(grid_data.values) * 5 + np.mean(grid_data.values), 17)
+            self.clims = np.linspace(-np.std(grid_data.values) * 5 + np.mean(grid_data.values), np.std(grid_data.values) * 5 + np.mean(grid_data.values), 33)
         else:
             self.clims = clims
         

@@ -29,7 +29,7 @@ class Volume(Displayable):
         
         if clims is None:
             
-            self.clims = np.linspace(0, np.std(grid_data.values) * 5 + np.mean(grid_data.values), 17)
+            self.clims = np.linspace(-np.std(grid_data.values) * 5 + np.mean(grid_data.values), np.std(grid_data.values) * 5 + np.mean(grid_data.values), 33)
             # getting number of values within each bin
             self.clims = np.vstack([self.clims[:-1], self.clims[1:]]).T.flatten()
             self.clims = np.hstack([self.clims, self.clims[-1]])
