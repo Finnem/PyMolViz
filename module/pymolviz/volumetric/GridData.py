@@ -58,6 +58,14 @@ class GridData(Displayable):
         super().__init__(name = name)
           
 
+    def get_positions(self):
+        x = np.linspace(self.origin[0], self.origin[0] + self.step_sizes[0] * self.step_counts[0], self.step_counts[0])
+        y = np.linspace(self.origin[1], self.origin[1] + self.step_sizes[1] * self.step_counts[1], self.step_counts[1])
+        z = np.linspace(self.origin[2], self.origin[2] + self.step_sizes[2] * self.step_counts[2], self.step_counts[2])
+        xx, yy, zz = np.meshgrid(x, y, z)
+        positions = np.array([yy.flatten(), xx.flatten(), zz.flatten()]).T
+        return positions
+
     def to_point_cloud(self, filter = None, *args, **kwargs):
         """
         Returns a point cloud representation of the data, filtered by the passed function.
@@ -70,13 +78,7 @@ class GridData(Displayable):
         """
 
         # create grid
-        x = np.linspace(self.origin[0], self.origin[0] + self.step_sizes[0] * self.step_counts[0], self.step_counts[0])
-        y = np.linspace(self.origin[1], self.origin[1] + self.step_sizes[1] * self.step_counts[1], self.step_counts[1])
-        z = np.linspace(self.origin[2], self.origin[2] + self.step_sizes[2] * self.step_counts[2], self.step_counts[2])
-        xx, yy, zz = np.meshgrid(x, y, z)
-        positions = np.array([yy.flatten(), xx.flatten(), zz.flatten()]).T
-        position_indices = np.lexsort((positions[:, 2], positions[:, 1], positions[:, 0]))
-        positions = positions[position_indices]
+        positions = self.get_positions()
         # filter
         if filter is None:
             filtered_positions = positions

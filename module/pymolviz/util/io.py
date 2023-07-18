@@ -25,5 +25,8 @@ def grid_from_xyz(path, name = None, in_bohr = True):
             coords /= 1.89
 
         return GridData(values, coords, name = name)
-        
+
+
+def grids_from_mtz(path):
+        pass
             
