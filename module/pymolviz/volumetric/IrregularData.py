@@ -2,7 +2,7 @@ import numpy as np
 from ..util.math import tanh_distance_weighting
 from scipy.spatial import KDTree
 import logging
-from .RegularData import RegularData
+from .GridData import GridData
 from ..meshes.Points import Points
 
 class IrregularData():

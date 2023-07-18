@@ -2,3 +2,5 @@ test/old
 __pycache__/
 .ipynb_checkpoints/
 *.identifier
+*td.xyz
+*tp.xyz

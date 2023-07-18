@@ -1,5 +1,5 @@
 from .IrregularData import IrregularData
-from .RegularData import RegularData
+from .GridData import GridData
 from .Volume import Volume
 from .IsoVolume import IsoVolume
 from .IsoMesh import IsoMesh

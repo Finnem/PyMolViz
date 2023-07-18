@@ -1,18 +1,18 @@
 import numpy as np
 import logging
-from .RegularData import RegularData
+from .GridData import GridData
 from ..Displayable import Displayable
 from ..ColorMap import ColorMap
 from ..util.colors import _convert_string_color
 
 class Volume(Displayable):
-    def __init__(self, regular_data : RegularData, name = None, colormap = "RdYlBu_r", alphas = None, clims = None, selection = None, carve = None, state = 1):
+    def __init__(self, grid_data : GridData, name = None, colormap = "RdYlBu_r", alphas = None, clims = None, selection = None, carve = None, state = 1):
         """ 
         Computes and collects pymol commands to load in regular data and display it volumetrically.
 
         Args:
-            regular_data (pymolviz.RegularData): Regular data for which to show the volume.
-            name (str, optional): The name of the volume as displayed in PyMOL. Defaults to {regular_data.name}_{value_label}_Volume_{i}.
+            grid_data (pymolviz.RegularData): Regular data for which to show the volume.
+            name (str, optional): The name of the volume as displayed in PyMOL. Defaults to {grid_data.name}_{value_label}_Volume_{i}.
             colormap (str, optional): The name of the colormap to use. Defaults to coolwarm.
             alphas (np.array, optional): The alphas to use. Defaults to [0.03, 0.005, 0.1].
             clims (np.array, optional): The clims to use. Defaults to [mean - 2 stddev, mean, mean + 2 stddev].
@@ -20,7 +20,7 @@ class Volume(Displayable):
             carve (float, optional): The carve to use. Defaults to None.
         """
 
-        self.regular_data = regular_data
+        self.grid_data = grid_data
         self.selection = selection
         self.carve = carve
         self.state = state
@@ -28,25 +28,33 @@ class Volume(Displayable):
         super().__init__(name = name)
         
         if clims is None:
-            values = self.regular_data.values
-            std = np.std(values)
-            mean = np.mean(values)
-            self.clims = [mean - 2 * std, mean, mean + 2 * std]
+            
+            self.clims = np.linspace(0, np.std(grid_data.values) * 5 + np.mean(grid_data.values), 17)
+            # getting number of values within each bin
+            self.clims = np.vstack([self.clims[:-1], self.clims[1:]]).T.flatten()
+            self.clims = np.hstack([self.clims, self.clims[-1]])
         else:
             self.clims = clims
 
         if not issubclass(type(colormap), ColorMap):
-            colormap = ColorMap(self.regular_data.values, colormap)
+            colormap = ColorMap(self.grid_data.values, colormap)
         self.colormap = colormap
 
         if alphas is None:
-            self.alphas = [0.03, 0.005, 0.1]
+            used_length = len(self.clims)-(len(self.clims) % 2) # if length is uneven, we forgo the last value for binning
+            bins = np.reshape(self.clims[:used_length], (-1, 2))
+            densities = np.sum((bins[:,0] < self.grid_data.values[:, None]) & (bins[:,1] >= self.grid_data.values[:, None]), axis = 0)
+            densities = densities / np.sum(densities)
+            densities = np.clip(densities, np.min(densities), 0.9)
+            self.alphas = np.vstack([(1 - densities[:used_length]) * 0.03, np.full(len(densities[:used_length]), 0.005)]).T.flatten()
+            if len(self.clims) % 2 == 1:
+                self.alphas = np.hstack([self.alphas, (1 - densities[-1]) * 0.03])
         else:
             self.alphas = alphas
         if len(self.alphas) != len(self.clims):
             raise Exception("Alphas and clims must have the same length.")
         
-        self.dependencies.extend([self.regular_data])
+        self.dependencies.extend([self.grid_data])
 
         
 
@@ -73,7 +81,7 @@ class Volume(Displayable):
             string_list.append(f"""    {self.clims[i]}, {",".join([str(v) for v in self.colormap.get_color(c)[:3]])}, {self.alphas[i]},\\""")
         string_list.append("])")
         string_list.append(f"""
-cmd.volume("{self.name}", "{self.regular_data.name}", "{self.name}_volume_color_ramp", {" , ".join(optional_arguments)}{"," if len(optional_arguments) > 0 else ""})
+cmd.volume("{self.name}", "{self.grid_data.name}", "{self.name}_volume_color_ramp", {" , ".join(optional_arguments)}{"," if len(optional_arguments) > 0 else ""})
         """)
 
         result = "\n".join(string_list)

@@ -117,7 +117,7 @@ class ColorMap(Displayable):
         Returns:
             str: The script.
         """
-        from .volumetric.RegularData import RegularData
+        from .volumetric.GridData import RegularData
         dummy_data = RegularData(np.zeros(8), name="cbar_dummy", step_sizes=(1e-8,1e-8,1e-8), step_counts=(2,2,2)) 
         
         sample_points = np.linspace(self.clims[0], self.clims[-1], 100)

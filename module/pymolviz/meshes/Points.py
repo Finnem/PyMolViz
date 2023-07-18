@@ -17,11 +17,11 @@ class Points(Displayable):
         state (int): Optional. Defaults to 1. The state of the object.
         transparency (float): Optional. Defaults to 0. The transparency value of the object.
         colormap: Optional. Defaults to "RdYlBu_r". Name of a colormap or a matplotlib colormap or a pymolviz.ColorMap object. Used to map values to colors.
-        vertex_as (str): Optional. Defaults to "Spheres". How to display the points. Can be "Spheres" or "Dots" or None. If None, the points are not displayed.
-        radius (float): Optional. Defaults to .3. Only relevant if vertex_as is "Spheres". The radius of the spheres.
+        render_as (str): Optional. Defaults to "Spheres". How to display the points. Can be "Spheres" or "Dots" or None. If None, the points are not displayed.
+        radius (float): Optional. Defaults to .3. Only relevant if render_as is "Spheres". The radius of the spheres.
     """
 
-    def __init__(self, vertices, color = "red", name = None, state = 1, transparency = 0, colormap = "RdYlBu_r", vertex_as = "Spheres", radius = .3, **kwargs) -> None:
+    def __init__(self, vertices, color = "red", name = None, state = 1, transparency = 0, colormap = "RdYlBu_r", render_as = "Spheres", radius = .3, **kwargs) -> None:
         super().__init__(name)
         if type(colormap) != ColorMap:
             self.colormap = ColorMap(color, colormap, **kwargs)
@@ -33,7 +33,7 @@ class Points(Displayable):
             self.color = color.flatten()
 
         self.vertices = np.array(vertices, dtype=float).reshape(-1, 3)
-        self.vertex_as = vertex_as
+        self.render_as = render_as
         self.radius = radius
         self.state = state
         self.transparency = transparency
@@ -51,7 +51,7 @@ class Points(Displayable):
         cgo_list = []
         
         
-        if self.vertex_as == "Spheres":
+        if self.render_as == "Spheres":
             #vertices
             point_meshes = np.hstack([
                 np.full(cgo_points.shape[0], "COLOR")[:,None], cgo_colors, \
@@ -60,7 +60,7 @@ class Points(Displayable):
                 ]).flatten()
             cgo_list.extend(point_meshes)
 
-        elif self.vertex_as == "Dots":
+        elif self.render_as == "Dots":
             cgo_list.extend(["BEGIN", "POINTS"])
             #vertices
             points = np.hstack([
