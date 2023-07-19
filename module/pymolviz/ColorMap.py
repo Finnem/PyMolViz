@@ -42,7 +42,7 @@ class ColorMap(Displayable):
         if ((values_are_single_color is False) or (values_are_single_color is None)) and (self.colormap is None):
             colors = []
             try:
-                if (np.issubdtype(type(values), np.str_)) or (len(values[0]) in [3, 4]):
+                if (np.issubdtype(type(values[0]), np.str_)) or (len(values[0]) in [3, 4]):
                     for i, color in enumerate(values):
                         # lists of colors
                             color, alpha = self._value2color(color)
@@ -117,8 +117,8 @@ class ColorMap(Displayable):
         Returns:
             str: The script.
         """
-        from .volumetric.GridData import RegularData
-        dummy_data = RegularData(np.zeros(8), name="cbar_dummy", step_sizes=(1e-8,1e-8,1e-8), step_counts=(2,2,2)) 
+        from .volumetric.GridData import GridData
+        dummy_data = GridData(np.zeros(8), name="cbar_dummy", step_sizes=(1e-8,1e-8,1e-8), step_counts=(2,2,2)) 
         
         sample_points = np.linspace(self.clims[0], self.clims[-1], 100)
         colors = self.get_color(sample_points)[:,:3]

@@ -6,4 +6,9 @@ setup(name='pymolviz',
         author='Finn Mier',
         license='MIT',
         packages=['pymolviz'],
+        install_requires=[
+                'numpy',
+                'matplotlib',
+                'scipy',
+        ],
         zip_safe=False)

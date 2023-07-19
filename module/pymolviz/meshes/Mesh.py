@@ -25,7 +25,7 @@ class Mesh(Points):
         self.faces = np.array(faces, dtype=int).reshape(-1, 3) if faces is not None else np.arange(vertices.shape[0]).reshape(-1, 3)
         super().__init__(vertices.reshape(-1, 3), color, name, state, transparency, colormap, **kwargs)
         
-    def to_wireframe(self, **kwargs):
+    def to_wireframe(self, *args, **kwargs):
         """ Converts the mesh to a wireframe.
         
         Returns:
@@ -41,7 +41,7 @@ class Mesh(Points):
         for face in self.faces:
             vertex_indices.extend([face[0], face[1], face[1], face[2], face[2], face[0]])
         
-        return Lines(self.vertices[vertex_indices], self.color[vertex_indices], **kwargs)
+        return Lines(self.vertices[vertex_indices], self.color[vertex_indices], *args, **kwargs)
 
 
     def _create_CGO_list(self) -> str:

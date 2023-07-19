@@ -25,7 +25,7 @@ class Arrows(Lines):
                 if (len(color) == (len(lines.reshape(-1, 3)) / 2)):
                     color = np.repeat(color, 10, axis = 0)
                 elif (len(color) == len(lines.reshape(-1, 3))):
-                    color = np.repeat(color, 5, axis = 0)
+                    color = np.hstack([color[::2, None], np.repeat(color[1::2], 9, axis = 0).reshape(-1, 9)]).flatten()
         except TypeError:
             pass
         original_lines = lines.reshape(-1, 6)

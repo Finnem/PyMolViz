@@ -28,7 +28,7 @@ class GridData(Displayable):
             else:
                 sorted_indices = np.arange(len(values))
             if origin is None:
-                origin = np.array([0, 0, 0])
+                self.origin = np.array([0, 0, 0])
         else:
             positions = np.array(positions)
             sorted_indices = np.lexsort((positions[:, 2], positions[:, 1], positions[:, 0]))
