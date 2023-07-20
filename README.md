@@ -12,12 +12,10 @@ Surprisingly PyMOL is not necessarily required to run PyMOLViz, only to display 
 
 # Installation
 
-In order to install the module you should navigate to the `module` folder and type:
+In order to install the module you can type:
 ```bash
-pip install -e .
+pip install pymolviz
 ```
-This should install the module in your current environment and automatically load any updates to the module.
-
 
 
 

@@ -11,4 +11,5 @@ setup(name='pymolviz',
                 'matplotlib',
                 'scipy',
         ],
+        long_description='See https://github.com/Finnem/PyMolViz for a detailed documentation.',
         zip_safe=False)
