@@ -1,7 +1,7 @@
 from setuptools import setup
 setup(name='pymolviz',
-        version='0.1',
-        description='Library to create PyMOL scripts which create CGO to display arbitrary graphics in PyMOL.',
+        version='1.0',
+        description='Library to facilitate creation of PyMOL Vizualizations.',
         url='',
         author='Finn Mier',
         license='MIT',

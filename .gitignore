@@ -4,3 +4,4 @@ __pycache__/
 *.identifier
 test/*/out/*
 pymolviz.egg-info/
+module/dist
