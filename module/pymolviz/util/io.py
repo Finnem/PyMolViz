@@ -1,7 +1,7 @@
 import numpy as np
 
 
-def grid_from_xyz(path, name = None, in_bohr = True):
+def grid_from_xyz(path, in_bohr = True, *args, **kwargs):
     """
     Reads in a grid from an xyz file as output by turbomole.
     Assumes lines starting with # are comments and that the value is in the last column.
@@ -24,10 +24,10 @@ def grid_from_xyz(path, name = None, in_bohr = True):
         if in_bohr:
             coords /= 1.89
 
-        return GridData(values, coords, name = name)
+        return GridData(values, coords, *args, **kwargs)
 
 
-def grid_from_mtz(path, factor_column = "FWT", phase_column = "PHWT", sample_rate = 2.6, min_pos = [0, 0, 0], max_pos = [1, 1, 1], step_size = [1., 1., 1.], name = None):
+def grid_from_mtz(path, factor_column = "FWT", phase_column = "PHWT", sample_rate = 2.6, min_pos = [0, 0, 0], max_pos = [1, 1, 1], step_size = [1., 1., 1.], *args, **kwargs):
     import gemmi
     from ..volumetric.GridData import GridData
     mtz = gemmi.read_mtz_file(path)
@@ -39,6 +39,5 @@ def grid_from_mtz(path, factor_column = "FWT", phase_column = "PHWT", sample_rat
     values = np.zeros(np.ceil((max_pos - min_pos) / step_size).astype(int), dtype = np.float32)
     map.interpolate_values(values, transform)
     positions = (np.array(m.tolist()).reshape(3,3) @ np.indices(values.shape).reshape(3,-1)).T + np.array(min_pos)
-    print(positions.shape, values.shape)
-    return GridData(values.flatten(), positions, name = name)
+    return GridData(values.flatten(), positions, *args, **kwargs)
             

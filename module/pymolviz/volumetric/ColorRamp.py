@@ -16,12 +16,16 @@ class ColorRamp(Displayable):
         """
 
         self.data = data
+        if not issubclass(type(colormap), ColorMap):
+            colormap = ColorMap(self.data.values, colormap)
+        else:
+            if clims is None:
+                clims = colormap.clims
+
         if clims is None:
             self.clims = [np.min(self.data.values), np.max(self.data.values)]
         else:
             self.clims = clims
-        if not issubclass(type(colormap), ColorMap):
-            colormap = ColorMap(self.data.values, colormap)
         self.colormap = colormap
 
         super().__init__(name = name, dependencies = [self.data])

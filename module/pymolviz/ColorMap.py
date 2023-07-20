@@ -118,7 +118,7 @@ class ColorMap(Displayable):
             str: The script.
         """
         from .volumetric.GridData import GridData
-        dummy_data = GridData(np.zeros(8), name="cbar_dummy", step_sizes=(1e-8,1e-8,1e-8), step_counts=(2,2,2)) 
+        dummy_data = GridData(np.zeros(8), name="cbar_dummy", step_sizes=(1e-8,1e-8,1e-8), step_counts=(1,1,1)) 
         
         sample_points = np.linspace(self.clims[0], self.clims[-1], 100)
         colors = self.get_color(sample_points)[:,:3]

@@ -44,7 +44,7 @@ class GridData(Displayable):
                 self.step_counts = np.zeros(3)
                 for i in range(3):
                     length = np.max(positions[:, i]) - np.min(positions[:, i])
-                    self.step_counts[i] = np.round(length / self.step_sizes[i]) + 1
+                    self.step_counts[i] = np.round(length / self.step_sizes[i])
             # determine origin
             if self.origin is None:
                 self.origin = np.min(positions, axis=0)
@@ -59,14 +59,14 @@ class GridData(Displayable):
           
 
     def get_positions(self):
-        x = np.linspace(self.origin[0], self.origin[0] + self.step_sizes[0] * self.step_counts[0], self.step_counts[0])
-        y = np.linspace(self.origin[1], self.origin[1] + self.step_sizes[1] * self.step_counts[1], self.step_counts[1])
-        z = np.linspace(self.origin[2], self.origin[2] + self.step_sizes[2] * self.step_counts[2], self.step_counts[2])
+        x = np.linspace(self.origin[0], self.origin[0] + self.step_sizes[0] * self.step_counts[0], self.step_counts[0] + 1)
+        y = np.linspace(self.origin[1], self.origin[1] + self.step_sizes[1] * self.step_counts[1], self.step_counts[1] + 1)
+        z = np.linspace(self.origin[2], self.origin[2] + self.step_sizes[2] * self.step_counts[2], self.step_counts[2] + 1)
         xx, yy, zz = np.meshgrid(x, y, z)
         positions = np.array([yy.flatten(), xx.flatten(), zz.flatten()]).T
         return positions
 
-    def to_point_cloud(self, filter = None, *args, **kwargs):
+    def to_points(self, filter = None, *args, **kwargs):
         """
         Returns a point cloud representation of the data, filtered by the passed function.
 
@@ -91,7 +91,7 @@ class GridData(Displayable):
     
 
     def _script_string(self):
-        values = self.values.reshape(self.step_counts.astype(int))
+        values = self.values.reshape(self.step_counts.astype(int) + 1)
         result = f"""
 {self.name}_data = np.array({np.array2string(values, threshold=1e15, separator=",")})
 {self.name} = Brick.from_numpy({self.name}_data, {np.array2string(self.step_sizes, separator = ",")}, origin={np.array2string(self.origin, separator=",")})
@@ -113,7 +113,7 @@ cmd.load_brick({self.name}, "{self.name}")
         import gemmi
 
 
-    def from_mtz(path, factor_column = "FWT", phase_column = "PHWT", sample_rate = 2.6, min_pos = [0, 0, 0], max_pos = [1, 1, 1], step_size = [1., 1., 1.], name = None):
+    def from_mtz(path, factor_column = "FWT", phase_column = "PHWT", sample_rate = 2.6, min_pos = [0, 0, 0], max_pos = [1, 1, 1], step_sizes = [1., 1., 1.], *args, **kwargs):
         """
         Creates a RegularData object from an MTZ file.
         
@@ -124,10 +124,10 @@ cmd.load_brick({self.name}, "{self.name}")
             RegularData: The created RegularData object.
         """
         from ..util.io import grid_from_mtz
-        return grid_from_mtz(path, factor_column, phase_column, sample_rate, min_pos, max_pos, step_size, name)
+        return grid_from_mtz(path, factor_column, phase_column, sample_rate, min_pos, max_pos, step_sizes, *args, **kwargs)
 
 
 
-    def from_xyz(path):
+    def from_xyz(path, in_bohr = True, *args, **kwargs):
         from ..util.io import grid_from_xyz
-        return grid_from_xyz(path)
+        return grid_from_xyz(path, in_bohr, *args, **kwargs)

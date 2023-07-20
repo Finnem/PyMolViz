@@ -25,9 +25,9 @@ cmd.color("{self.name}_color", "{self.name}")
 
         
         result = f"""
-cmd.isomesh("{self.name}", "{self.regular_data.name}", {self.level}, {" , ".join(optional_arguments)}{"," if len(optional_arguments) > 0 else ""})
+cmd.isomesh("{self.name}", "{self.grid_data.name}", {self.level}, {" , ".join(optional_arguments)}{"," if len(optional_arguments) > 0 else ""})
 {color_string}
-cmd.set("transparency", {self.transparancy}, "{self.name}")
+cmd.set("transparency", {self.transparency}, "{self.name}")
         """
         
         return result

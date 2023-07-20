@@ -50,7 +50,7 @@ class Volume(Displayable):
             if len(self.clims) % 2 == 1:
                 self.alphas = np.hstack([self.alphas, (1 - densities[-1]) * 0.03])
         else:
-            self.alphas = alphas
+            self.alphas = np.array(alphas)
         if len(self.alphas) != len(self.clims):
             raise Exception("Alphas and clims must have the same length.")
         

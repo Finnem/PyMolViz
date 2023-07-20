@@ -7,7 +7,7 @@ from ..util.colors import _convert_string_color
 
 
 class IsoSurface(Displayable):
-    def __init__(self, grid_data : GridData, level: float, name = None, color = None, transparancy = 0, selection = None, carve = None, side = 1):
+    def __init__(self, grid_data : GridData, level: float, name = None, color = None, transparency = 0, selection = None, carve = None, side = 1):
         """ 
         Computes and collects pymol commands to load in regular data and display an iso mesh at the given level.
         Note that, since this is based on volumetric data it is different from the pmv.Mesh class.
@@ -18,7 +18,7 @@ class IsoSurface(Displayable):
             name (str, optional): The name of the mesh as displayed in PyMOL. Defaults to {grid_data.name}_{value_label}_IsoMesh_{i}.
             value_label (str, optional): The name of the value to use from the regular data. Defaults to None. Must be passed if grid_data has multiple values.
             color (str or rgb or pymolviz.ColorRamp, optional): The name of the color to use or rgb values or a pymolviz ColorRamp which will be used to color based on position. Defaults to white. 
-            transparancy (float): Transparancy of the surface, defaults to 1.
+            transparency (float): Transparancy of the surface, defaults to 1.
             selection (str, optional): The selection to use. Defaults to None.
             carve (float, optional): The carve to use. Defaults to None.
             side (int, optional): The side of the isosurface to show. Defaults to 1 (outside/gradient facing).
@@ -26,7 +26,7 @@ class IsoSurface(Displayable):
         """
         
         self.side = side
-        self.transparancy = transparancy
+        self.transparency = transparency
         self.grid_data = grid_data
 
         self.level = level
@@ -69,7 +69,7 @@ cmd.color("{self.name}_color", "{self.name}")
         result = f"""
 cmd.isosurface("{self.name}", "{self.grid_data.name}", {self.level}, {" , ".join(optional_arguments)}{"," if len(optional_arguments) > 0 else ""} side = {self.side})
 {color_string}
-cmd.set("transparency", {self.transparancy}, "{self.name}")
+cmd.set("transparency", {self.transparency}, "{self.name}")
         """
         
         return result
