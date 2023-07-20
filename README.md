@@ -208,7 +208,7 @@ cmap = pmv.ColorMap(list(zip(values, color_values)), name ="colormap")
 cmap.write("colormap.py")
 ```
 ![](imgs/16.png)
-![[PyMOLViz - 230719-32.png]]
+
 
 ## Inputs
 In the following every possible _color_ input to the ColorMap class is discussed.
@@ -221,27 +221,27 @@ cmap = pmv.ColorMap("red")
 plot_colors(cmap, np.random.rand(10) * 10)
 ```
 ![](imgs/17.png)
-![[PyMOLViz - 230719-16.png]]
+
 ![](imgs/18.png)
-![[PyMOLViz - 230719-15.png]]
+
 * **An elements name (which then gets converted based on pymols element colors)**
 ```python
 cmap = pmv.ColorMap("I")
 plot_colors(cmap, np.random.rand(10) * 10)
 ```
 ![](imgs/19.png)
-![[PyMOLViz - 230719-17.png]]
+
 ![](imgs/20.png)
-![[PyMOLViz - 230719-18.png]]
+
 * **An array-like with 3 or 4 entries as rgb (a), either indicating values as float between 0 and 1 or as integer between 0 and 255.**
 ```python
 cmap = pmv.ColorMap([0.1, 0.9, 0.5])
 plot_colors(cmap, np.random.rand(10) * 10)
 ```
 ![](imgs/21.png)
-![[PyMOLViz - 230719-19.png]]
+
 ![](imgs/22.png)
-![[PyMOLViz - 230719-20.png]]
+
 
 
 **Multiple Color Input**
@@ -254,18 +254,18 @@ cmap = pmv.ColorMap(values, colormap="viridis")
 plot_colors(cmap, values)
 ```
 ![](imgs/23.png)
-![[PyMOLViz - 230719-25.png]]
+
 ![](imgs/24.png)
-![[PyMOLViz - 230719-26.png]]
+
 * **An array-like containing single colors (see above)**
 ```python
 cmap = pmv.ColorMap(["red", "I", [0.3, 0.4, 0.7], [10, 250, 100]])
 plot_colors(cmap, range(4))
 ```
 ![](imgs/25.png)
-![[PyMOLViz - 230719-23.png]]
+
 ![](imgs/26.png)
-![[PyMOLViz - 230719-24.png]]
+
 
 **Linear Segmented Color Input**
 If you want to assign certain colors to certain values, you can pass a list of tuples to the ColorMap, with each tuple (value, color) containing the value and the corresponding single color (see above).
@@ -279,9 +279,9 @@ cmap = pmv.ColorMap(list(zip(values, colors)))
 plot_colors(cmap, values)
 ```
 ![](imgs/27.png)
-![[PyMOLViz - 230719-27.png]]
+
 ![](imgs/28.png)
-![[PyMOLViz - 230719-28.png]]
+
 * **An array-like containing tupes of (float-like, color-indicator) with color-indicator being a float between 0 and 1. The colors are then determined by passing the color-indicator to the matplotlib colormap corresponding to the passed *colormap* argument (Defaults to *"RdYlBu_r"*).**
 ```python
 values = [-2, 0, 0, 3]
@@ -290,9 +290,9 @@ cmap = pmv.ColorMap(list(zip(values, color_values)))
 plot_colors(cmap, values)
 ```
 ![](imgs/29.png)
-![[PyMOLViz - 230719-29.png]]
+
 ![](imgs/30.png)
-![[PyMOLViz - 230719-30.png]]
+
 
 
 # Meshes and Primitives
@@ -320,7 +320,7 @@ m = pmv.Mesh(points, faces = [[0, 1, 2]], normals = np.zeros_like(points), color
 pmv.Script([m, p]).write("out/test_mesh.py")
 ```
 ![](imgs/31.png)
-![[PyMOLViz - 230719-33.png]]
+
 
 We can also load larger meshes into PyMOL, to display arbitrary objects:
 ```python
@@ -329,7 +329,7 @@ m2 = pmv.Mesh(bunny_points, color = "beige", name = "bunny")
 m2.write("out/bunny.py")
 ```
 ![](imgs/32.png)
-![[PyMOLViz - 230719-35.png]]
+
 
 ### Wireframes
 Any mesh can be turned into a wireframe via the _to_wireframe_ method. Note that this is different from an IsoMesh that is created using volumetric data, which is explained further below.
@@ -340,7 +340,7 @@ l.colormap = pmv.ColorMap("black")
 l.write("out/bunny_wireframe.py")
 ```
 ![](imgs/33.png)
-![[PyMOLViz - 230719-36.png]]
+
 
 ## Mesh Primitives
 PyMOLViz currently also provides the _Plane_ and _Sphere_ classes, which allow to instantiate plane and sphere meshes more easily.
@@ -362,7 +362,7 @@ s = pmv.Script([plane, sphere])
 s.write("test_primitives.py")
 ```
 ![](imgs/34.png)
-![[PyMOLViz - 230719-37.png]]
+
 
 
 # Collections, Groups and Scripts
@@ -379,7 +379,7 @@ collection = pmv.CGOCollection([points, lines], name = "collection")
 collection.write("basic_collection.py")
 ```
 ![](imgs/35.png)
-![[PyMOLViz - 230719-38.png]]
+
 
 ## Groups
 Groups are used to gather multiple _Displayables_. Other than with _CGOCollections_, any other _Displayable_ **that is not a _Group_** can be gathered. They are part of PyMOLs GUI. They are themselves also _Displayables_ and therefore a _name_ and a _write_ function. Any _Displayable_ that is part of a _Group_ will also be loaded into PyMOL itself. We made use of the _Group_ class when implementing the coordinate axes.
@@ -392,7 +392,7 @@ g = pmv.Group([a3, labels], "coordinate_axes")
 g.write("out/coordinate_axes.py")
 ```
 ![](imgs/36.png)
-![[PyMOLViz - 230719-39.png]]
+
 
 ## Scripts
 _Scripts_ lie at the root of the implementation of PyMOLViz as any _Displayable_ is converted to a _Script_ when its _write_ function is called. The _Script_ class is used to actually convert its _Displayables_ into runnable python scripts. It can be used to gather different _Displayables_ which should be loaded with a single script. **_Scripts_ themselves are not _Displayables_ but rather represent a collection of _Displayables_ that should be converted into a single python script.**
@@ -405,7 +405,7 @@ s = pmv.Script([g, m2])
 s.write("out/bunny_with_coordinates.py")
 ```
 ![](imgs/37.png)
-![[PyMOLViz - 230719-40.png]]
+
 
 
 # Volumetric Displays
@@ -432,7 +432,7 @@ grid_data = pmv.GridData(values, grid, name = "basic_grid_data")
 grid_data.write("basic_grid_data.py")
 ```
 ![](imgs/38.png)
-![[PyMOLViz - 230720.png]]
+
 As no display type has been added yet, PyMOL will only show the bounding box of the loaded 3d-grid. For better comprehensiveness, the coordinate axes from the section before was added.
 
 If you like to see the points of the _GridData_, you can convert them into a _Points_ class using the _to_points_ method.
@@ -441,7 +441,7 @@ points = grid_data.to_points(name = "grid_data_points", radius = 0.1)
 points.write("out/basic_grid_data_points.py")
 ```
 ![](imgs/39.png)
-![[PyMOLViz - 230720-4.png]]
+
 
 ## Reading external volumetric data
 PyMOLViz currently supports reading xyz files containing volumetric data created by turbomole, as well as mtz files using [_gemmi_](https://gemmi.readthedocs.io/en/latest/). With time and demand additional formats will follow.
@@ -454,7 +454,7 @@ points = td_data.to_points(name = "td_points", radius = 0.1, render_as="Dots")
 pmv.Script([td_data, points]).write("out/td_points.py")
 ```
 ![](imgs/40.png)
-![[PyMOLViz - 230720-5.png]]
+
 
 The _from_xyz_ function has the argument _in_bohr_ which defaults to True. This signifies that the data from the xyz file is in Bohr (as is the default for turbomole outputs), but we want to see it in Angström. If you want to leave the data in its original form you need to pass `in_bohr = False`. 
 
@@ -479,7 +479,7 @@ mtz_data = pmv.GridData.from_mtz('../data/4de3_phases.mtz', min_pos = min_pos, m
 mtz_data.write("out/mtz_4de3.py")
 ```
 ![](imgs/41.png)
-![[PyMOLViz - 230720-6.png]]
+
 
 ## Volumes
 Once the data is available there are two major types of displaying them. Via transparent _Volumes_ or via _IsoSurfaces_. First we will show how to use _Volumes_. _Volumes_ are _Displayables_ and therefore have a _name_ and can be written directly as a script via the _write_ method.
@@ -489,13 +489,13 @@ v1 = pmv.Volume(grid_data, name = "grid_data_volume")
 v1.write("out/basic_volume.py")
 ```
 ![](imgs/42.png)
-![[PyMOLViz - 230720-8.png]]
+
 With the volume panel looking like:
 ![](imgs/43.png)
-![[PyMOLViz - 230720-13.png]]
+
 To refine the coloring you can access the volume color map panel via the color of the volumes:
 ![](imgs/44.png)
-![[PyMOLViz - 230720-17.png]]
+
 
 
 
@@ -510,12 +510,12 @@ v2 = pmv.Volume(grid_data, name = "distinct_volume", colormap = cmap)
 pmv.Script([v2, cmap]).write("out/distinct_volume.py")
 ```
 ![](imgs/45.png)
-![[PyMOLViz - 230720-9.png]]
+
 ![](imgs/46.png)
-![[PyMOLViz - 230720-10.png]]
+
 With the volume panel looking like:
 ![](imgs/47.png)
-![[PyMOLViz - 230720-14.png]]
+
 
 
 
@@ -530,10 +530,10 @@ v3 = pmv.Volume(grid_data, name = "less_colors_volume", clims = clims)
 v3.write("out/less_colors_volume.py")
 ```
 ![](imgs/48.png)
-![[PyMOLViz - 230720-11.png]]
+
 With the volume panel looking like:
 ![](imgs/49.png)
-![[PyMOLViz - 230720-15.png]]
+
 
 This doesn't look perfect. The way that the alpha values are determined by default, it is assumed that the first clim is at a high alpha value and the second goes down to a low alpha value. Thus, the follow would be more correct:
 ```python
@@ -550,10 +550,10 @@ v4 = pmv.Volume(grid_data, name = "less_colors_volume2", clims = clims)
 v4.write("out/less_colors_volume2.py")
 ```
 ![](imgs/50.png)
-![[PyMOLViz - 230720-12.png]]
+
 With the volume panel looking like:
 ![](imgs/51.png)
-![[PyMOLViz - 230720-16.png]]
+
 
 Instead we can also pass the alpha values ourselves:
 ```python
@@ -567,10 +567,10 @@ v3 = pmv.Volume(grid_data, name = "less_colors_volume3", clims = clims, alphas =
 v3.write("out/less_colors_volume3.py")
 ```
 ![](imgs/52.png)
-![[PyMOLViz - 230720-18.png]]
+
 With the volume panel looking like:
 ![](imgs/53.png)
-![[PyMOLViz - 230720-19.png]]
+
 
 By default the clims are chosen as 33 even spaced values between mean plus/minus 5 standard deviations. The alpha values are chosen based on the point densities between the points in that region.
 
@@ -582,7 +582,7 @@ v4 = pmv.Volume(data, name = "td_volume", colormap = cmap)
 v4.write("out/td_volume.py")
 ```
 ![](imgs/54.png)
-![[PyMOLViz - 230720-20.png]]
+
 ### IsoVolumes
 Sometimes it is hard to see what is going on using Volumes (at least in their default setting). In order to simplify generating Volumes showing iso-surfaces PyMOLViz has the class _IsoVolume_. It still makes use of the PyMOLs volume functionality but creates "coloring peaks" at the given values.
 
@@ -592,10 +592,10 @@ v5 = pmv.IsoVolume(data, name = "td_isovolume", colormap = cmap)
 v5.write("out/td_isovolume.py")
 ```
 ![](imgs/55.png)
-![[PyMOLViz - 230720-21.png]]
+
 With the volume panel looking like:
 ![](imgs/56.png)
-![[PyMOLViz - 230720-22.png]]
+
 
 
 Displaying the 2mFo-dFc map from before we get:
@@ -612,10 +612,10 @@ v6 = pmv.IsoVolume(data, name = "mtz_4de3_volume", colormap = cmap)
 v6.write("out/mtz_4de3_isovolume.py")
 ```
 ![](imgs/57.png)
-![[PyMOLViz - 230720-24.png]]
+
 Zooming in, we can see some detail, but it is still hard to make out, due to the everything beeing quite dense:
 ![](imgs/58.png)
-![[PyMOLViz - 230720-25.png]]
+
 
 ### Carve
 In order to limit where the volume is displayed, we can pass a name of a PyMOL object (that should exist at the time we load the script), and a radius around that object to display the volume. The name is passed via the keword _selection_ and the carve radius via the keyword _carve_.
@@ -625,9 +625,9 @@ v7.alphas[v6.alphas > 0] = 1
 v7.write("out/mtz_4de3_isovolume_carved.py")
 ```
 ![](imgs/59.png)
-![[PyMOLViz - 230720-26.png]]
+
 ![](imgs/60.png)
-![[PyMOLViz - 230720-28.png]]
+
 
 To show the volume within 2 Angström around the selection at the time the script is loaded we can use the following:
 ```python
@@ -638,12 +638,12 @@ v8.alphas[v8.alphas == 0] = 0.05
 v8.write("out/mtz_4de3_isovolume_carved_sele.py")
 ```
 ![](imgs/61.png)
-![[PyMOLViz - 230720-30.png]]
+
 ```python
 cmap.get_figure(orientation = "horizontal", figsize = (12, 1))
 ```
 ![](imgs/62.png)
-![[PyMOLViz - 230720-31.png]]
+
 
 
 Here we had selected the entire region of the protein when reading in the mtz file and then carved down the display to the selection. A better way to do it would be to restrict the selection of the read in of the mtz file to the region you are interested in.
@@ -673,14 +673,14 @@ v9.alphas[v9.alphas > 0] = 1
 v9.write("out/mtz_4de3_isovolume_small.py")
 ```
 ![](imgs/63.png)
-![[PyMOLViz - 230720-32.png]]
+
 ![](imgs/64.png)
-![[PyMOLViz - 230720-33.png]]
+
 ```python
 cmap.get_figure(orientation = "horizontal", figsize = (12, 1))
 ```
 ![](imgs/65.png)
-![[PyMOLViz - 230720-34.png]]
+
 
 
 ## IsoSurfaces
@@ -706,7 +706,7 @@ labels1 = pmv.Labels(grid, values, name = "basic_labels")
 pmv.Script([s1, labels1]).write("out/basic_surface.py")
 ```
 ![](imgs/66.png)
-![[PyMOLViz - 230720-36.png]]
+
 We can see that the surface is drawn exactly at the level 1.5 given a linear interpolation between grid points.
 
 
@@ -719,7 +719,7 @@ labels2 = pmv.Labels(grid, [f"{v:.3f}" for v in values2], name = "basic_labels2"
 pmv.Script([grid_data2, labels2]).write("out/grid_data2.py")
 ```
 ![](imgs/67.png)
-![[PyMOLViz - 230720-39.png]]
+
 
 In order to color an _IsoSurface_ from another _GridData_, we now need to create a _ColorRamp_ object. _ColorRamps_ assign a color from a _ColorMap_ to every point of a _GridData_ based on its value on that point (similar to what is done with _Points_).
 Thus a _ColorRamp_ takes in a _GridData_ object under the keyword _data_, detailing the grid points and their values as well as a _colormap_ (which again can be a string mapping onto matplotlib colormaps, a matplotlib colormap itself or a PyMOLViz _ColorMap_).
@@ -734,7 +734,7 @@ s2 = pmv.IsoSurface(grid_data, 1.5, name = "colored_surface", color = c_ramp)
 pmv.Script([s2, labels]).write("out/colored_surface.py")
 ```
 ![](imgs/68.png)
-![[PyMOLViz - 230720-40.png]]
+
 
 
 Using the N-methyl acetamide example, we can draw an IsoSurface at a density level of 0.01
@@ -749,7 +749,7 @@ s3 = pmv.IsoSurface(density_data, 0.01, name = "potential_surface", color = c_ra
 s3.write("out/potential_surface.py")
 ```
 ![](imgs/69.png)
-![[PyMOLViz - 230720-41.png]]
+
 
 ## IsoMeshes
 Sometimes _IsoSurfaces_ are unclear and a less obtrusive visualization is preferred. For this, _IsoMeshes_ can be used. _IsoMeshes_ effectively show the result of the Marching Cubes algorithm as a wireframe. They inherit from _IsoSurfaces_ and accept the same arguments, only differing in the way they are displayed.
@@ -759,7 +759,7 @@ m3 = pmv.IsoMesh(density_data, 0.01, name = "potential_mesh", color = c_ramp2)
 m3.write("out/potential_mesh.py")
 ```
 ![](imgs/70.png)
-![[PyMOLViz - 230720-42.png]]
+
 
 This can also be used to show the 2mFo-dFc density:
 ```python
@@ -788,7 +788,7 @@ m4 = pmv.IsoMesh(data, name = "mtz_4de3_mesh", level = 0, selection = "sele", ca
 m4.write("out/mtz_4de3_mesh.py")
 ```
 ![](imgs/71.png)
-![[PyMOLViz - 230720-43.png]]
+
 
 ## Dependencies between Displayables
 For more complex _Displayables_ multiple other _Displayables_ are required to draw them properly. Generally this is handled automatically, e.g. when writing a _Volume_, the corresponding _GridData_ is written as well. If you want to organize these in _Groups_, you need to explicitly add all dependencies to the _Group_.
@@ -797,4 +797,4 @@ g = pmv.Group([density_data, potential_data, c_ramp2, m3], name = "potential_mes
 g.write("out/potential_mesh_group.py")
 ```
 ![](imgs/72.png)
-![[PyMOLViz - 230720-44.png]]
+
