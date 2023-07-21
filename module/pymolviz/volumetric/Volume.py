@@ -81,7 +81,7 @@ class Volume(Displayable):
             string_list.append(f"""    {self.clims[i]}, {",".join([str(v) for v in self.colormap.get_color(c)[:3]])}, {self.alphas[i]},\\""")
         string_list.append("])")
         string_list.append(f"""
-cmd.volume("{self.name}", "{self.grid_data.name}", "{self.name}_volume_color_ramp", {" , ".join(optional_arguments)}{"," if len(optional_arguments) > 0 else ""})
+cmd.volume("{self.name}", "{self.grid_data.name}", "{self.name}_volume_color_ramp", {" , ".join(optional_arguments)}{"," if len(optional_arguments) > 0 else ""} state={self.state})
         """)
 
         result = "\n".join(string_list)

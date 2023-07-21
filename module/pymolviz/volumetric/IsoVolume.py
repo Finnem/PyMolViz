@@ -6,7 +6,7 @@ import pandas as pd
 
 
 class IsoVolume(Volume):
-    def __init__(self, grid_data : GridData, name = None, colormap = "RdYlBu_r", alphas = None, clims = None, selection = None, carve = None, margin = 0.05, state = 0):
+    def __init__(self, grid_data : GridData, name = None, colormap = "RdYlBu_r", alphas = None, clims = None, selection = None, carve = None, margin = 0.05, state = 1):
         """ 
         Computes and collects pymol commands to load in regular data and display it as multiple, transparent, same colored iso-surfaces using PyMOLs volume command.
 
