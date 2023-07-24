@@ -30,7 +30,7 @@ class Points(Displayable):
         if "single" in self.colormap._color_type: # colors were not inferred
             self.color = np.arange(vertices.shape[0]) # color is just the index
         else:
-            self.color = color.flatten()
+            self.color = np.array(color).flatten()
 
         self.vertices = np.array(vertices, dtype=float).reshape(-1, 3)
         self.render_as = render_as

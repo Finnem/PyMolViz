@@ -21,6 +21,8 @@ class GridData(Displayable):
         self.step_counts = step_counts
         self.origin = origin
 
+        values = values.flatten()
+
         # no grid points given: infer grid from parameters
         if positions is None:
             if (self.step_counts is None) or (self.step_sizes is None):
