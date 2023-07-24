@@ -25,12 +25,15 @@ def get_colormap(colormap):
 def _convert_string_color(color):
 		from .colors import get_AA_color, get_element_color
 		from matplotlib import colors
-		if not (c := get_AA_color(color)) is None:
-			color = c
-		elif not (c := get_element_color(color)) is None:
+		c = get_AA_color(color)
+		if not c is None:
 			color = c
 		else:
-			color = colors.to_rgb(color)
+			c = get_element_color(color)
+			if not c is None:
+				color = c
+			else:
+				color = colors.to_rgb(color)
 		return color
 #deprecated
 element_colors_jmol = {"H":	np.array([255,255,255]),

@@ -51,9 +51,11 @@ class GridData(Displayable):
 
 
         # sort values
+        self.step_counts = np.array(self.step_counts, dtype=int)
+        if len(values) != np.product(self.step_counts + 1):
+            raise ValueError(f"Number of values ({len(values)}) does not match number of grid points ({np.product(self.step_counts + 1)}).")
         self.values = values[sorted_indices]
         self.step_sizes = np.array(self.step_sizes)
-        self.step_counts = np.array(self.step_counts, dtype=int)
 
         super().__init__(name = name)
           

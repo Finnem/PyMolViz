@@ -5,6 +5,7 @@ Despite its age, PyMOL is still a popular tool to display (and manipulate) molec
 * `numpy`
 * `scipy`
 * `matplotlib`
+* `pandas`
 * `gemmi` if you want to load .mtz files
 
 Surprisingly PyMOL is not necessarily required to run PyMOLViz, only to display the generated files. 
