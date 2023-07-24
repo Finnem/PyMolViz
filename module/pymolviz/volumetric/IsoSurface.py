@@ -13,16 +13,15 @@ class IsoSurface(Displayable):
         Note that, since this is based on volumetric data it is different from the pmv.Mesh class.
 
         Args:
-            grid_data (pymolviz.RegularData): Regular data for which to show the isomesh.
-            level (float): The level at which to display the isomesh.
-            name (str, optional): The name of the mesh as displayed in PyMOL. Defaults to {grid_data.name}_{value_label}_IsoMesh_{i}.
-            value_label (str, optional): The name of the value to use from the regular data. Defaults to None. Must be passed if grid_data has multiple values.
-            color (str or rgb or pymolviz.ColorRamp, optional): The name of the color to use or rgb values or a pymolviz ColorRamp which will be used to color based on position. Defaults to white. 
-            transparency (float): Transparancy of the surface, defaults to 1.
-            selection (str, optional): The selection to use. Defaults to None.
-            carve (float, optional): The carve to use. Defaults to None.
-            side (int, optional): The side of the isosurface to show. Defaults to 1 (outside/gradient facing).
-            in_sigma (bool, optional): Whether the level is in sigma. Defaults to False.
+            grid_data (pymolviz.GridData): The data to use for the iso surface.
+            level (float): The level at which to display the iso surface.
+            name (str): Optional. Defaults to None. The name of the object.
+            color (str or list of float): Optional. Defaults to None. The color of the object.
+            transparency (float): Optional. Defaults to 0. The transparency value of the object.
+            selection (str): Optional. Defaults to None. The selection to use.
+            carve (float): Optional. Defaults to None. The carve value to use.
+            side (int): Optional. Defaults to 1. The side to use.
+            
         """
         
         self.side = side

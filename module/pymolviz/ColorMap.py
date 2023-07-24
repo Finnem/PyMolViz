@@ -9,14 +9,26 @@ from matplotlib.colors import LinearSegmentedColormap
 from .Displayable import Displayable
 
 class ColorMap(Displayable):
-    def __init__(self, values, colormap = "RdYlBu_r", values_are_single_color = None, name = None):
+    """
+    Creates a colormap from a list of values.
+    
+    Args:
+        values (list of float or list of (float, float) or list of (float, str) or list of (float, list of float)): The values to use for the colormap. If values_are_single_color is True, this is interpreted as a list of colors. If values_are_single_color is False, this is interpreted as a list of values to be mapped to a colormap. If values_are_single_color is None, this is interpreted as a list of values to be mapped to a colormap, unless it is a list of colors (strings or 3 or 4 long array-like), in which case it is interpreted as a list of colors.
+        colormap (str or matplotlib colormap or pymolviz.ColorMap): Optional. Defaults to "RdYlBu_r". The colormap to use.
+        values_are_single_color (bool): Optional. Defaults to None. If True, values is interpreted as a list of colors. If False, values is interpreted as a list of values to be mapped to a colormap. If None, values is interpreted as a list of values to be mapped to a colormap, unless it is a list of colors (strings or 3 or 4 long array-like), in which case it is interpreted as a list of colors.
+        name (str): Optional. Defaults to None. The name of the object.
+        state (int): Optional. Defaults to 1. The state of the object.
+    """
 
+    def __init__(self, values, colormap = "RdYlBu_r", values_are_single_color = None, name = None, state = 1):
+        
 
         # get colormap
         self.colormap = None
         self._color_type = None
         # differentiating between values
         self.color = None
+        self.state = state
         if (values_are_single_color is True) or (values_are_single_color is None):
 
             # if values is a single rgb(a) color
@@ -124,7 +136,7 @@ class ColorMap(Displayable):
         colors = self.get_color(sample_points)[:,:3]
         result = []
         result.append(dummy_data._script_string())
-        result.append(f"""cmd.ramp_new("{self.name}", "{dummy_data.name}", range = [{",".join([str(c) for c in sample_points])}], color = [{", ".join(["[" + ", ".join([str(c) for c in color]) + "]" for color in colors])}])""")
+        result.append(f"""cmd.ramp_new("{self.name}", "{dummy_data.name}", range = [{",".join([str(c) for c in sample_points])}], color = [{", ".join(["[" + ", ".join([str(c) for c in color]) + "]" for color in colors])}], state = {self.state})""")
         result.append(f"""cmd.delete("{dummy_data.name}")""")
 
         result = "\n".join(result)

@@ -8,9 +8,11 @@ class CGOCollection(Displayable, list):
     
     
     Attributes:
-        name (str): The name of the CGO object.
-        meshes (list): A list of meshes.
-        transformation (np.array): A 4x4 transformation matrix.
+        CGOs (list): A list of CGO objects.
+        name (str): Optional. Defaults to None. The name of the object.
+        state (int): Optional. Defaults to 1. The state of the object.
+        transparency (float): Optional. Defaults to 0. The transparency value of the object.
+
     """
 
 

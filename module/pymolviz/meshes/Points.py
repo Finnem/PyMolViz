@@ -21,10 +21,10 @@ class Points(Displayable):
         radius (float): Optional. Defaults to .3. Only relevant if render_as is "Spheres". The radius of the spheres.
     """
 
-    def __init__(self, vertices, color = "red", name = None, state = 1, transparency = 0, colormap = "RdYlBu_r", render_as = "Spheres", radius = .3, **kwargs) -> None:
+    def __init__(self, vertices, color = "red", name = None, state = 1, transparency = 0, colormap = "RdYlBu_r", render_as = "Spheres", radius = .3, *args, **kwargs) -> None:
         super().__init__(name)
         if type(colormap) != ColorMap:
-            self.colormap = ColorMap(color, colormap, **kwargs)
+            self.colormap = ColorMap(color, colormap, state = state, name=f"{self.name}_colormap", *args, **kwargs)
         else:
             self.colormap = colormap
         if "single" in self.colormap._color_type: # colors were not inferred

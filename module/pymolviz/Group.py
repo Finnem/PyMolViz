@@ -5,16 +5,16 @@ class Group(Displayable, list):
     
     
     Attributes:
-        name (str): The name of the CGO object.
-        meshes (list): A list of meshes.
-        transformation (np.array): A 4x4 transformation matrix.
+        displayables (list): A list of displayables.
+        name (str): Optional. Defaults to None. The name of the object.
+        state (int): Optional. Defaults to 1. The state of the object.
+
     """
 
 
 
-    def __init__(self, displayables : list = None, name : str = None, state : int = 1, transparency : float = 0) -> None:
+    def __init__(self, displayables : list = None, name : str = None, state : int = 1) -> None:
         self.state = state
-        self.transparency = transparency
         
         super().__init__(name, displayables if displayables else [])
         self.extend(displayables if displayables else [])

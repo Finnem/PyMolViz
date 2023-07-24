@@ -19,7 +19,7 @@ class Arrows(Lines):
         head_width (float): The relative width of the arrow head.
     """
 
-    def __init__(self, lines, color = "red", name = None, state = 1, transparency = 0, colormap = "RdYlBu_r", linewidth = 1, head_length = .2, head_width = .2, **kwargs) -> None:
+    def __init__(self, lines, color = "red", name = None, state = 1, transparency = 0, colormap = "RdYlBu_r", linewidth = 1, head_length = .2, head_width = .2, *args, **kwargs) -> None:
         try:
             if (not np.issubdtype(type(color), np.str_)):
                 if (len(color) == (len(lines.reshape(-1, 3)) / 2)):
@@ -48,5 +48,5 @@ class Arrows(Lines):
         lines = np.hstack([original_lines, new_lines.reshape(-1, 24)])
                 
 
-        super().__init__(lines.reshape(-1, 3), color, name, state, transparency, colormap, linewidth, **kwargs)
+        super().__init__(lines.reshape(-1, 3), color, name, state, transparency, colormap, linewidth, *args, **kwargs)
         self.linewidth = linewidth

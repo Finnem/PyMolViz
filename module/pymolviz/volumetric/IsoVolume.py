@@ -11,14 +11,17 @@ class IsoVolume(Volume):
         Computes and collects pymol commands to load in regular data and display it as multiple, transparent, same colored iso-surfaces using PyMOLs volume command.
 
         Args:
-            grid_data (pymolviz.RegularData): Regular data for which to show the volume.
-            name (str, optional): The name of the volume as displayed in PyMOL. Defaults to {grid_data.name}_{value_label}_IsoVolume_{i}.
-            value_label (str, optional): The name of the value to use from the regular data. Defaults to None. Must be passed if grid_data has multiple values.
-            colormap (str, optional): The name of the colormap to use. Defaults to coolwarm.
-            alphas (np.array, optional): The alphas to use. Defaults to [0.1, 0.5, 0.8].
-            clims (np.array, optional): The clims to use. Defaults to [mean - 2 stddev, mean, mean + 2 stddev].
-            selection (str, optional): The selection to use. Defaults to None.
-            carve (float, optional): The carve to use. Defaults to None.
+            grid_data (pymolviz.GridData): The data to use for the iso surface.
+            name (str): Optional. Defaults to None. The name of the object.
+            colormap (str or list of float): Optional. Defaults to "RdYlBu_r". The colormap of the object.
+            alphas (list of float): Optional. Defaults to None. The alpha values to use.
+            clims (list of float): Optional. Defaults to None. The color limits to use.
+            selection (str): Optional. Defaults to None. The selection to use.
+            carve (float): Optional. Defaults to None. The carve value to use.
+            margin (float): Optional. Defaults to 0.05. The margin to use.
+            state (int): Optional. Defaults to 1. The state to use.
+            
+           
         """
         if clims is None:
             # for some reason it seems that isolines are only shown on 16th of 5*std + mean

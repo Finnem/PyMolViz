@@ -10,6 +10,7 @@ class Labels(Displayable):
             positions (np.array): The positions of the labels.
             labels (list): The labels.
             name (str): Optional. The name of the data. Defaults to None.
+            state (int): Optional. The state of the data. Defaults to 1.
 
         """
         positions = np.array(positions)

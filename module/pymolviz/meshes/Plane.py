@@ -10,6 +10,8 @@ class Plane(Mesh):
             position (np.array): The position of the plane.
             normal (np.array): The normal of the plane.
             scale (float): The scale of the plane.
+            color (str): Optional. Defaults to "red". The color of the plane.
+            
             
             """
 

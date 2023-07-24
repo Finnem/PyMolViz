@@ -4,7 +4,8 @@ class Script(object):
     """A class wrapping one or multiple displayables to be added with a single script. Use write function to write the script to a file.
 
     Attributes:
-        collections (list): A list of collections.
+        displayables (list): A list of displayables.
+        
 
     """
 

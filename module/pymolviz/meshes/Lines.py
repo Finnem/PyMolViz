@@ -18,14 +18,14 @@ class Lines(Points):
 
     """
 
-    def __init__(self, lines : np.array, color = "red", name = None, state = 1, transparency = 0, colormap = "RdYlBu_r", linewidth = 1, **kwargs) -> None:
+    def __init__(self, lines : np.array, color = "red", name = None, state = 1, transparency = 0, colormap = "RdYlBu_r", linewidth = 1, *args, **kwargs) -> None:
         try:
             if (not np.issubdtype(type(color), np.str_)):
                 if (len(color) == (len(lines.reshape(-1, 3)) / 2)):
                     color = np.repeat(color, 2, axis = 0)
         except TypeError:
             pass
-        super().__init__(lines.reshape(-1, 3), color, name, state, transparency, colormap, **kwargs)
+        super().__init__(lines.reshape(-1, 3), color, name, state, transparency, colormap, *args, **kwargs)
         self.linewidth = linewidth
 
 

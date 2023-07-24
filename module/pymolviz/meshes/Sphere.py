@@ -7,6 +7,9 @@ class Sphere(Mesh):
         Args:
             radius (float): The radius of the sphere.
             position (np.array): The position of the sphere.
+            color (str): Optional. Defaults to "red". The color of the sphere.
+            resolution (int): Optional. Defaults to 20. The resolution of the sphere.
+
         """
         u, v = np.mgrid[0:2*np.pi:resolution*1j, 0:np.pi:resolution*1j]
         x = np.cos(u)*np.sin(v)

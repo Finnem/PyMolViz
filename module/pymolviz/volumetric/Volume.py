@@ -18,6 +18,7 @@ class Volume(Displayable):
             clims (np.array, optional): The clims to use. Defaults to [mean - 2 stddev, mean, mean + 2 stddev].
             selection (str, optional): The selection to use. Defaults to None.
             carve (float, optional): The carve to use. Defaults to None.
+            state (int, optional): The state to use. Defaults to 1.
         """
 
         self.grid_data = grid_data
@@ -37,7 +38,7 @@ class Volume(Displayable):
             self.clims = clims
 
         if not issubclass(type(colormap), ColorMap):
-            colormap = ColorMap(self.grid_data.values, colormap)
+            colormap = ColorMap(self.grid_data.values, colormap, state = state, name = f"{self.name}_colormap")
         self.colormap = colormap
 
         if alphas is None:
