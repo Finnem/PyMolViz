@@ -21,7 +21,7 @@ class GridData(Displayable):
         self.step_counts = step_counts
         self.origin = origin
 
-        values = values.flatten()
+        values = np.array(values).flatten()
 
         # no grid points given: infer grid from parameters
         if positions is None:
@@ -100,6 +100,8 @@ class GridData(Displayable):
 {self.name}_data = np.array({np.array2string(values, threshold=1e15, separator=",")})
 {self.name} = Brick.from_numpy({self.name}_data, {np.array2string(self.step_sizes, separator = ",")}, origin={np.array2string(self.origin, separator=",")})
 cmd.load_brick({self.name}, "{self.name}")
+{self.name}_data = None
+
 """
         return result
 

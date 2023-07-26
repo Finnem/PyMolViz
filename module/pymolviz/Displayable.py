@@ -43,6 +43,12 @@ class Displayable():
         new_name = str(value).replace(" ", "_")
         new_name = str(new_name).replace(".", "_")
         new_name = str(new_name).replace(":", "_")
+        new_name = str(new_name).replace("|", "_")
+        new_name = str(new_name).replace("&", "_")
+        new_name = str(new_name).replace("?", "_")
+        new_name = str(new_name).replace("!", "_")
+        new_name = str(new_name).replace("+", "_")
+        new_name = str(new_name).replace("-", "_")
         if new_name[0].isdigit():
             new_name = "_" + new_name
         if any(s in new_name for s in ["(", ")", "[", "]"]):

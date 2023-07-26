@@ -23,7 +23,9 @@ class ColorRamp(Displayable):
                 clims = colormap.clims
 
         if clims is None:
-            self.clims = [np.min(self.data.values), np.max(self.data.values)]
+            min_val = max([np.min(self.data.values), -np.std(self.data.values) * 5 + np.mean(self.data.values)])
+            max_val = min([np.max(self.data.values), np.std(self.data.values) * 5 + np.mean(self.data.values)])
+            self.clims = [min_val, max_val]
         else:
             self.clims = clims
         self.colormap = colormap

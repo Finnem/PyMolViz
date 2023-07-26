@@ -29,8 +29,9 @@ class Volume(Displayable):
         super().__init__(name = name)
         
         if clims is None:
-            
-            self.clims = np.linspace(-np.std(grid_data.values) * 5 + np.mean(grid_data.values), np.std(grid_data.values) * 5 + np.mean(grid_data.values), 33)
+            min_val = max([np.min(grid_data.values), -np.std(grid_data.values) * 5 + np.mean(grid_data.values)])
+            max_val = min([np.max(grid_data.values), np.std(grid_data.values) * 5 + np.mean(grid_data.values)])
+            self.clims = np.linspace(min_val, max_val, 33)
             # getting number of values within each bin
             self.clims = np.vstack([self.clims[:-1], self.clims[1:]]).T.flatten()
             self.clims = np.hstack([self.clims, self.clims[-1]])
@@ -38,7 +39,7 @@ class Volume(Displayable):
             self.clims = clims
 
         if not issubclass(type(colormap), ColorMap):
-            colormap = ColorMap(self.grid_data.values, colormap, state = state, name = f"{self.name}_colormap")
+            colormap = ColorMap(self.clims, colormap, state = state, name = f"{self.name}_colormap")
         self.colormap = colormap
 
         if alphas is None:
