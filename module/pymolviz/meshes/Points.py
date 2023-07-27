@@ -5,6 +5,7 @@ import numpy as np
 
 from ..ColorMap import ColorMap
 from ..Displayable import Displayable
+from ..PyMOLobjects.PseudoAtoms import PseudoAtoms
 
 class Points(Displayable):
     """ Class to store points and associated colors which can be displayed as a point cloud.
@@ -23,20 +24,25 @@ class Points(Displayable):
 
     def __init__(self, vertices, color = "red", name = None, state = 1, transparency = 0, colormap = "RdYlBu_r", render_as = "Spheres", radius = .3, *args, **kwargs) -> None:
         super().__init__(name)
+        self.vertices = np.array(vertices, dtype=float).reshape(-1, 3)
         if type(colormap) != ColorMap:
             self.colormap = ColorMap(color, colormap, state = state, name=f"{self.name}_colormap", *args, **kwargs)
         else:
             self.colormap = colormap
         if "single" in self.colormap._color_type: # colors were not inferred
-            self.color = np.arange(vertices.shape[0]) # color is just the index
+            self.color = np.arange(self.vertices.shape[0]) # color is just the index
         else:
             self.color = np.array(color).flatten()
 
-        self.vertices = np.array(vertices, dtype=float).reshape(-1, 3)
         self.render_as = render_as
         self.radius = radius
         self.state = state
         self.transparency = transparency
+
+
+    def as_pseudoatoms(self) -> PseudoAtoms:
+        return PseudoAtoms(self.vertices, self.color, name = self.name, state = self.state, colormap = self.colormap)
+
 
     def _create_CGO_list(self) -> list:
         """ Creates a CGO list from the mesh information. Points can be displayed as spheres or as points.
