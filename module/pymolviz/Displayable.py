@@ -54,7 +54,6 @@ class Displayable():
         if any(s in new_name for s in ["(", ")", "[", "]"]):
             logging.warning(f"Name {new_name} contains parentheses. This may cause issues with PyMol. Consider changing the name.")
         self._name = new_name.replace("(", "_").replace(")", "_").replace("[", "_").replace("]", "_")
-        self._name = str(value).replace(" ", "_")
 
     def to_script(self):
         from .Script import Script

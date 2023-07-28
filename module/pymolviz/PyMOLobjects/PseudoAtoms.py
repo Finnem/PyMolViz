@@ -4,7 +4,7 @@ from ..ColorMap import ColorMap
 
 
 class PseudoAtoms(Displayable):
-    def __init__(self, positions, color, name = None, state = 1, colormap = "RdYlBu_r", *args, **kwargs):
+    def __init__(self, positions, color = "red", name = None, state = 1, colormap = "RdYlBu_r", *args, **kwargs):
         """ Represents a set of labels.
 
         Args:
