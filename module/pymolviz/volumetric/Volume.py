@@ -46,6 +46,7 @@ class Volume(Displayable):
             used_length = len(self.clims)-(len(self.clims) % 2) # if length is uneven, we forgo the last value for binning
             bins = np.reshape(self.clims[:used_length], (-1, 2))
             densities = np.sum((bins[:,0] < self.grid_data.values[:, None]) & (bins[:,1] >= self.grid_data.values[:, None]), axis = 0)
+            if np.sum(densities) == 0: densities = np.ones(len(densities))
             densities = densities / np.sum(densities)
             densities = np.clip(densities, np.min(densities), 0.9)
             self.alphas = np.vstack([(1 - densities[:used_length]) * 0.03, np.full(len(densities[:used_length]), 0.005)]).T.flatten()

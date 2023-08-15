@@ -15,10 +15,11 @@ class Lines(Points):
         transparency (float): Optional. Defaults to 0. The transparency value of the object.
         colormap: Optional. Defaults to "RdYlBu_r". Name of a colormap or a matplotlib colormap or a pymolviz.ColorMap object. Used to map values to colors.
         linewidth (float): Optional. Defaults to 1. The width of the lines. Seems to be currently not supported by PyMol.
+        render_as (str): Optional. Defaults to "lines". If "cylinders", lines will be drawn as 3D objects using cylinders.
 
     """
 
-    def __init__(self, lines : np.array, color = "red", name = None, state = 1, transparency = 0, colormap = "RdYlBu_r", linewidth = 1, *args, **kwargs) -> None:
+    def __init__(self, lines : np.array, color = "red", name = None, state = 1, transparency = 0, colormap = "RdYlBu_r", linewidth = 1, render_as = "lines", *args, **kwargs) -> None:
         try:
             if (not np.issubdtype(type(color), np.str_)):
                 if (len(color) == (len(lines.reshape(-1, 3)) / 2)):
@@ -27,6 +28,13 @@ class Lines(Points):
             pass
         super().__init__(lines.reshape(-1, 3), color, name, state, transparency, colormap, *args, **kwargs)
         self.linewidth = linewidth
+        self.render_as = render_as
+
+        #catching common errors:
+        if self.render_as == "line":
+            self.render_as = "lines"
+        if self.render_as == "cylinder":
+            self.render_as = "cylinders"
 
 
     def _create_CGO_list(self) -> str:
@@ -38,25 +46,34 @@ class Lines(Points):
         """
 
         cgo_list = []
-        
-        cgo_list.extend(["LINEWIDTH", self.linewidth])
+        if self.render_as == "lines":
+            
+            cgo_list.extend(["LINEWIDTH", self.linewidth])
 
-        cgo_list.extend(["BEGIN", "LINES"])
+            cgo_list.extend(["BEGIN", "LINES"])
 
 
-        cgo_vertices = self.vertices
-        cgo_colors = self.colormap.get_color(self.color)
+            cgo_vertices = self.vertices
+            cgo_colors = self.colormap.get_color(self.color)[:,:3]
 
-        #vertices
-        triangles = np.hstack([
-            np.full(cgo_colors.shape[0], "COLOR")[:,None], cgo_colors, \
-            np.full(cgo_vertices.shape[0], "VERTEX")[:,None], cgo_vertices, \
+            #vertices
+            triangles = np.hstack([
+                np.full(cgo_colors.shape[0], "COLOR")[:,None], cgo_colors, \
+                np.full(cgo_vertices.shape[0], "VERTEX")[:,None], cgo_vertices, \
+                ]).flatten()
+            cgo_list.extend(triangles)
+
+            # ending
+            cgo_list.append("END")
+
+        elif self.render_as == "cylinders":
+            cgo_vertices = self.vertices.reshape(-1, 6)
+            print(self.colormap.get_color(self.color).shape)
+            cgo_colors = self.colormap.get_color(self.color)[:,:3].reshape(-1, 6)
+            triangles = np.hstack([
+                np.full(cgo_vertices.shape[0], "CYLINDER")[:,None], cgo_vertices, np.full(cgo_vertices.shape[0], self.linewidth)[:,None], cgo_colors \
             ]).flatten()
-        cgo_list.extend(triangles)
-
-        # ending
-        cgo_list.append("END")
-
+            cgo_list.extend(triangles)
         return cgo_list
 
     def combine(lines):
