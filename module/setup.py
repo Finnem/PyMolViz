@@ -1,6 +1,6 @@
 from setuptools import setup
 setup(name='pymolviz',
-        version='1.1.3',
+        version='1.1.4',
         description='Library to facilitate creation of PyMOL Vizualizations.',
         url='https://github.com/Finnem/PyMolViz',
         author='Finn Mier',

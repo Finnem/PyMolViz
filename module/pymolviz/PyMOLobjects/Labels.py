@@ -1,6 +1,6 @@
 import numpy as np
 from ..Displayable import Displayable
-from ..util.pymol_functions import viewport_callback
+from ..util.pymol_functions import get_viewport_callbacks
 from ..ColorMap import ColorMap
 
 class Labels(Displayable):
@@ -32,8 +32,8 @@ class Labels(Displayable):
         self.state = state
         self._fixed = fixed
 
-        dependencies = [viewport_callback] if self._fixed else []
-        super().__init__(name = name, dependencies=dependencies, **kwargs)
+        super().__init__(name = name, **kwargs)
+        self.dependencies.extend(get_viewport_callbacks(self.name, self.positions) if self._fixed else [])
         if not color is None:
             if type(colormap) != ColorMap:
                 self.colormap = ColorMap(color, colormap, state = state, name=f"{self.name}_colormap", *args, **kwargs)
@@ -62,8 +62,6 @@ cmd.set("label_color", "{self.name}_{i}", "{self.name}")
             result.append(f"""
 cmd.set("label_size", {size}, "{self.name}")
 """)
-            if self._fixed:
-                result.append(f"""ViewportCallback("{self.name}", {position[0]}, {position[1]}).load()""")
         return "\n".join(result)
 
     @property

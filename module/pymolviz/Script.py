@@ -62,12 +62,18 @@ from pymol.cgo import *
 from pymol import cmd
 import numpy as np
 from chempy.brick import Brick
-
+final_calls = {}
         '''
         ]
 
         for displayable in self.displayables:
             cgo_string_builder.append(displayable._script_string())
 
+        cgo_string_builder.append(
+            """
+for call, kwargs in final_calls.items():
+    call(**kwargs)
+"""
+        )
         final_string = "\n".join(cgo_string_builder)
         return final_string

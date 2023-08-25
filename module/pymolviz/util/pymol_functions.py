@@ -1,6 +1,29 @@
 from ..Displayable import Displayable
 
+viewports = {
+
+}
+def get_viewport_callbacks(name, positions):
+    global viewports
+    this_viewports = []
+    for i, position in enumerate(positions):
+        if not f"{name}_{i}" in viewports:
+            viewports[f"{name}_{i}"] = ViewportCallback(name, *position)
+        this_viewports.append(viewports[f"{name}_{i}"])
+    return this_viewports
+
 class ViewportCallback(Displayable):
+    def __init__(self, name, x, y):
+        super().__init__(name = "dummy")
+        self.target_name = name
+        self.x = x
+        self.y = y
+        self.dependencies = [viewport_callback]
+    def _script_string(self):
+        return f"""final_calls[lambda : ViewportCallback("{self.target_name}", {self.x}, {self.y}).load()] ={{}}"""
+
+
+class ViewportCallbackFunction(Displayable):
     def __init__(self):
         super().__init__(name = "dummy")
 
@@ -59,4 +82,4 @@ class ViewportCallback(object):
         
         cmd.set_object_ttt(self.name, m)
     """
-viewport_callback = ViewportCallback()
+viewport_callback = ViewportCallbackFunction()
