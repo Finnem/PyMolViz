@@ -1,0 +1,25 @@
+
+	 Module chem/orca/5.0.1 has been loaded
+
+	 Activated primary packages:
+		 ORCA version 5.0.1
+
+	 Activated secondary packages:
+		 OpenMPI version 4.0
+		 Intel Compiler version 19.1.2
+
+
+[file orca_main/run.cpp, line 12281]: ORCA finished with error return - aborting the run
+
+======================== JOB EFFICIENCY REPORT ========================
+Job ID: 10681358
+Cluster: justus2
+User/Group: tu_zxocf24/tu_tu
+State: FAILED (exit code 2)
+Nodes: 1
+Cores per node: 24
+CPU Utilized: 17-11:24:02
+CPU Efficiency: 83.86% of 20-20:06:00 core-walltime
+Job Wall-clock time: 20:50:15
+Memory Utilized: 2.37 GB
+Memory Efficiency: 4.94% of 48.00 GB

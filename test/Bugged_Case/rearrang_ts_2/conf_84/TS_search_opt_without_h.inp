@@ -1,0 +1,15 @@
+!wb97x 6-311++G** D4 NEB-TS OPT NUMFREQ CPCM(WATER)
+%maxcore  3500
+%pal
+nprocs 24
+end
+%cpcm
+smd true
+SMDsolvent "water"
+end
+%geom
+MaxIter 1000   # allows for n optimization cycles
+EnforceStrictConvergence False
+end
+%NEB NEB_END_XYZFILE "2f3_prod_opt.xyz" END
+* XYZfile -1 1 structure_opt.xyz

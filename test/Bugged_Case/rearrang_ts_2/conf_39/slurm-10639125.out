@@ -1,0 +1,23 @@
+
+	 Module chem/orca/5.0.4 has been loaded
+
+	 Activated primary packages:
+		 ORCA version 5.0.4
+
+	 Activated secondary packages:
+		 OpenMPI version 4.0
+		 Intel Compiler version 19.1.2
+
+
+======================== JOB EFFICIENCY REPORT ========================
+Job ID: 10639125
+Cluster: justus2
+User/Group: tu_zxocf24/tu_tu
+State: COMPLETED (exit code 0)
+Nodes: 1
+Cores per node: 24
+CPU Utilized: 06:34:14
+CPU Efficiency: 75.70% of 08:40:48 core-walltime
+Job Wall-clock time: 00:21:42
+Memory Utilized: 1.77 GB
+Memory Efficiency: 3.69% of 48.00 GB

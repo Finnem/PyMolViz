@@ -1,0 +1,28 @@
+!wb97x 6-311++G** OPT CPCM(WATER)
+%maxcore  3500
+%pal
+nprocs 24
+end
+%cpcm
+smd true
+SMDsolvent "water"
+end
+%geom
+ConstrainFragments {1} end
+ConstrainFragments {4} end
+ConnectFragments
+{ 1 2 C 5 7 }
+{ 1 2 C 0 9 }
+{ 2 3 C 13 5 }
+{ 3 4 C 13 17 }
+end
+end
+* XYZfile -1 1 reactants.xyz
+%geom
+Fragments
+1 {0:5} end
+2 {6:12} end
+3 {13:16} end
+4 {17} end
+end
+end

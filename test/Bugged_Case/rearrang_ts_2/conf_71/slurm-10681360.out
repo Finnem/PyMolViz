@@ -1,0 +1,25 @@
+
+	 Module chem/orca/5.0.1 has been loaded
+
+	 Activated primary packages:
+		 ORCA version 5.0.1
+
+	 Activated secondary packages:
+		 OpenMPI version 4.0
+		 Intel Compiler version 19.1.2
+
+
+/var/spool/slurmd/job10681360/slurm_script: line 13: 47038: command not found
+
+======================== JOB EFFICIENCY REPORT ========================
+Job ID: 10681360
+Cluster: justus2
+User/Group: tu_zxocf24/tu_tu
+State: FAILED (exit code 127)
+Nodes: 1
+Cores per node: 24
+CPU Utilized: 11-01:16:41
+CPU Efficiency: 84.52% of 13-01:52:00 core-walltime
+Job Wall-clock time: 13:04:40
+Memory Utilized: 2.66 GB
+Memory Efficiency: 5.55% of 48.00 GB
