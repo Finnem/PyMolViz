@@ -39,3 +39,11 @@ class PseudoAtoms(Displayable):
             result.append(f"""cmd.set_color("{self.name}_{color}", {color})
 cmd.pseudoatom("{self.name}", pos = {position.tolist()}, color = "{self.name}_{color}", state = {self.state})""")
         return "\n".join(result)
+    
+    def load(self):
+        from pymol import cmd
+        colors = [list(c[:3]) for c in self.colormap.get_color(self.color)]
+        for color, position in zip(colors, self.positions):
+            pseudoatom_color = self.name + "_" + str(color)
+            cmd.set_color(pseudoatom_color, color)
+            cmd.pseudoatom(self.name, pos = position.tolist(), color = pseudoatom_color, state = self.state)

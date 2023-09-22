@@ -32,4 +32,10 @@ class Expressions(Displayable):
 cmd.set_color("{self.name}_{i}", {self.colormap.get_color(color)[:3]})
 cmd.color("{self.name}_{i}", "{expression}", 1)""")
         return "\n".join(result)
-
+    
+    def load(self):
+        from pymol import cmd
+        for i, (expression, color) in enumerate(zip(self.expressions, self.color)):
+            expression_name = self.name + "_" + str(i)
+            cmd.set_color(expression_name, self.colormap.get_color(color)[:3])
+            cmd.color(expression_name, expression, 1)

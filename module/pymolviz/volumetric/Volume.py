@@ -90,6 +90,29 @@ cmd.volume("{self.name}", "{self.grid_data.name}", "{self.name}_volume_color_ram
         result = "\n".join(string_list)
         return result
 
+    def load(self):
+        from pymol import cmd
+        
+        if len(self.alphas) != len(self.clims):
+                raise ValueError("The number of volume alphas must be equal to the number of clims.")
+        params_list = [[self.clims[i],[v for v in self.colormap.get_color(c)[:3]], self.alphas[i]] for i,c in enumerate(self.clims)]
+        flat_list = []
+        for sublist in params_list:
+            for item in sublist:
+                if type(item) == list:
+                    for list_item in item:
+                        flat_list.append(float(list_item))
+                else:
+                    flat_list.append(float(item))
+        self.grid_data.load()
+        
+        if self.name in cmd.get_names("objects"):
+            import logging
+            logging.warning(f"The volume could not be created because a volume with the name {self.name} already exists.")
+        else:
+            cmd.volume_ramp_new("{self.name}_volume_color_ramp", flat_list)
+            cmd.volume(self.name, self.grid_data.name, ramp = "{self.name}_volume_color_ramp",selection=self.selection, carve=self.carve, state=self.state)
+
     def to_script(self, state = 0):
         """ Creates a pymolviz script to create a volume representation of the given regular data.
         

@@ -1,10 +1,9 @@
 import numpy as np
 from ..Displayable import Displayable
-from ..util.pymol_functions import get_viewport_callbacks
 from ..ColorMap import ColorMap
 
 class Labels(Displayable):
-    def __init__(self, positions, labels, color = None, name = None, state = 1, size = 24, fixed = False, colormap = "RdYlBu_r", *args, **kwargs):
+    def __init__(self, positions, labels, color = None, name = None, state = 1, size = 24, colormap = "RdYlBu_r", *args, **kwargs):
         """ Represents a set of labels.
 
         Args:
@@ -14,9 +13,6 @@ class Labels(Displayable):
             name (str): Optional. The name of the data. Defaults to None.
             state (int): Optional. The state of the data. Defaults to 1.
             size (array-like): Optional. Single value or array like, indicating the labels size.
-            fixed (bool): Optional. If true the labels are displayed at a fixed position in the viewport.
-                The positions should then be given as x and y coordinates between 0 and 1 describing the
-                relative x and y coordinates on the viewport.
             colormap: Optional. Defaults to "RdYlBu_r". Name of a colormap or a matplotlib colormap or a pymolviz.ColorMap object. Used to map values to colors.
 
         """
@@ -30,10 +26,8 @@ class Labels(Displayable):
         self.positions = positions
         self.labels = labels
         self.state = state
-        self._fixed = fixed
 
         super().__init__(name = name, **kwargs)
-        self.dependencies.extend(get_viewport_callbacks(self.name, self.positions) if self._fixed else [])
         if not color is None:
             if type(colormap) != ColorMap:
                 self.colormap = ColorMap(color, colormap, state = state, name=f"{self.name}_colormap", *args, **kwargs)
@@ -47,12 +41,68 @@ class Labels(Displayable):
             self.color = None
             self.colormap = colormap
 
+    def load(self):
+        from pymol import cmd
+        colors = np.full(len(self.labels), None) if self.color is None else self.color
+        for i, (label, position, color, size) in enumerate(zip(self.labels, self.positions, colors, self.size)):
+            used_position = position.tolist()
+            cmd.pseudoatom(self.name, label=label, pos = used_position, state = self.state)
+            if not (color is None):
+                cmd.set_color("{self.name}_{i}", self.colormap.get_color(color)[:3])
+                cmd.set("label_color", "{self.name}_{i}", self.name)
+            cmd.set("label_size", size, self.name)
+            
+    #def load(self):
+    #    from pymol import cmd
+    #    from ..util.ViewportCallback import ViewportCallback
+    #    colors = np.full(len(self.labels), None) if self.color is None else self.color
+    #    viewportCallbacks = []
+    #    for i, (label, position, color, size) in enumerate(zip(self.labels, self.positions, colors, self.size)):
+    #        used_position = [0,0,0] if self._fixed else position.tolist()
+    #        cmd.pseudoatom(self.name, label=label, pos = used_position, state = self.state)
+    #        if not (color is None):
+    #            cmd.set_color("{self.name}_{i}", self.colormap.get_color(color)[:3])
+    #            cmd.set("label_color", "{self.name}_{i}", self.name)
+    #        cmd.set("label_size", size, self.name)
+    #        print(self.name, position[0], position[1])
+    #        viewportCallback = ViewportCallback(self.name, position[0], position[1])
+    #        viewportCallbacks.append(viewportCallback)
+    #    print(viewportCallbacks)
+    #    for viewportCallback in viewportCallbacks:
+    #        viewportCallback.load()
+    #        print(viewportCallback.name, viewportCallback.x, viewportCallback.y)
+            
 
+    #def _script_string(self):
+    #    result = []
+    #    colors = np.full(len(self.labels), None) if self.color is None else self.color
+    #    for i, (label, position, color, size) in enumerate(zip(self.labels, self.positions, colors, self.size)):
+    #        used_position = [0,0,0] if self._fixed else position.tolist()
+    #        result.append(f"""cmd.pseudoatom("{self.name}", label="{label}", pos = {used_position}, state = {self.state})""")
+    #        if not (color is None):
+    #            result.append(f"""
+#cmd.set_color("{self.name}_{i}", {self.colormap.get_color(color)[:3]})
+#cmd.set("label_color", "{self.name}_{i}", "{self.name}")
+#""")
+#            result.append(f"""
+#cmd.set("label_size", {size}, "{self.name}")
+#""")
+    #    return "\n".join(result)
+
+    #@property
+    #def fixed(self):
+    #    return self._fixed
+
+    #@fixed.getter
+    #def fixed(self, value):
+    #    self._fixed = value
+    #    self.dependencies = [viewport_callback] if self._fixed else []
+        
     def _script_string(self):
         result = []
         colors = np.full(len(self.labels), None) if self.color is None else self.color
         for i, (label, position, color, size) in enumerate(zip(self.labels, self.positions, colors, self.size)):
-            used_position = [0,0,0] if self._fixed else position.tolist()
+            used_position = position.tolist()
             result.append(f"""cmd.pseudoatom("{self.name}", label="{label}", pos = {used_position}, state = {self.state})""")
             if not (color is None):
                 result.append(f"""
@@ -63,12 +113,3 @@ cmd.set("label_color", "{self.name}_{i}", "{self.name}")
 cmd.set("label_size", {size}, "{self.name}")
 """)
         return "\n".join(result)
-
-    @property
-    def fixed(self):
-        return self._fixed
-
-    @fixed.getter
-    def fixed(self, value):
-        self._fixed = value
-        self.dependencies = [viewport_callback] if self._fixed else []

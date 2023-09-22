@@ -69,6 +69,15 @@ class GridData(Displayable):
         xx, yy, zz = np.meshgrid(x, y, z)
         positions = np.array([yy.flatten(), xx.flatten(), zz.flatten()]).T
         return positions
+    
+    @property    
+    def values(self):
+        return self._values
+    
+    @values.setter
+    def values(self, values):
+        self._values = values
+        self.is_loaded = False
 
     def to_points(self, filter = None, *args, **kwargs):
         """
@@ -86,16 +95,16 @@ class GridData(Displayable):
         # filter
         if filter is None:
             filtered_positions = positions
-            filtered_values = self.values
+            filtered_values = self.values()
         else:
-            filtered_positions = positions[filter(self.values)]
-            filtered_values = self.values[filter(self.values)]
+            filtered_positions = positions[filter(self.values())]
+            filtered_values = self.values()[filter(self.values())]
 
         return Points(filtered_positions, filtered_values, *args, **kwargs)
     
 
     def _script_string(self):
-        values = self.values.reshape(self.step_counts.astype(int) + 1)
+        values = self.values().reshape(self.step_counts.astype(int) + 1)
         result = f"""
 {self.name}_data = np.array({np.array2string(values, threshold=1e15, separator=",")})
 {self.name} = Brick.from_numpy({self.name}_data, {np.array2string(self.step_sizes, separator = ",")}, origin={np.array2string(self.origin, separator=",")})
@@ -104,6 +113,16 @@ cmd.load_brick({self.name}, "{self.name}")
 
 """
         return result
+
+    def load(self):
+        from pymol import cmd
+        from chempy.brick import Brick
+        if not self.is_loaded:
+            cmd.delete(self.name)
+            values = self.values.reshape(self.step_counts.astype(int) + 1)
+            brick = Brick.from_numpy(values, self.step_sizes, origin=self.origin)
+            cmd.load_brick(brick, self.name)
+            self.is_loaded = True
 
     def from_ccp4(path):
         """

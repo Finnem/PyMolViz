@@ -39,7 +39,8 @@ class Script(object):
             
 
     def load(self):
-        raise NotImplementedError
+        for displayable in self.displayables:
+            displayable.load()
 
 
     def write(self, out) -> str:
@@ -62,7 +63,7 @@ from pymol.cgo import *
 from pymol import cmd
 import numpy as np
 from chempy.brick import Brick
-final_calls = {}
+positions_viewport_callbacks = {}
         '''
         ]
 
@@ -71,8 +72,9 @@ final_calls = {}
 
         cgo_string_builder.append(
             """
-for call, kwargs in final_calls.items():
-    call(**kwargs)
+for x in positions_viewport_callbacks:
+    for y in positions_viewport_callbacks[x]:
+        positions_viewport_callbacks[x][y].load()
 """
         )
         final_string = "\n".join(cgo_string_builder)
