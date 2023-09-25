@@ -40,7 +40,8 @@ class Script(object):
 
     def load(self):
         for displayable in self.displayables:
-            displayable.load()
+            if hasattr(displayable, "load") and callable(displayable.load):
+                displayable.load()
 
 
     def write(self, out) -> str:

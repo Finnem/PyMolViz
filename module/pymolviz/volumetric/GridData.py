@@ -95,16 +95,16 @@ class GridData(Displayable):
         # filter
         if filter is None:
             filtered_positions = positions
-            filtered_values = self.values()
+            filtered_values = self.values
         else:
-            filtered_positions = positions[filter(self.values())]
-            filtered_values = self.values()[filter(self.values())]
+            filtered_positions = positions[filter(self.values)]
+            filtered_values = self.values[filter(self.values)]
 
         return Points(filtered_positions, filtered_values, *args, **kwargs)
     
 
     def _script_string(self):
-        values = self.values().reshape(self.step_counts.astype(int) + 1)
+        values = self.values.reshape(self.step_counts.astype(int) + 1)
         result = f"""
 {self.name}_data = np.array({np.array2string(values, threshold=1e15, separator=",")})
 {self.name} = Brick.from_numpy({self.name}_data, {np.array2string(self.step_sizes, separator = ",")}, origin={np.array2string(self.origin, separator=",")})

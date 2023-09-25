@@ -106,9 +106,9 @@ cmd.volume("{self.name}", "{self.grid_data.name}", "{self.name}_volume_color_ram
                     flat_list.append(float(item))
         self.grid_data.load()
         
-        if self.name in cmd.get_names("objects"):
+        if self.name in cmd.get_names("objects") and cmd.get_object_state(self.name) == self.state:
             import logging
-            logging.warning(f"The volume could not be created because a volume with the name {self.name} already exists.")
+            logging.warning(f"The volume could not be created because a volume with the name {self.name} and state {self.state} already exists.")
         else:
             cmd.volume_ramp_new("{self.name}_volume_color_ramp", flat_list)
             cmd.volume(self.name, self.grid_data.name, ramp = "{self.name}_volume_color_ramp",selection=self.selection, carve=self.carve, state=self.state)

@@ -67,13 +67,12 @@ cmd.set("label_size", {self.size}, "{self.name}")
     
     def load(self):
         from pymol import cmd
-        
         used_position = [0,0,0]
         cmd.pseudoatom(self.name, label=self.label, pos = used_position, state = self.state)
         if not (self.color is None):
             print(self.colormap.get_color(self.color)[0][:3])
-            cmd.set_color("{self.name}_color", list(self.colormap.get_color(self.color)[0][:3]))
-            cmd.set("label_color", "{self.name}_color", self.name)
+            cmd.set_color("%s_color"%self.name, list(self.colormap.get_color(self.color)[0][:3]))
+            cmd.set("label_color", "%s_color"%self.name, self.name)
         cmd.set("label_size", self.size, self.name)
         self.viewport.load()
 
