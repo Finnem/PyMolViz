@@ -16,8 +16,6 @@ class ViewportCallback(Displayable):
 
     def __init__(self, names, x, y):
         self.names = names
-        self.cb_name = cmd.get_unused_name('_cb')
-        cmd.create(self.cb_name, 'none') # necessary if multiple instances are initialized but not loaded yet to reserve the name
         self.x = x
         self.y = y
         self.dependencies = [viewport_callback]
@@ -31,11 +29,10 @@ class ViewportCallback(Displayable):
         self._names = names
 
     def add_object(self, name):
-        names = self.names
-        names.append(name)
-        self.__init__(names, self.x, self.y) 
+        self.names.append(name)
         
     def load(self):
+        self.cb_name = cmd.get_unused_name('_cb')
         cmd.load_callback(self, self.cb_name)
         if self.x not in viewports:
             viewports[self.x] = {}
@@ -46,14 +43,9 @@ class ViewportCallback(Displayable):
         result = []
         for name in self.names:
             result.append(f"""
-if {self.x} in positions_viewport_callbacks and {self.y} in positions_viewport_callbacks[{self.x}]:
-    viewport = positions_viewport_callbacks[{self.x}][{self.y}]
-    viewport.add_object("{name}")
-else:
-    viewport = ViewportCallback(["{name}"], {self.x}, {self.y})
-    if {self.x} not in positions_viewport_callbacks:
-        positions_viewport_callbacks[{self.x}] = {{}}
-    positions_viewport_callbacks[{self.x}][{self.y}] = viewport""")
+viewport = positions_viewport_callbacks[{self.x}][{self.y}]
+viewport.x,viewport.y = {self.x},{self.y}
+viewport.add_object("{name}")""")
         return "\n".join(result)
     
     def __call__(self):
@@ -120,19 +112,16 @@ class ViewportCallback(object):
 
     def __init__(self, names, x, y):
         self.names = names
-        self.cb_name = cmd.get_unused_name('_cb')
-        cmd.create(self.cb_name, 'none')
         self.x = x
         self.y = y
 
     def load(self):
+        self.cb_name = cmd.get_unused_name('_cb')
         cmd.load_callback(self, self.cb_name)
         
     def add_object(self, name):
-        names = self.names
-        names.append(name)
-        self.__init__(names, self.x, self.y) # this is a way the __call__ function knows about the update of the attribute names, just appending name to names did not work for me
-
+        self.names.append(name)
+        
     def __call__(self):
         
         change = False
@@ -183,5 +172,7 @@ class ViewportCallback(object):
                 cmd.set_object_ttt(name, m)
         
         cmd.set('auto_zoom', 0)
-    """
+
+from collections import defaultdict
+positions_viewport_callbacks = defaultdict(lambda: defaultdict(lambda: ViewportCallback([],0,0)))"""
 viewport_callback = ViewportCallbackFunction()

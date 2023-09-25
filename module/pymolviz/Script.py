@@ -39,9 +39,7 @@ class Script(object):
             
 
     def load(self):
-        for displayable in self.displayables:
-            if hasattr(displayable, "load") and callable(displayable.load):
-                displayable.load()
+        raise NotImplementedError
 
 
     def write(self, out) -> str:
@@ -64,9 +62,7 @@ from pymol.cgo import *
 from pymol import cmd
 import numpy as np
 from chempy.brick import Brick
-positions_viewport_callbacks = {}
-        '''
-        ]
+''']
 
         for displayable in self.displayables:
             cgo_string_builder.append(displayable._script_string())
