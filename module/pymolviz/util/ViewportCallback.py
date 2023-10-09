@@ -49,6 +49,7 @@ viewport.add_object("{name}")""")
     
     def __call__(self):
         from pymol import cmd
+        from chempy import cpv
         change = False
         for name in self.names:
             if name not in cmd.get_names('objects'):
