@@ -62,6 +62,8 @@ from pymol.cgo import *
 from pymol import cmd
 import numpy as np
 from chempy.brick import Brick
+from collections import defaultdict
+positions_viewport_callbacks = defaultdict(lambda: defaultdict(lambda: ViewportCallback([],0,0)))
 ''']
 
         for displayable in self.displayables:

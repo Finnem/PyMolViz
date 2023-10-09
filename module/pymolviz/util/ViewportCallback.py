@@ -1,5 +1,3 @@
-from chempy import cpv
-from pymol import cmd
 from ..Displayable import Displayable
 
 viewports = {}
@@ -32,6 +30,7 @@ class ViewportCallback(Displayable):
         self.names.append(name)
         
     def load(self):
+        from pymol import cmd
         self.cb_name = cmd.get_unused_name('_cb')
         cmd.load_callback(self, self.cb_name)
         if self.x not in viewports:
@@ -49,7 +48,7 @@ viewport.add_object("{name}")""")
         return "\n".join(result)
     
     def __call__(self):
-        
+        from pymol import cmd
         change = False
         for name in self.names:
             if name not in cmd.get_names('objects'):
@@ -172,7 +171,5 @@ class ViewportCallback(object):
                 cmd.set_object_ttt(name, m)
         
         cmd.set('auto_zoom', 0)
-
-from collections import defaultdict
-positions_viewport_callbacks = defaultdict(lambda: defaultdict(lambda: ViewportCallback([],0,0)))"""
+"""
 viewport_callback = ViewportCallbackFunction()
