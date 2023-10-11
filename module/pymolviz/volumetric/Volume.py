@@ -25,6 +25,8 @@ class Volume(Displayable):
         self.selection = selection
         self.carve = carve
         self.state = state
+        self.is_loaded = False
+        self.A_to = np.array([[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]])
 
         super().__init__(name = name)
         
@@ -59,6 +61,20 @@ class Volume(Displayable):
         
         self.dependencies.extend([self.grid_data])
 
+
+    def cut(self, point : np.array, normal : np.array,interpolation = "RBF"):
+        normal = np.array(normal/np.linalg.norm(normal))
+        point = np.array(point)
+
+        new_grid_data = self.grid_data.cut(point, normal, interpolation)
+        
+        # wenn man hier die selection und carve nicht übergibt funktioniert alles, aber man sieht halt den gesamten grid data Block
+        new_volume = type(self)(new_grid_data, name="%s_cut"%self.name, colormap = self.colormap, state = self.state)
+        new_volume.A_to = new_volume.grid_data.A_to
+        # nur wenn volume geladen ist, wird es auch geladen
+        if self.is_loaded:
+            new_volume.load()
+        return new_volume
         
 
     def _script_string(self):
@@ -85,6 +101,8 @@ class Volume(Displayable):
         string_list.append("])")
         string_list.append(f"""
 cmd.volume("{self.name}", "{self.grid_data.name}", "{self.name}_volume_color_ramp", {" , ".join(optional_arguments)}{"," if len(optional_arguments) > 0 else ""} state={self.state})
+cmd.set("volume_mode", 0)
+cmd.set_object_ttt("{self.name}", {list(self.A_to.flatten())})
         """)
 
         result = "\n".join(string_list)
@@ -105,13 +123,15 @@ cmd.volume("{self.name}", "{self.grid_data.name}", "{self.name}_volume_color_ram
                 else:
                     flat_list.append(float(item))
         self.grid_data.load()
-        
         if self.name in cmd.get_names("objects") and cmd.get_object_state(self.name) == self.state:
             import logging
             logging.warning(f"The volume could not be created because a volume with the name {self.name} and state {self.state} already exists.")
         else:
             cmd.volume_ramp_new("{self.name}_volume_color_ramp", flat_list)
             cmd.volume(self.name, self.grid_data.name, ramp = "{self.name}_volume_color_ramp",selection=self.selection, carve=self.carve, state=self.state)
+            cmd.set("volume_mode", 0)
+            cmd.set_object_ttt(self.name, list(self.A_to.flatten()))
+            self.is_loaded = True
 
     def to_script(self, state = 0):
         """ Creates a pymolviz script to create a volume representation of the given regular data.
