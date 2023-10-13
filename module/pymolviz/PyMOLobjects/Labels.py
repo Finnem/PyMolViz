@@ -51,52 +51,6 @@ class Labels(Displayable):
                 cmd.set_color("{self.name}_{i}", self.colormap.get_color(color)[:3])
                 cmd.set("label_color", "{self.name}_{i}", self.name)
             cmd.set("label_size", size, self.name)
-            
-    #def load(self):
-    #    from pymol import cmd
-    #    from ..util.ViewportCallback import ViewportCallback
-    #    colors = np.full(len(self.labels), None) if self.color is None else self.color
-    #    viewportCallbacks = []
-    #    for i, (label, position, color, size) in enumerate(zip(self.labels, self.positions, colors, self.size)):
-    #        used_position = [0,0,0] if self._fixed else position.tolist()
-    #        cmd.pseudoatom(self.name, label=label, pos = used_position, state = self.state)
-    #        if not (color is None):
-    #            cmd.set_color("{self.name}_{i}", self.colormap.get_color(color)[:3])
-    #            cmd.set("label_color", "{self.name}_{i}", self.name)
-    #        cmd.set("label_size", size, self.name)
-    #        print(self.name, position[0], position[1])
-    #        viewportCallback = ViewportCallback(self.name, position[0], position[1])
-    #        viewportCallbacks.append(viewportCallback)
-    #    print(viewportCallbacks)
-    #    for viewportCallback in viewportCallbacks:
-    #        viewportCallback.load()
-    #        print(viewportCallback.name, viewportCallback.x, viewportCallback.y)
-            
-
-    #def _script_string(self):
-    #    result = []
-    #    colors = np.full(len(self.labels), None) if self.color is None else self.color
-    #    for i, (label, position, color, size) in enumerate(zip(self.labels, self.positions, colors, self.size)):
-    #        used_position = [0,0,0] if self._fixed else position.tolist()
-    #        result.append(f"""cmd.pseudoatom("{self.name}", label="{label}", pos = {used_position}, state = {self.state})""")
-    #        if not (color is None):
-    #            result.append(f"""
-#cmd.set_color("{self.name}_{i}", {self.colormap.get_color(color)[:3]})
-#cmd.set("label_color", "{self.name}_{i}", "{self.name}")
-#""")
-#            result.append(f"""
-#cmd.set("label_size", {size}, "{self.name}")
-#""")
-    #    return "\n".join(result)
-
-    #@property
-    #def fixed(self):
-    #    return self._fixed
-
-    #@fixed.getter
-    #def fixed(self, value):
-    #    self._fixed = value
-    #    self.dependencies = [viewport_callback] if self._fixed else []
         
     def _script_string(self):
         result = []
