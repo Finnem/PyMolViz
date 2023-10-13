@@ -62,16 +62,23 @@ class Volume(Displayable):
         self.dependencies.extend([self.grid_data])
 
 
-    def cut(self, point : np.array, normal : np.array,interpolation = "RBF"):
+    def cut(self, point : np.array, normal : np.array,interpolation = "NN"):
+        """
+        Cut the volume along a plane defined by a point on the plane and a normal. 
+        
+        Args:
+            point (np.array): point on the plane
+            normal (np.array): normal of the plane
+            interpolation (np.array, optional): Defaults to "NN". The interpolation method to use. Can be "NN" (nearest neighbor) or "Lin/NN" linear and nearest neighbor. 
+        """
         normal = np.array(normal/np.linalg.norm(normal))
         point = np.array(point)
 
         new_grid_data = self.grid_data.cut(point, normal, interpolation)
         
-        # wenn man hier die selection und carve nicht übergibt funktioniert alles, aber man sieht halt den gesamten grid data Block
-        new_volume = type(self)(new_grid_data, name="%s_cut"%self.name, colormap = self.colormap, state = self.state)
+        new_volume = type(self)(new_grid_data, name="%s_cut"%self.name, alphas = self.alphas, clims = self.clims, colormap = self.colormap, state = self.state)
         new_volume.A_to = new_volume.grid_data.A_to
-        # nur wenn volume geladen ist, wird es auch geladen
+
         if self.is_loaded:
             new_volume.load()
         return new_volume

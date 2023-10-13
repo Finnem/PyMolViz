@@ -82,10 +82,12 @@ def minimum_bounding_parallelogram(points):
     # apply rotations to the hull points
     rot_points = np.dot(rotations, hull_points.T)
  
+    # compute the areas for each rotation
     list_spanning_points = []
     areas = []
     for i,rotation in enumerate(rot_points):
         rotation = rotation.T
+        # get three consecutive hull points
         if i == len(rotation) - 2:
             end1 = rotation[-2]
             vertex = rotation[-1]
@@ -98,10 +100,12 @@ def minimum_bounding_parallelogram(points):
             end1 = rotation[i]
             vertex = rotation[i+1]
             end2 = rotation[i+2]
+        # define edges between the consecutive hull points
         e1 = end1 - vertex
         e2 = end2 - vertex
         max_e2 = 0
         max_e1 = 0
+        # project all hull points on each edge and compute the maximum value for each edge 
         for edge in rotation:
             a,b = np.linalg.solve(np.array([e1,e2]).T,(edge - vertex))
             if b > max_e2:
@@ -109,27 +113,49 @@ def minimum_bounding_parallelogram(points):
             if a > max_e1:
                 max_e1 = a
         
+        # get height of parallelogram (the height is simply the maximal distance on the y axis because one edge is parallel to the x axis)
         h = end2[1] - vertex[1]
+        # compute area of parallelogram
         areas.append(max_e1 * h)
         list_spanning_points.append([vertex + np.dot(e1, max_e1), vertex, vertex + np.dot(e2, max_e2)])
     
+    # get spanning points and rotation of parallelogram with minimal area
     best_spanning_points = np.array(list_spanning_points[np.argmin(areas)])
     best_rotation = rotations[np.argmin(areas)]
     
+    # rotate the relevant spanning points back to their original position
     original_spanning_points = np.dot(best_spanning_points, best_rotation)
     
     return original_spanning_points
 
 def get_new_basis_vectors(plane_coords,  point, normal):
+    """"
+    Compute two vectors that define the new basis vectors spanning the plane and the origin of the new coordinate system.
+    
+    Args:
+        plane_coords (np.array): coordinates of points on the plane that should be contained in the new GridData object.
+        point (np.array): point on the plane
+        normal (np.array): normal of the plane
+        
+    Returns points c1, t and c2, where t is the origin of the new coordinate system and c1 and c2 are two vectors spanning the plane.
+    """
+    
     import numpy as np
+    # compute two random vectors spanning the plane
     u,v = get_orthogonal_vectors(normal)
+    # transform the 3D plane coordinates into 2D plane coordinates
     plane_coords_2d = transform_3d_to_2d(plane_coords, point, u,v)
     
+    # compute the 2D vectors defining the parallelogram with the minimal area
     bounding_rectangle_2d = minimum_bounding_parallelogram(plane_coords_2d)
+    # transform these 2D vectors back into 3D vectors
     bounding_rectangle_3d = transform_2d_to_3d(bounding_rectangle_2d, point, u,v)
+    # the second vector represents the origin of the new coordinate system
     t = bounding_rectangle_3d[1]
+    # the difference between the other vectors and the second vector are the new basis vectors
     max_c1 = bounding_rectangle_3d[0] - bounding_rectangle_3d[1]
     max_c2 = bounding_rectangle_3d[2] - bounding_rectangle_3d[1]
+    # normalize the new basis vectors
     distance_c1 = np.linalg.norm(max_c1)
     distance_c2 = np.linalg.norm(max_c2)
     c1 = max_c1/distance_c1

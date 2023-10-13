@@ -141,6 +141,14 @@ class GridData(Displayable):
         return np.array(projected_corners).reshape(-1,3)
     
     def cut(self,  point, normal, interpolation = "NN"):
+        """
+        Cut the grid data along a plane defined by a point on the plane and a normal. 
+        
+        Args:
+            point (np.array): point on the plane
+            normal (np.array): normal of the plane
+            interpolation (np.array, optional): Defaults to "NN". The interpolation method to use. Can be "NN" (nearest neighbor) or "Lin/NN" linear and nearest neighbor. 
+        """
         normal = np.array(normal/np.linalg.norm(normal)) # normalize normal vector
         point = np.array(point)
         
@@ -161,14 +169,16 @@ class GridData(Displayable):
         y = np.linspace(self.origin[1], self.origin[1] + self.step_sizes[1] * self.step_counts[1], self.step_counts[1] + 1)
         z = np.linspace(self.origin[2], self.origin[2] + self.step_sizes[2] * self.step_counts[2], self.step_counts[2] + 1)
         xx, yy, zz = np.meshgrid(x, y, z)
-        old_positions_original_space = np.array([yy.flatten(), xx.flatten(), zz.flatten()]).T
+        old_positions_original_space = np.array([xx.flatten(), yy.flatten(), zz.flatten()]).T
+        # replace the previous line with the following line to run the two examples with .xyz
+        #old_positions_original_space = np.array([yy.flatten(), xx.flatten(), zz.flatten()]).T
         
         # The original grid positions are converted into the new space and a point with maximal x,y, and z coordinate is constructed. This is the point
         # that defines the end of the new grid.
         old_positions = np.matmul(M_from, (np.array(old_positions_original_space.T) - np.array(t).reshape(-1,1))).T
         max_point = [np.max(old_positions[:,0]), np.max(old_positions[:,1]), np.max(old_positions[:,2])]
         old_values = self.values 
-
+        
         # the new origin and step sizes are computed
         new_origin = [np.min(old_positions[:,0]), np.min(old_positions[:,1]), 0]
         new_step_count = np.ceil(np.array(np.array(max_point) - np.array(new_origin))/np.array(self.step_sizes))
@@ -192,13 +202,11 @@ class GridData(Displayable):
                                         (new_positions_original_space[:,2] > np.max(old_positions_original_space[:,2])) | (new_positions_original_space[:,2] < np.min(old_positions_original_space[:,2])))
         outer_positions = new_positions_original_space[outer_position_index]       
         
-        
-        
         # the new grid values are obtained by interpolating the old values
         new_values = np.zeros(len(new_positions))
         if interpolation == "Lin/NN":
             from scipy.interpolate import LinearNDInterpolator,NearestNDInterpolator
-            interp = LinearNDInterpolator(old_positions, old_values)
+            interp = LinearNDInterpolator(old_positions_original_space, old_values)
             new_values_inner = interp(inner_positions)
             new_values[inner_positions_index] = new_values_inner
             interp = NearestNDInterpolator(old_positions_original_space, old_values)
@@ -212,7 +220,7 @@ class GridData(Displayable):
         # new_positions are the positions in unit vector space, new_values are the corresponding values which are obtained in the original space
         new_grid_data = GridData(new_values, new_positions, name="%s_cut"%self.name) 
         new_grid_data.A_to = np.stack((np.concatenate((c1, [0])),np.concatenate((c2, [0])),np.concatenate((normal,[0])), np.concatenate((t,[1]))), axis = 1)
-
+        
         if self.is_loaded:
             new_grid_data.load()
         
