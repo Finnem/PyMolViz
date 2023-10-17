@@ -89,7 +89,7 @@ class ColorMap(Displayable):
                         self.clims = [np.min(mapped_values), np.max(mapped_values)]
                         self._norm = matplotlib.colors.Normalize(vmin = self.clims[0], vmax = self.clims[1])
                         self.colormap = LinearSegmentedColormap.from_list("custom", list(zip(self._norm(mapped_values), colors)))
-                        self._color_type = "segmented_single"
+                        self._color_type = "segmented_multi"
                     except TypeError:
                         # list of (value, value) pairs
                         colors = []
@@ -122,6 +122,7 @@ class ColorMap(Displayable):
             fig = ax.figure
 
         fig.colorbar(matplotlib.cm.ScalarMappable(norm = self._norm, cmap = self.colormap), cax = ax, **kwargs)
+        return fig
 
     def _script_string(self):
         """ Creates a pymol script to create this colorbar as a pymol displayable.

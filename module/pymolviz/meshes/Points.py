@@ -29,7 +29,7 @@ class Points(Displayable):
             self.colormap = ColorMap(color, colormap, state = state, name=f"{self.name}_colormap", *args, **kwargs)
         else:
             self.colormap = colormap
-        if self.colormap._color_type.startswith("single"): # colors were not inferred
+        if "single" in self.colormap._color_type: # colors were not inferred
             self.color = np.arange(self.vertices.shape[0]) # color is just the index
         else:
             self.color = np.array(color).flatten()

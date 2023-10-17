@@ -5,3 +5,8 @@ __pycache__/
 test/*/out/*
 pymolviz.egg-info/
 module/dist
+test/05-Regular_Volumetric_Data/02-Volumes_Cutoff Arbitrary 2.ipynb
+test/05-Regular_Volumetric_Data/02-Volumes_Cutoff_Regular.ipynb
+.gitignore
+test/05-Regular_Volumetric_Data/02-Volumes_Cutoff Arbitrary.ipynb
+test/05-Regular_Volumetric_Data/test_points.py

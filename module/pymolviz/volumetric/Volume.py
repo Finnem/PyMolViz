@@ -6,7 +6,7 @@ from ..ColorMap import ColorMap
 from ..util.colors import _convert_string_color
 
 class Volume(Displayable):
-    def __init__(self, grid_data : GridData, name = None, colormap = "RdYlBu_r", alphas = None, clims = None, selection = None, carve = None, state = 1):
+    def __init__(self, grid_data : GridData, name = None, colormap = "RdYlBu_r", alphas = None, clims = None, selection = None, carve = None, state = 1, use_min_max = False):
         """ 
         Computes and collects pymol commands to load in regular data and display it volumetrically.
 
@@ -29,8 +29,12 @@ class Volume(Displayable):
         super().__init__(name = name)
         
         if clims is None:
-            min_val = max([np.min(grid_data.values), -np.std(grid_data.values) * 5 + np.mean(grid_data.values)])
-            max_val = min([np.max(grid_data.values), np.std(grid_data.values) * 5 + np.mean(grid_data.values)])
+            if use_min_max:
+                min_val = np.min(grid_data.values)
+                max_val = np.max(grid_data.values)
+            else:
+                min_val = max([np.min(grid_data.values), -np.std(grid_data.values) * 5 + np.mean(grid_data.values)])
+                max_val = min([np.max(grid_data.values), np.std(grid_data.values) * 5 + np.mean(grid_data.values)])
             self.clims = np.linspace(min_val, max_val, 33)
             # getting number of values within each bin
             self.clims = np.vstack([self.clims[:-1], self.clims[1:]]).T.flatten()
@@ -48,7 +52,7 @@ class Volume(Displayable):
             densities = np.sum((bins[:,0] < self.grid_data.values[:, None]) & (bins[:,1] >= self.grid_data.values[:, None]), axis = 0)
             if np.sum(densities) == 0: densities = np.ones(len(densities))
             densities = densities / np.sum(densities)
-            densities = np.clip(densities, np.min(densities), 0.9)
+            densities = np.clip(densities, None, 0.9)
             self.alphas = np.vstack([(1 - densities[:used_length]) * 0.03, np.full(len(densities[:used_length]), 0.005)]).T.flatten()
             if len(self.clims) % 2 == 1:
                 self.alphas = np.hstack([self.alphas, (1 - densities[-1]) * 0.03])

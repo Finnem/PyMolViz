@@ -14,6 +14,7 @@ class Expressions(Displayable):
             colormap: Optional. Defaults to "RdYlBu_r". Name of a colormap or a matplotlib colormap or a pymolviz.ColorMap object. Used to map values to colors.
         """
         super().__init__("dummy")
+        self.expressions = expressions
         if type(colormap) != ColorMap:
             self.colormap = ColorMap(color, colormap, name=f"{self.name}_colormap", *args, **kwargs)
         else:
@@ -22,7 +23,6 @@ class Expressions(Displayable):
             self.color = np.arange(len(self.expressions)) # color is just the index
         else:
             self.color = np.array(color).flatten()
-        self.expressions = expressions
 
 
     def _script_string(self):

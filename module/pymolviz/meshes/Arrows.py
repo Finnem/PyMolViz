@@ -20,7 +20,7 @@ class Arrows(Lines):
         render_as (str): Optional. Defaults to "lines". If "cylinders", arrows will be drawn as 3D objects using cylinders and cones.
     """
 
-    def __init__(self, lines, color = "red", name = None, state = 1, transparency = 0, colormap = "RdYlBu_r", linewidth = 1, head_length = .25, head_width = 1.618, render_as="lines", *args, **kwargs) -> None:
+    def __init__(self, lines, color = "red", name = None, state = 1, transparency = 0, colormap = "RdYlBu_r", linewidth = 0.3, head_length = .25, head_width = 1.618, render_as="lines", *args, **kwargs) -> None:
         self.original_color = color
         self.head_length = head_length
         self.head_width = head_width
@@ -51,7 +51,6 @@ class Arrows(Lines):
             new_lines[i * 4 + 2] = np.hstack([end, y1])
             new_lines[i * 4 + 3] = np.hstack([end, y2])
         lines = np.hstack([original_lines, new_lines.reshape(-1, 24)])
-                
 
         super().__init__(lines.reshape(-1, 3), color, name, state, transparency, colormap, linewidth, render_as, *args, **kwargs)
         self.linewidth = linewidth
