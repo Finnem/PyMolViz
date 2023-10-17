@@ -75,5 +75,7 @@ cmd.set("cgo_transparency", {self.transparency}, "{self.name}")
 
         return "\n".join(cgo_string_builder)
 
-
+    def load(self):
+        for CGO in self:
+            CGO.load()
 

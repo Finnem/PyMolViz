@@ -29,7 +29,7 @@ class Points(Displayable):
             self.colormap = ColorMap(color, colormap, state = state, name=f"{self.name}_colormap", *args, **kwargs)
         else:
             self.colormap = colormap
-        if self.colormap._color_type.startswith("single"): # colors were not inferred
+        if "single" in self.colormap._color_type: # colors were not inferred
             self.color = np.arange(self.vertices.shape[0]) # color is just the index
         else:
             self.color = np.array(color).flatten()
@@ -96,3 +96,19 @@ cmd.load_cgo({cgo_name}, "{cgo_name}"{state})
 cmd.set("cgo_transparency", {self.transparency}, "{cgo_name}")
         """)
         return "\n".join(cgo_string_builder)
+    
+    def load(self):
+        from pymol import cgo
+        from pymol import cmd
+        cgo_name = self.name.replace(" ", "_")
+        content = [e for e in self._create_CGO_list()]
+        map_cgo_keys = {"POINTS": cgo.POINTS, "SPHERE":cgo.SPHERE, "COLOR":cgo.COLOR, "VERTEX": cgo.VERTEX, "NORMAL":cgo.NORMAL, "CYLINDER": cgo.CYLINDER, 
+                        "CONE": cgo.CONE, "BEGIN": cgo.BEGIN, "END": cgo.END, "LINEWIDTH": cgo.LINEWIDTH, "LINES": cgo.LINES, "TRIANGLES": cgo.TRIANGLES}
+        for idx, entry in enumerate(content):
+            try: 
+                content[idx] = float(entry)
+            except ValueError:
+                content[idx] = map_cgo_keys[entry]
+        state = str(self.state)
+        cmd.load_cgo(content, cgo_name, state)
+        cmd.set("cgo_transparency", self.transparency, cgo_name)
