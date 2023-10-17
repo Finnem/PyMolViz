@@ -7,7 +7,7 @@ from ..util.colors import _convert_string_color
 
 
 class IsoSurface(Displayable):
-    def __init__(self, grid_data : GridData, level: float, name = None, color = None, transparency = 0, selection = None, carve = None, side = 1):
+    def __init__(self, grid_data : GridData, level: float, name = None, color = None, transparency = 0, selection = '', carve = None, side = 1):
         """ 
         Computes and collects pymol commands to load in regular data and display an iso mesh at the given level.
         Note that, since this is based on volumetric data it is different from the pmv.Mesh class.
@@ -72,3 +72,15 @@ cmd.set("transparency", {self.transparency}, "{self.name}")
         """
         
         return result
+    
+    def load(self):
+        from pymol import cmd
+        self.grid_data.load()
+        cmd.isosurface(self.name, self.grid_data.name,level= self.level, side = self.side, selection = self.selection, carve = self.carve)
+        if issubclass(type(self.color), ColorRamp):
+            self.color.load()
+            cmd.color(self.color.name, self.name)
+        else:
+            cmd.set_color(self.name + "_color", self.color)
+            cmd.color(self.name + "_color", self.name)
+        cmd.set("transparency", self.transparency, self.name)

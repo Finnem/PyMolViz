@@ -143,6 +143,17 @@ class ColorMap(Displayable):
         result = "\n".join(result)
         return result
 
+    def load(self):
+        from .volumetric.GridData import GridData
+        from pymol import cmd
+        dummy_data = GridData(np.zeros(8), name="cbar_dummy", step_sizes=(1e-8,1e-8,1e-8), step_counts=(1,1,1)) 
+        
+        sample_points = np.linspace(self.clims[0], self.clims[-1], 100)
+        colors = self.get_color(sample_points)[:,:3]
+        dummy_data.load()
+        cmd.ramp_new(self.name, dummy_data.name, range = [c for c in sample_points], color = [[c for c in color] for color in colors], state = self.state)
+        cmd.delete(dummy_data.name)
+    
     def _value2color(self, value):
         color = None
         alpha = None

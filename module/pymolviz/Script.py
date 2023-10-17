@@ -62,17 +62,18 @@ from pymol.cgo import *
 from pymol import cmd
 import numpy as np
 from chempy.brick import Brick
-final_calls = {}
-        '''
-        ]
+from collections import defaultdict
+positions_viewport_callbacks = defaultdict(lambda: defaultdict(lambda: ViewportCallback([],0,0)))
+''']
 
         for displayable in self.displayables:
             cgo_string_builder.append(displayable._script_string())
 
         cgo_string_builder.append(
             """
-for call, kwargs in final_calls.items():
-    call(**kwargs)
+for x in positions_viewport_callbacks:
+    for y in positions_viewport_callbacks[x]:
+        positions_viewport_callbacks[x][y].load()
 """
         )
         final_string = "\n".join(cgo_string_builder)

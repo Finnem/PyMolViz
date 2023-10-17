@@ -31,3 +31,15 @@ cmd.set("transparency", {self.transparency}, "{self.name}")
         """
         
         return result
+    
+    def load(self):
+        from pymol import cmd
+        cmd.isomesh(self.name, self.grid_data.name, level = self.level, selection = self.selection, carve = self.carve)
+        if issubclass(type(self.color), ColorRamp):
+            cmd.color(self.color.name, self.name)
+        else:
+            cmd.set_color("{self.name}_color", self.color)
+            cmd.color("{self.name}_color", self.name)
+        cmd.set("transparency", self.transparency, self.name)
+            
+        

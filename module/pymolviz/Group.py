@@ -59,3 +59,9 @@ cmd.group("{self.name}", "open")
         # ending
 
         return "\n".join(cgo_string_builder)
+    
+    def load(self):
+        from pymol import cmd
+        for i in range(0,len(self)):
+            self[i].load()
+        cmd.group(self.name, members = " ".join([item.name for item in self]))

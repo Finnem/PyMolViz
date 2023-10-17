@@ -48,3 +48,10 @@ class ColorRamp(Displayable):
         result = f"""cmd.ramp_new("{self.name}", "{self.data.name}", range = [{",".join([str(c) for c in sample_points])}], color = [{", ".join(["[" + ", ".join([str(c) for c in color]) + "]" for color in colors])}], state = {self.state})"""
         
         return result
+    
+    def load(self):
+        from pymol import cmd
+        sample_points = np.linspace(self.clims[0], self.clims[-1], 100)
+        colors = self.colormap.get_color(sample_points)[:,:3]
+        self.data.load()
+        cmd.ramp_new(self.name, self.data.name, range = [c for c in sample_points], color = [[c for c in color] for color in colors], state = self.state)
