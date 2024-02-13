@@ -5,3 +5,5 @@ from .Sphere import Sphere
 from .Plane import Plane
 from .Arrows import Arrows
 from .CGOCollection import CGOCollection
+from .CGOMolecule import CGOMolecule
+from .derived import *

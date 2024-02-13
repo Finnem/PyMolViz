@@ -20,10 +20,11 @@ class Arrows(Lines):
         render_as (str): Optional. Defaults to "lines". If "cylinders", arrows will be drawn as 3D objects using cylinders and cones.
     """
 
-    def __init__(self, lines, color = "red", name = None, state = 1, transparency = 0, colormap = "RdYlBu_r", linewidth = 0.3, head_length = .25, head_width = 1.618, render_as="lines", *args, **kwargs) -> None:
+    def __init__(self, lines, color = "red", name = None, state = 1, transparency = 0, colormap = "RdYlBu_r", linewidth = 0.05, head_length = .25, head_width = 1.618, render_as="cylinders", *args, **kwargs) -> None:
         self.original_color = color
         self.head_length = head_length
         self.head_width = head_width
+        lines = np.array(lines)
         try:
             if (not np.issubdtype(type(color), np.str_)):
                 if (len(color) == (len(lines.reshape(-1, 3)) / 2)):
@@ -73,7 +74,6 @@ class Arrows(Lines):
             cgo_colors = self.colormap.get_color(self.color)[:,:3].reshape(-1, 3)
             start_colors = cgo_colors[::10]
             end_colors = cgo_colors[1::10]
-            print(starts.shape, cylinder_ends.shape, start_colors.shape)
             cylinders = np.hstack([
                 np.full(starts.shape[0], "CYLINDER")[:,None], starts, cylinder_ends, np.full(starts.shape[0], self.linewidth)[:,None], start_colors, end_colors \
             ]).flatten()

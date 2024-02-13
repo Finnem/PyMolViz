@@ -57,7 +57,7 @@ class Points(Displayable):
         cgo_list = []
         
         
-        if self.render_as == "Spheres":
+        if self.render_as.lower() == "spheres":
             #vertices
             point_meshes = np.hstack([
                 np.full(cgo_points.shape[0], "COLOR")[:,None], cgo_colors, \
@@ -66,7 +66,7 @@ class Points(Displayable):
                 ]).flatten()
             cgo_list.extend(point_meshes)
 
-        elif self.render_as == "Dots":
+        elif self.render_as.lower() == "dots":
             cgo_list.extend(["BEGIN", "POINTS"])
             #vertices
             points = np.hstack([

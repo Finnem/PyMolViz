@@ -19,7 +19,7 @@ class Lines(Points):
 
     """
 
-    def __init__(self, lines : np.array, color = "red", name = None, state = 1, transparency = 0, colormap = "RdYlBu_r", linewidth = 1, render_as = "lines", *args, **kwargs) -> None:
+    def __init__(self, lines : np.array, color = "red", name = None, state = 1, transparency = 0, colormap = "RdYlBu_r", linewidth = 1, render_as = "cylinders", *args, **kwargs) -> None:
         try:
             if (not np.issubdtype(type(color), np.str_)):
                 if (len(color) == (len(lines.reshape(-1, 3)) / 2)):
@@ -68,7 +68,6 @@ class Lines(Points):
 
         elif self.render_as == "cylinders":
             cgo_vertices = self.vertices.reshape(-1, 6)
-            print(self.colormap.get_color(self.color).shape)
             cgo_colors = self.colormap.get_color(self.color)[:,:3].reshape(-1, 6)
             triangles = np.hstack([
                 np.full(cgo_vertices.shape[0], "CYLINDER")[:,None], cgo_vertices, np.full(cgo_vertices.shape[0], self.linewidth)[:,None], cgo_colors \

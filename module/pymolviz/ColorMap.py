@@ -109,7 +109,7 @@ class ColorMap(Displayable):
                         self._color_type = "segmented_inferred"
         if self.colormap is None:
             raise ValueError("Could not infer a colormap from the given values.")
-
+        self._mappable = matplotlib.cm.ScalarMappable(norm = self._norm, cmap = self.colormap)
         super().__init__(name = name)
 
     def get_color(self, values):
@@ -121,7 +121,7 @@ class ColorMap(Displayable):
         else:
             fig = ax.figure
 
-        fig.colorbar(matplotlib.cm.ScalarMappable(norm = self._norm, cmap = self.colormap), cax = ax, **kwargs)
+        fig.colorbar(self._mappable, cax = ax, **kwargs)
         return fig
 
     def _script_string(self):
@@ -136,9 +136,12 @@ class ColorMap(Displayable):
         sample_points = np.linspace(self.clims[0], self.clims[-1], 100)
         colors = self.get_color(sample_points)[:,:3]
         result = []
+        result.append("cur_auto_zoom_setting = cmd.get('auto_zoom')")
+        result.append("cmd.set('auto_zoom', 'off')")
         result.append(dummy_data._script_string())
         result.append(f"""cmd.ramp_new("{self.name}", "{dummy_data.name}", range = [{",".join([str(c) for c in sample_points])}], color = [{", ".join(["[" + ", ".join([str(c) for c in color]) + "]" for color in colors])}], state = {self.state})""")
         result.append(f"""cmd.delete("{dummy_data.name}")""")
+        result.append("cmd.set('auto_zoom', cur_auto_zoom_setting)")
 
         result = "\n".join(result)
         return result
