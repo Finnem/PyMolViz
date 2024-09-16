@@ -41,6 +41,9 @@ class Mesh(Points):
         for face in self.faces:
             vertex_indices.extend([face[0], face[1], face[1], face[2], face[2], face[0]])
         
+        if not "render_as" in kwargs:
+            kwargs["render_as"] = "lines"
+        
         return Lines(self.vertices[vertex_indices], self.color[vertex_indices], *args, **kwargs)
 
 

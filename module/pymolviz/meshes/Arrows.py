@@ -12,7 +12,7 @@ class Arrows(Lines):
         color (np.array): A 3xN array of colors. May have a color for each line or each vertex.
         name (str): Optional. Defaults to None. The name of the object.
         state (int): Optional. Defaults to 1. The state of the object.
-        transparency (float): Optional. Defaults to 0. The transparency value of the object.
+        transparency (np.array): Optional. Defaults to 0. The transparency value of the object.
         colormap: Optional. Defaults to "RdYlBu_r". Name of a colormap or a matplotlib colormap or a pymolviz.ColorMap object. Used to map values to colors.
         linewidth (float): Optional. Defaults to 1. The width of the lines. Seems to be currently not supported by PyMol.
         head_length (float): The relative length of the arrow head. Does not influence the length of the arrow itself.
@@ -25,6 +25,7 @@ class Arrows(Lines):
         self.head_length = head_length
         self.head_width = head_width
         lines = np.array(lines)
+        
         try:
             if (not np.issubdtype(type(color), np.str_)):
                 if (len(color) == (len(lines.reshape(-1, 3)) / 2)):
@@ -52,8 +53,12 @@ class Arrows(Lines):
             new_lines[i * 4 + 2] = np.hstack([end, y1])
             new_lines[i * 4 + 3] = np.hstack([end, y2])
         lines = np.hstack([original_lines, new_lines.reshape(-1, 24)])
-
-        super().__init__(lines.reshape(-1, 3), color, name, state, transparency, colormap, linewidth, render_as, *args, **kwargs)
+        self.transparency = transparency
+        try:
+            self.transparency[0]
+        except TypeError:
+            self.transparency = np.full(int(original_lines.shape[0]), self.transparency)
+        super().__init__(lines.reshape(-1, 3), color, name, state, self.transparency, colormap, linewidth, render_as, *args, **kwargs)
         self.linewidth = linewidth
 
     def _create_CGO_list(self) -> str:
@@ -74,12 +79,14 @@ class Arrows(Lines):
             cgo_colors = self.colormap.get_color(self.color)[:,:3].reshape(-1, 3)
             start_colors = cgo_colors[::10]
             end_colors = cgo_colors[1::10]
+            transparency = 1 - self.transparency
+
             cylinders = np.hstack([
-                np.full(starts.shape[0], "CYLINDER")[:,None], starts, cylinder_ends, np.full(starts.shape[0], self.linewidth)[:,None], start_colors, end_colors \
+                np.full(starts.shape[0], "ALPHA")[:,None], transparency[:,None], np.full(starts.shape[0], "CONE")[:,None], starts, cylinder_ends, np.full(starts.shape[0], self.linewidth)[:,None], np.full(starts.shape[0], self.linewidth)[:,None], start_colors, end_colors, np.full((starts.shape[0],2), (1.0, 0.0)) \
             ]).flatten()
             cgo_list.extend(cylinders)
             cones = np.hstack([
-                    np.full(starts.shape[0], "CONE")[:,None], cylinder_ends, ends, np.full(starts.shape[0], self.linewidth * self.head_width)[:,None], np.full(starts.shape[0], 0.0)[:,None], end_colors, end_colors, np.full((starts.shape[0],2), 1.0)
+                    np.full(starts.shape[0], "ALPHA")[:,None], transparency[:,None], np.full(starts.shape[0], "CONE")[:,None], cylinder_ends, ends, np.full(starts.shape[0], self.linewidth * self.head_width)[:,None], np.full(starts.shape[0], 0.0)[:,None], end_colors, end_colors, np.full((starts.shape[0],2), 0.0)
             ]).flatten()
             cgo_list.extend(cones)
         return cgo_list

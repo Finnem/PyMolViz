@@ -35,6 +35,7 @@ class GridData(Displayable):
         else:
             positions = np.array(positions)
             sorted_indices = np.lexsort((positions[:, 2], positions[:, 1], positions[:, 0]))
+            positions = positions[sorted_indices]
             # determine step_size
             if self.step_sizes is None:
                 self.step_sizes = np.zeros(3)
@@ -57,6 +58,7 @@ class GridData(Displayable):
         self.step_counts = np.array(self.step_counts, dtype=int)
         if len(values) != np.product(self.step_counts + 1):
             raise ValueError(f"Number of values ({len(values)}) does not match number of grid points ({np.product(self.step_counts + 1)}).")
+        self.sorted_indices = sorted_indices
         self.values = values[sorted_indices]
         self.step_sizes = np.array(self.step_sizes)
 
@@ -231,7 +233,12 @@ class GridData(Displayable):
         y = np.linspace(self.origin[1], self.origin[1] + self.step_sizes[1] * self.step_counts[1], self.step_counts[1] + 1)
         z = np.linspace(self.origin[2], self.origin[2] + self.step_sizes[2] * self.step_counts[2], self.step_counts[2] + 1)
         xx, yy, zz = np.meshgrid(x, y, z)
-        positions = np.array([yy.flatten(), xx.flatten(), zz.flatten()]).T
+        # invert indices
+        xx, yy, zz = xx.flatten(), yy.flatten(), zz.flatten()
+        xx, yy, zz = xx[self.sorted_indices], yy[self.sorted_indices], zz[self.sorted_indices]
+        #positions = np.array([yy.flatten(), xx.flatten(), zz.flatten()]).T
+        positions = np.array([xx.flatten(), yy.flatten(), zz.flatten()]).T
+
         return positions
     
     @property    

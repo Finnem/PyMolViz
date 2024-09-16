@@ -44,6 +44,78 @@ class Points(Displayable):
         return PseudoAtoms(self.vertices, self.color, name = self.name, state = self.state, colormap = self.colormap)
 
 
+    def interpolate_to_grid_data(self, grid_spacing = None, method = "linear", margin = .1, *args, **kwargs):
+        """ Converts the points to GridData.
+        
+        Parameters:
+        grid_spacing (array-like or float): Spacing between grid points in the 3 directions. Defaults to 1 in all directions.
+        method (str): Interpolation method, one of 'linear' or 'nearest'. Defaults to 'linear'.
+
+        Returns:
+            GridData: A GridData object.
+        """
+        
+        # Define the grid range based on the given bounding box or the given points
+        margin = 1 + margin
+        x_min, x_max = self.vertices[:, 0].min() * margin, self.vertices[:, 0].max() * margin
+        y_min, y_max = self.vertices[:, 1].min() * margin, self.vertices[:, 1].max() * margin
+        z_min, z_max = self.vertices[:, 2].min() * margin, self.vertices[:, 2].max() * margin
+        
+        if grid_spacing is None:
+            x_spacing = y_spacing = z_spacing = 1
+        elif type(grid_spacing) == float:
+            x_spacing = y_spacing = z_spacing = grid_spacing
+        else:
+            x_spacing, y_spacing, z_spacing = grid_spacing
+        # Create grid
+        xi = np.arange(x_min, x_max + x_spacing, x_spacing)
+        yi = np.arange(y_min, y_max + y_spacing, y_spacing)
+        zi = np.arange(z_min, z_max + z_spacing, z_spacing)
+        X, Y, Z = np.meshgrid(xi, yi, zi)
+        
+        if "single" in self.colormap._color_type: # colors were not inferred
+            values = np.ones(self.vertices.shape[0]) # values are just 1
+        else:
+            values = self.color
+        # Interpolate values on the grid
+        grid_values = griddata(self.vertices, values, (X, Y, Z), method=method)
+        
+        # Flatten the grid points and values
+        grid_points = np.vstack([X.ravel(), Y.ravel(), Z.ravel()]).T
+        grid_values = grid_values.ravel()
+        
+
+        return GridData(grid_values, grid_points, *args, **kwargs)
+
+    def to_surface(self, distance = 1, grid_spacing = 1, name = None, *args, **kwargs):
+        """ Converts the points to a surface.
+        
+        Returns:
+            IsoSurface: An IsoSurface object.
+        """
+        from ..volumetric.IsoSurface import IsoSurface
+        from ..volumetric.GridData import GridData
+
+        from scipy.spatial import KDTree
+        tree = KDTree(self.vertices)
+        # we determine grid points from the bounding box of the points
+
+        min_grid, max_grid = self.vertices.min(axis=0) - 2*distance, self.vertices.max(axis=0) + 2*distance
+        grid = np.mgrid[min_grid[0]:max_grid[0]:grid_spacing, min_grid[1]:max_grid[1]:grid_spacing, min_grid[2]:max_grid[2]:grid_spacing]
+        grid_data = np.vstack([grid[0].ravel(), grid[1].ravel(), grid[2].ravel()]).T
+        # we query the tree for the nearest point
+        distances, indices = tree.query(grid_data)
+        # we set the value of the grid point to the distance to the nearest point
+        values = distances * grid_spacing
+
+        if name is None:
+            gdata = GridData(values, grid_data)
+            return IsoSurface(gdata, distance, *args, **kwargs)
+        else:
+            gdata = GridData(values, grid_data, name=f"{name}_grid")
+            return IsoSurface(gdata, distance, name = f"{name}_surface", *args, **kwargs)
+
+
     def _create_CGO_list(self) -> list:
         """ Creates a CGO list from the mesh information. Points can be displayed as spheres or as points.
 
@@ -93,8 +165,15 @@ class Points(Displayable):
         cgo_string_builder.append(f"""
             ]
 cmd.load_cgo({cgo_name}, "{cgo_name}"{state})
-cmd.set("cgo_transparency", {self.transparency}, "{cgo_name}")
         """)
+        try:
+            self.transparency[0]
+        except TypeError:
+            transparency = self.transparency
+            cgo_string_builder.append(f"""
+cmd.set("cgo_transparency", {transparency}, "{cgo_name}")
+    """)
+        
         return "\n".join(cgo_string_builder)
     
     def load(self):
@@ -111,4 +190,7 @@ cmd.set("cgo_transparency", {self.transparency}, "{cgo_name}")
                 content[idx] = map_cgo_keys[entry]
         state = str(self.state)
         cmd.load_cgo(content, cgo_name, state)
-        cmd.set("cgo_transparency", self.transparency, cgo_name)
+        try:
+            self.transparency[0]
+        except TypeError:
+            cmd.set("cgo_transparency", self.transparency, cgo_name)

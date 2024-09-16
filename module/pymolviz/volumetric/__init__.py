@@ -1,4 +1,3 @@
-from .IrregularData import IrregularData
 from .GridData import GridData
 from .Volume import Volume
 from .IsoVolume import IsoVolume
