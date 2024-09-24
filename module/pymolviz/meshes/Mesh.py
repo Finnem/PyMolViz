@@ -20,7 +20,7 @@ class Mesh(Points):
         colormap: Optional. Defaults to "RdYlBu_r". Name of a colormap or a matplotlib colormap or a pymolviz.ColorMap object. Used to map values to colors.
     """
 
-    def __init__(self, vertices, color = "red", normals : np.array = None, faces : np.array = None, name = None, state = 1, transparency = 0, colormap = "RdYlBu_r", *args, **kwargs) -> None:
+    def __init__(self, vertices, color = None, normals : np.array = None, faces : np.array = None, name = None, state = 1, transparency = 0, colormap = "RdYlBu_r", *args, **kwargs) -> None:
         self.normals = np.array(normals, dtype=float).reshape(-1, 3) if normals is not None else np.zeros_like(vertices)
         self.faces = np.array(faces, dtype=int).reshape(-1, 3) if faces is not None else np.arange(vertices.shape[0]).reshape(-1, 3)
         super().__init__(vertices.reshape(-1, 3), color, name, state, transparency, colormap, *args, **kwargs)

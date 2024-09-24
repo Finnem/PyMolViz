@@ -1,7 +1,7 @@
 from . import Mesh
 import numpy as np
 class Sphere(Mesh):
-    def __init__(self, position, radius, color = "red", resolution = 20, *args, **kwargs) -> None:
+    def __init__(self, position, radius, color = None, resolution = 20, *args, **kwargs) -> None:
         """ Creates a sphere mesh.
 
         Args:

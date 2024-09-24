@@ -1,7 +1,7 @@
 from . import Mesh
 import numpy as np
 class Cylinder(Mesh):
-    def __init__(self, start, end, radius, color = "red", resolution = 20, *args, **kwargs) -> None:
+    def __init__(self, start, end, radius, color = None, resolution = 20, *args, **kwargs) -> None:
         """
         Create a cylinder mesh given a start point, end point, and radius, including normals.
 

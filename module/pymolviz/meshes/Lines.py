@@ -19,9 +19,9 @@ class Lines(Points):
 
     """
 
-    def __init__(self, lines : np.array, color = "red", name = None, state = 1, transparency = 0, colormap = "RdYlBu_r", linewidth = 1, render_as = "cylinders", *args, **kwargs) -> None:
+    def __init__(self, lines : np.array, color = None, name = None, state = 1, transparency = 0, colormap = "RdYlBu_r", linewidth = 1, render_as = "cylinders", *args, **kwargs) -> None:
         try:
-            if (not np.issubdtype(type(color), np.str_)):
+            if (not np.issubdtype(type(color), np.str_)) and (not (color is None)):
                 if (len(color) == (len(lines.reshape(-1, 3)) / 2)):
                     color = np.repeat(color, 2, axis = 0)
         except TypeError:

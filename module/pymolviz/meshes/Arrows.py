@@ -20,14 +20,14 @@ class Arrows(Lines):
         render_as (str): Optional. Defaults to "lines". If "cylinders", arrows will be drawn as 3D objects using cylinders and cones.
     """
 
-    def __init__(self, lines, color = "red", name = None, state = 1, transparency = 0, colormap = "RdYlBu_r", linewidth = 0.05, head_length = .25, head_width = 1.618, render_as="cylinders", *args, **kwargs) -> None:
+    def __init__(self, lines, color = None, name = None, state = 1, transparency = 0, colormap = "RdYlBu_r", linewidth = 0.05, head_length = .25, head_width = 1.618, render_as="cylinders", *args, **kwargs) -> None:
         self.original_color = color
         self.head_length = head_length
         self.head_width = head_width
         lines = np.array(lines)
         
         try:
-            if (not np.issubdtype(type(color), np.str_)):
+            if (not np.issubdtype(type(color), np.str_)) and (not (color is None)):
                 if (len(color) == (len(lines.reshape(-1, 3)) / 2)):
                     self.original_color = np.repeat(color, 2, axis = 0)
                     color = np.repeat(color, 10, axis = 0)

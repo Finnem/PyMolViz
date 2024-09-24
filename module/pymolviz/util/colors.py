@@ -1,4 +1,26 @@
 import numpy as np
+import seaborn as sns
+
+def get_distinct_colors(n_colors = 20, repeats = 6):
+	"""
+	Returns a list of distinct colors.
+
+	Args:
+		n_colors (int): The number of colors.
+		repeats (int): The number of times the colors should be (almost) repeated.	
+
+	Returns:
+		list: A list of distinct colors.
+	"""
+
+	colors = sns.husl_palette(n_colors)
+	reordered_colors = []
+	indices = []
+	for i in range(n_colors):
+		index = ((i * n_colors // repeats)  + i // repeats) % n_colors
+		indices.append(index)
+		reordered_colors.append(colors[index])
+	return reordered_colors
 
 def get_colormap(colormap):
 	""" Infers a colormap from the given data."""

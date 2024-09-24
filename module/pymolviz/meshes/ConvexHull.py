@@ -2,7 +2,7 @@ from . import Mesh
 import numpy as np
 from scipy.spatial import ConvexHull as scpConvexHull
 class ConvexHull(Mesh):
-    def __init__(self, points, color = "red", *args, **kwargs) -> None:
+    def __init__(self, points, color = None, *args, **kwargs) -> None:
         """
         Create a convex hull mesh from a set of points.
 

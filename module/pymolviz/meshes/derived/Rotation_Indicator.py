@@ -4,7 +4,7 @@ from ..Lines import Lines
 import numpy as np
 
 class Rotation_Indicator(Lines):
-    def __init__(self, position, axis, radius = 1, starting_normal = None, color ="red", name = None, state = 1, transparency = 0, colormap ="RdYlBu_r", linewidth=0.05, *args, **kwargs):
+    def __init__(self, position, axis, radius = 1, starting_normal = None, color = None, name = None, state = 1, transparency = 0, colormap ="RdYlBu_r", linewidth=0.05, *args, **kwargs):
         """Creates a rotation indicator mesh.
 
         Args:

@@ -1,7 +1,7 @@
 from . import Mesh
 import numpy as np
 class CenteredBox(Mesh):
-    def __init__(self, center, extent, color = "red", *args, **kwargs) -> None:
+    def __init__(self, center, extent, color = None, *args, **kwargs) -> None:
         """
             Create a rectangular box around given center with given extent.
             Use from_corners to create a box from two corners.

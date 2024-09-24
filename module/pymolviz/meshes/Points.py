@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import logging
 import numpy as np
+import seaborn as sns
 
 from ..ColorMap import ColorMap
 from ..Displayable import Displayable
 from ..PyMOLobjects.PseudoAtoms import PseudoAtoms
+from ..util.colors import get_distinct_colors
+
+pmv_default_color_palette = get_distinct_colors(20)
+pmv_default_color_counter = 0
 
 class Points(Displayable):
     """ Class to store points and associated colors which can be displayed as a point cloud.
@@ -22,8 +27,16 @@ class Points(Displayable):
         radius (float): Optional. Defaults to .3. Only relevant if render_as is "Spheres". The radius of the spheres.
     """
 
-    def __init__(self, vertices, color = "red", name = None, state = 1, transparency = 0, colormap = "RdYlBu_r", render_as = "Spheres", radius = .3, *args, **kwargs) -> None:
+    def __init__(self, vertices, color = None, name = None, state = 1, transparency = 0, colormap = "RdYlBu_r", render_as = "Spheres", radius = .3, *args, **kwargs) -> None:
+        global pmv_default_color_counter
+        global pmv_default_color_palette
         super().__init__(name)
+        if color is None:
+            color = pmv_default_color_palette[pmv_default_color_counter]
+            pmv_default_color_counter += 1
+            if pmv_default_color_counter >= len(pmv_default_color_palette):
+                pmv_default_color_palette = get_distinct_colors(pmv_default_color_counter * 2)
+
         self.vertices = np.array(vertices, dtype=float).reshape(-1, 3)
         if type(colormap) != ColorMap:
             self.colormap = ColorMap(color, colormap, state = state, name=f"{self.name}_colormap", *args, **kwargs)
@@ -32,7 +45,8 @@ class Points(Displayable):
         if "single" in self.colormap._color_type: # colors were not inferred
             self.color = np.arange(self.vertices.shape[0]) # color is just the index
         else:
-            self.color = np.array(color).flatten()
+            if not self.color is None:
+                self.color = np.array(color).flatten()
 
         self.render_as = render_as
         self.radius = radius
