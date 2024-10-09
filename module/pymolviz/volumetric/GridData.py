@@ -1,6 +1,9 @@
 import numpy as np
 from ..Displayable import Displayable
 from ..meshes.Points import Points
+import matplotlib.pyplot as plt
+from scipy.interpolate import griddata
+from scipy.spatial.transform import Rotation as R
 
 class GridData(Displayable):
     def __init__(self, values, positions = None, step_sizes = None, step_counts = None, origin = None, name = None):
@@ -227,6 +230,89 @@ class GridData(Displayable):
             new_grid_data.load()
         
         return new_grid_data
+
+    def plot_slice(self, normal, point, n_points=100, interpolation="nearest", range_colormap=None, colormap="RdYlBu_r", axes=None):
+
+        """
+        Plot a slice through the grid data defined by its normal vector and a point lying on the slice plane.
+
+        Args:
+            normal (list or np.array):               The normal vector of the slice plane.
+            point (list or np.array):                A point on the slice plane.
+            cd praktikum24
+
+            interpolation (str):                     Optional. The interpolation method to be used ("linear", "nearest", "cubic"). Defaults to "nearest".
+            range_colormap (list or np.array):       Optional. The range of values that should be covered by the colormap. Defaults to None ([min(self.values), max(self.values)]).
+            colormap (str):                          Optional. The colormap of the plot. Defaults to "RdYlBu_r".
+            axes (matplotlib Axes object):           Optional. An existing matplotlib Axes object that is to be used for the slice plot. Defaults to None (a new Axes object is created).
+
+        Returns:
+            The matplotlib Axes object containing the slice plot.
+        """
+
+        # extract coordinates from 3D grid
+        positions = self.get_positions()
+
+        x = positions[:, 0]
+        y = positions[:, 1]
+        z = positions[:, 2]
+
+        # create rotation of slice to xy plane to simplify creation of meshgrid
+        normal = np.array(normal) / np.linalg.norm(normal)  # normalize normal vector of slice plane
+        rot_axis = np.cross(normal, np.array([0, 0, 1]))
+        rot_angle = np.arccos(np.dot(normal, np.array([0, 0, 1])))
+        rot_vector = rot_axis * rot_angle
+        rotation = R.from_rotvec(rot_vector)
+
+        # get intersection points of slice with the edges of the 3D grid data
+        intersections = self._get_plane_intersections(point, normal)
+
+        # rotate intersection points to xy plane
+        intersections_rotated = rotation.apply(intersections)
+
+        # calculate optimal extent for xy plane from the rotated intersection points
+        min_x_rotated = min([point[0] for point in intersections_rotated])
+        max_x_rotated = max([point[0] for point in intersections_rotated])
+        min_y_rotated = min([point[1] for point in intersections_rotated])
+        max_y_rotated = max([point[1] for point in intersections_rotated])
+
+        # calculate meshgrid for rotated slice in xy plane
+        x_slice_rotated = np.linspace(min_x_rotated, max_x_rotated, n_points)
+        y_slice_rotated = np.linspace(min_y_rotated, max_y_rotated, n_points)
+        X_slice_rotated, Y_slice_rotated = np.meshgrid(x_slice_rotated, y_slice_rotated)
+        Z_slice_rotated = np.zeros_like(X_slice_rotated)
+        slice_points_rotated = np.c_[X_slice_rotated.ravel(), Y_slice_rotated.ravel(), Z_slice_rotated.ravel()]
+
+        # rotate slice plane back to original position to get the real coordinates
+        slice_points = rotation.inv().apply(slice_points_rotated)
+        x_slice, y_slice, z_slice = slice_points.T.reshape(3, n_points, n_points)
+
+        # interpolate values of slice plane
+        values_interpolated = griddata((x, y, z), self.values, (x_slice, y_slice, z_slice), method=interpolation)
+
+        # define the range of values covered by the colormap for plotting
+        if range_colormap is None:
+            range_colormap = [min(self.values), max(self.values)]
+        else:
+            range_colormap = np.array(range_colormap)
+
+        # create Axes object to plot slice through 3D grid data
+        if axes is None:
+            fig = plt.figure()
+            axes = fig.add_subplot()
+        else:
+            fig = axes.figure
+
+        plot = axes.imshow(values_interpolated, cmap=colormap,
+                    origin="lower", vmin=range_colormap[0], vmax=range_colormap[1])
+        fig.colorbar(plot, ax=axes)
+
+        axes.set_title("Slice")
+        axes.set_xlabel("X")
+        axes.set_ylabel("Y")
+
+        return axes
+
 
     def get_positions(self):
         x = np.linspace(self.origin[0], self.origin[0] + self.step_sizes[0] * self.step_counts[0], self.step_counts[0] + 1)
