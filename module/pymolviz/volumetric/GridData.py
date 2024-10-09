@@ -239,8 +239,8 @@ class GridData(Displayable):
         Args:
             normal (list or np.array):               The normal vector of the slice plane.
             point (list or np.array):                A point on the slice plane.
-            cd praktikum24
-
+            n_points (int):                          Optional. The number of points per axis on the slice plane to be interpolated, creating an n x n grid (density).
+                                                     Defaults to 100 (resulting in a 100 x 100 grid).
             interpolation (str):                     Optional. The interpolation method to be used ("linear", "nearest", "cubic"). Defaults to "nearest".
             range_colormap (list or np.array):       Optional. The range of values that should be covered by the colormap. Defaults to None ([min(self.values), max(self.values)]).
             colormap (str):                          Optional. The colormap of the plot. Defaults to "RdYlBu_r".
