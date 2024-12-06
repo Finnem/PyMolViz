@@ -238,6 +238,8 @@ class GridData(Displayable):
         xx, yy, zz = xx[self.sorted_indices], yy[self.sorted_indices], zz[self.sorted_indices]
         #positions = np.array([yy.flatten(), xx.flatten(), zz.flatten()]).T
         positions = np.array([xx.flatten(), yy.flatten(), zz.flatten()]).T
+        sorted_indices = np.lexsort((positions[:, 2], positions[:, 1], positions[:, 0]))
+        positions = positions[sorted_indices]
 
         return positions
     
@@ -264,12 +266,13 @@ class GridData(Displayable):
         # create grid
         positions = self.get_positions()
         # filter
+        values = self.values
         if filter is None:
             filtered_positions = positions
-            filtered_values = self.values
+            filtered_values = values
         else:
-            filtered_positions = positions[filter(self.values)]
-            filtered_values = self.values[filter(self.values)]
+            filtered_positions = positions[filter(values)]
+            filtered_values = values[filter(values)]
 
         return Points(filtered_positions, filtered_values, *args, **kwargs)
     

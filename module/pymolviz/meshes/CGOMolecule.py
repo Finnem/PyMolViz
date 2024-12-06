@@ -9,13 +9,13 @@ class CGOMolecule(Lines):
       Representing Molecules as CGO objects is significantly faster than as complete molecules, however their usability is limited.
       They can be used for coloring, but not for selection or other operations.
     """
-    def __init__(self, atom_coordinates, atom_types, adjacency_matrix, name = None, state = 1, transparency = 0, linewidth = 1, render_as = "lines", ho_spread = 0.1, element_colors = None, scale = 1, scale_center = "origin",*args, **kwargs):
+    def __init__(self, atom_coordinates, atom_types, adjacency_matrix, name = None, state = 1, transparency = 0, linewidth = 1, render_as = "lines", ho_spread = 0.1, element_colors = None, scale = 1, scale_center = "origin", render_ends = True, *args, **kwargs):
         self.atom_coordinates = atom_coordinates
         self.adjacency_matrix = adjacency_matrix
         self.atom_types = atom_types
         if element_colors is not None:
             for element, color in element_colors.items():
-                self.atom_types = [color if atom_type == element else atom_type for atom_type in self.atom_types]
+                self.atom_types = [color[:3] if atom_type == element else atom_type for atom_type in self.atom_types]
         self.ho_spread = ho_spread
         self.atom_types = np.array(self.atom_types, dtype=object)
 
@@ -24,12 +24,15 @@ class CGOMolecule(Lines):
         for bond_index in np.argwhere(np.tril(adjacency_matrix) != 0):
             order = int(np.ceil(adjacency_matrix[bond_index[0], bond_index[1]]))
             bond_coordinates.extend(self.draw_bond(bond_index, order))
+            print(self.draw_bond(bond_index, order))
+            print([self.atom_types[bond_index[0]], self.atom_types[bond_index[1]]] * order)
             colors.extend([self.atom_types[bond_index[0]], self.atom_types[bond_index[1]]] * order)
+            #print(colors)
         self.coordinates = np.array(bond_coordinates)
 
         self.scale(scale, scale_center)
 
-        super().__init__(self.coordinates, color = colors, name = name, state = 1, transparency = 0, colormap = None, linewidth=linewidth, render_as=render_as, *args, **kwargs)
+        super().__init__(self.coordinates, color = colors, name = name, state = 1, transparency = 0, colormap = None, linewidth=linewidth, render_as=render_as, render_ends = render_ends, *args, **kwargs)
 
 
     def draw_bond(self, bind_index, bond_order):

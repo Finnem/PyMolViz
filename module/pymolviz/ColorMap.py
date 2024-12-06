@@ -64,7 +64,7 @@ class ColorMap(Displayable):
                             colors.append(color)
                     self.clims = [0, len(colors) - 1]
                     self._norm = matplotlib.colors.Normalize(vmin = self.clims[0], vmax = self.clims[1])
-                    self.colormap = LinearSegmentedColormap.from_list("custom", list(zip(np.linspace(0, 1, len(colors)), colors)))
+                    self.colormap = LinearSegmentedColormap.from_list("custom", list(zip(self._norm(np.arange(len(colors))), colors)))
                     self._color_type = "multi_single"
             except TypeError:
                 pass
@@ -177,4 +177,5 @@ class ColorMap(Displayable):
             pass
         if color is None:
             raise TypeError
+        print(f"ColorMap.py:180 Infered color {color} and alpha {alpha} from value {value}")
         return color, alpha

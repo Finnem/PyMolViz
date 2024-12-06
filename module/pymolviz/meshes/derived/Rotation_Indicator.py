@@ -1,73 +1,57 @@
 from scipy.spatial.transform import Rotation
 from ...util.math import get_perp
-from ..Lines import Lines
+from ..Arrows import Arrows
 import numpy as np
 
-class Rotation_Indicator(Lines):
-    def __init__(self, position, axis, radius = 1, starting_normal = None, color = None, name = None, state = 1, transparency = 0, colormap ="RdYlBu_r", linewidth=0.05, *args, **kwargs):
-        """Creates a rotation indicator mesh.
 
+class Rotation_Indicator(Arrows):
+    def __init__(self, center_position, outer_start, rotation_axis, angle, color = None, name = None, state = 1, transparency = 0, colormap = "RdYlBu_r", linewidth = 0.05, resolution = 20, show_arrow = True, *args, **kwargs):
+        """Creates a rotation indicator mesh. Center_position (s) positions the indicator, outer_start (x) is the starting point of the drawn circle:
+         __x__
+        /  |  \\
+        |  s   |
+        \\____/
         Args:
-            position (np.ndarray): The position of the rotation indicator.
-            axis (np.ndarray): The axis of rotation.
-            radius (float): The radius of the rotation indicator.
-            starting_normal (np.ndarray): The starting normal of the rotation indicator.
+            center_position (np.ndarray): The position of the rotation indicator.
+            outer_start (np.ndarray): The starting point of the rotation indicator.
+            rotation_axis (np.ndarray): The axis of rotation.
+            angle (float): The angle of rotation in radians.
             color (np.ndarray): The color of the rotation indicator.
             name (str): The name of the rotation indicator.
             state (int): The state of the rotation indicator.
             transparency (float): The transparency of the rotation indicator.
             colormap (Colormap): The colormap of the rotation indicator.
+            linewidth (float): The linewidth of the rotation indicator.
             *args: Additional arguments for the Lines class.
             **kwargs: Additional keyword arguments for the Lines class.
         """
-        self.position = position
-        self.axis = np.array(axis); self.axis /= np.linalg.norm(self.axis)
-        self.starting_normal = starting_normal if starting_normal is not None else get_perp(self.axis)
+        self.center_position = center_position
+        self.outer_start = outer_start
+        self.rotation_axis = np.array(rotation_axis); self.rotation_axis = self.rotation_axis / np.linalg.norm(self.rotation_axis)
+        self.angle = angle
         self.color = color
         self.name = name
         self.state = state
         self.transparency = transparency
         self.colormap = colormap
 
-        # Create the rotation indicator mesh as set of lines
-        points = []
-        for i in range(1, 100):
-            points.append(Rotation.from_rotvec(self.axis * (i * 1.5* np.pi / 100)).apply(self.starting_normal * (1 + linewidth)))
-        
 
+        points = []
+        rotation_start = self.outer_start - self.center_position
+        for i in range(0, resolution + 1):
+            points.append(Rotation.from_rotvec(self.rotation_axis * (i * angle / resolution)).apply(rotation_start * (1 + linewidth)))
         self.vertices = np.array(points)
-        self.vertices *= radius
         self.vertices = np.hstack([self.vertices[:-1], self.vertices[1:]]).reshape(-1, 2, 3)
         self.vertices -= np.mean(self.vertices, axis = 1, keepdims = True) * linewidth
-        self.vertices += self.position
+        self.vertices += self.center_position
+
+        # dealing with final arrow could be done better, will look strange if resolution is to high
+
+        self.arrow_mask = np.zeros(int(len(self.vertices)), dtype=bool)
+        if show_arrow:
+            self.arrow_mask[-1] = True
+        #print(self.arrow_mask)
 
 
         # Create the Lines object
-        super().__init__(self.vertices, self.color, self.name, self.state, self.transparency, self.colormap, linewidth= linewidth, *args, **kwargs)
-
-    def _create_CGO_list(self) -> str:
-        """ Creates a CGO list from the mesh information. A rotation indicator mesh will be created.
-            CGO constants are kept as strings to avoid importing the pymol module.
-        
-        Returns:
-            None
-        """
-        if self.render_as == "lines":
-            raise NotImplementedError("Lines are not supported for rotation indicators.")
-           
-        elif self.render_as == "cylinders":
-            cgo_list = []
-            cgo_vertices = self.vertices.reshape(-1, 6)
-            cgo_colors = self.colormap.get_color(self.color)[:,:3].reshape(-1, 6)
-            # use final 20th fraction for cone
-            cone_start = np.array(cgo_vertices[-cgo_vertices.shape[0] // 10, :3])
-            cone_end = np.array(cgo_vertices[-1, :3])
-            cgo_vertices = cgo_vertices[:int(-cgo_vertices.shape[0] * 0.8 // 10)]
-            cgo_colors = cgo_colors[:int(-cgo_colors.shape[0] * 0.8 // 10)]
-            cylinders = np.hstack([
-                np.full(cgo_vertices.shape[0], "CYLINDER")[:,None], cgo_vertices, np.full(cgo_vertices.shape[0], self.linewidth)[:,None], cgo_colors \
-            ]).flatten()
-            cgo_list.extend(cylinders)
-            cones = ["CONE", *cone_start, *cone_end, self.linewidth * 2, 0.0, *cgo_colors[-1], 1.0, 1.0]
-            cgo_list.extend(cones)
-        return cgo_list
+        super().__init__(self.vertices, self.color, self.name, self.state, self.transparency, self.colormap, linewidth= linewidth, arrow_mask = self.arrow_mask, head_length = 0.9, *args, **kwargs)

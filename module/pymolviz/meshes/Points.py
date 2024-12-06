@@ -8,6 +8,7 @@ from ..ColorMap import ColorMap
 from ..Displayable import Displayable
 from ..PyMOLobjects.PseudoAtoms import PseudoAtoms
 from ..util.colors import get_distinct_colors
+from ..util.sanitize import sanitize_pymol_string
 
 pmv_default_color_palette = get_distinct_colors(20)
 pmv_default_color_counter = 0
@@ -33,6 +34,7 @@ class Points(Displayable):
         super().__init__(name)
         if color is None:
             color = pmv_default_color_palette[pmv_default_color_counter]
+            kwargs["values_are_single_color"] = True
             pmv_default_color_counter += 1
             if pmv_default_color_counter >= len(pmv_default_color_palette):
                 pmv_default_color_palette = get_distinct_colors(pmv_default_color_counter * 2)
@@ -45,8 +47,7 @@ class Points(Displayable):
         if "single" in self.colormap._color_type: # colors were not inferred
             self.color = np.arange(self.vertices.shape[0]) # color is just the index
         else:
-            if not self.color is None:
-                self.color = np.array(color).flatten()
+            self.color = np.array(color).flatten()
 
         self.render_as = render_as
         self.radius = radius
@@ -168,7 +169,7 @@ class Points(Displayable):
     def _script_string(self):
         cgo_string_builder = []
         state = "" if self.state is None else f", state={self.state}"
-        cgo_name = self.name.replace(" ", "_")
+        cgo_name = sanitize_pymol_string(self.name)
         cgo_string_builder.append(f"""
 {cgo_name} = [
         """)
@@ -187,13 +188,18 @@ cmd.load_cgo({cgo_name}, "{cgo_name}"{state})
             cgo_string_builder.append(f"""
 cmd.set("cgo_transparency", {transparency}, "{cgo_name}")
     """)
+        except IndexError:
+            transparency = self.transparency
+            cgo_string_builder.append(f"""
+cmd.set("cgo_transparency", {transparency}, "{cgo_name}")
+    """)
         
         return "\n".join(cgo_string_builder)
     
     def load(self):
         from pymol import cgo
         from pymol import cmd
-        cgo_name = self.name.replace(" ", "_")
+        cgo_name = sanitize_pymol_string(self.name)
         content = [e for e in self._create_CGO_list()]
         map_cgo_keys = {"POINTS": cgo.POINTS, "SPHERE":cgo.SPHERE, "COLOR":cgo.COLOR, "VERTEX": cgo.VERTEX, "NORMAL":cgo.NORMAL, "CYLINDER": cgo.CYLINDER, 
                         "CONE": cgo.CONE, "BEGIN": cgo.BEGIN, "END": cgo.END, "LINEWIDTH": cgo.LINEWIDTH, "LINES": cgo.LINES, "TRIANGLES": cgo.TRIANGLES}
@@ -207,4 +213,6 @@ cmd.set("cgo_transparency", {transparency}, "{cgo_name}")
         try:
             self.transparency[0]
         except TypeError:
+            cmd.set("cgo_transparency", self.transparency, cgo_name)
+        except IndexError:
             cmd.set("cgo_transparency", self.transparency, cgo_name)

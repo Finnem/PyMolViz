@@ -18,13 +18,23 @@ class Arrows(Lines):
         head_length (float): The relative length of the arrow head. Does not influence the length of the arrow itself.
         head_width (float): The relative width of the arrow head.
         render_as (str): Optional. Defaults to "lines". If "cylinders", arrows will be drawn as 3D objects using cylinders and cones.
+        starts (np.array): Optional. Defaults to None. The start of the lines.
+        ends (np.array): Optional. Defaults to None. The end of the lines.
     """
 
-    def __init__(self, lines, color = None, name = None, state = 1, transparency = 0, colormap = "RdYlBu_r", linewidth = 0.05, head_length = .25, head_width = 1.618, render_as="cylinders", *args, **kwargs) -> None:
+    def __init__(self, lines = None, color = None, name = None, state = 1, transparency = 0, colormap = "RdYlBu_r", linewidth = 0.05, head_length = .25, head_width = 1.618, render_as="cylinders", starts = None, ends = None, arrow_mask = None, *args, **kwargs) -> None:
         self.original_color = color
         self.head_length = head_length
         self.head_width = head_width
+
+        # make sure that either lines or start and end are given
+        if lines is None:
+            if starts is None or ends is None:
+                raise ValueError("Either lines or start and end must be given.")
+            lines = np.hstack([starts, ends])
+
         lines = np.array(lines)
+        self.arrow_mask = arrow_mask if arrow_mask is not None else np.ones(int(len(lines)), dtype=bool)
         
         try:
             if (not np.issubdtype(type(color), np.str_)) and (not (color is None)):
@@ -61,6 +71,32 @@ class Arrows(Lines):
         super().__init__(lines.reshape(-1, 3), color, name, state, self.transparency, colormap, linewidth, render_as, *args, **kwargs)
         self.linewidth = linewidth
 
+    def from_start_end(starts, ends, color = None, name = None, state = 1, transparency = 0, colormap = "RdYlBu_r", linewidth = 0.05, head_length = .25, head_width = 1.618, render_as="cylinders", *args, **kwargs):
+        """ Creates an Arrows object from start and end points.
+        
+        Args:
+            starts (array-like): An array-like of start points.
+            ends (array-like): An array-like of end points.
+            color (array-like): Optional. Defaults to red. An array like of colors. Can be a single color, a list of colors, or a list of values to be mapped to a colormap. Lists of colors may either be for each vertex or for each line.
+            name (str): Optional. Defaults to None. The name of the object.
+            state (int): Optional. Defaults to 1. The state of the object.
+            transparency (array-like): Optional. Defaults to 0. The transparency value of the object. If render_as = "cylinders", each cylinder can get its own transparency.
+            colormap: Optional. Defaults to "RdYlBu_r". Name of a colormap or a matplotlib colormap or a pymolviz.ColorMap object. Used to map values to colors.
+            linewidth (float): Optional. Defaults to 1. The width of the lines. Seems to be currently not supported by PyMol.
+            head_length (float): Optional. Defaults to .25. The relative length of the arrow head. Does not influence the length of the arrow itself.
+            head_width (float): Optional. Defaults to 1.618. The relative width of the arrow head.
+            render_as (str): Optional. Defaults to "cylinders". If "cylinders", arrows will be drawn as 3D objects using cylinders and cones.
+            *args: Additional arguments for the Lines class.
+            **kwargs: Additional keyword arguments for the Lines class.
+        
+        Returns:
+            Arrows: An Arrows object.
+        """
+        #ensure that start and end dims are correct
+        starts = np.array(starts).reshape(-1, 3)
+        ends = np.array(ends).reshape(-1, 3)
+        return Arrows(np.hstack([starts, ends]), color, name, state, transparency, colormap, linewidth, head_length, head_width, render_as, *args, **kwargs)
+
     def _create_CGO_list(self) -> str:
         """ Creates a CGO list from the mesh information. A line mesh will be created.
             CGO constants are kept as strings to avoid importing the pymol module.
@@ -76,6 +112,7 @@ class Arrows(Lines):
             starts = self.vertices[::10]
             ends = self.vertices[1::10]
             cylinder_ends = starts + ((ends - starts) * (1-self.head_length))
+            cylinder_ends[~self.arrow_mask] = ends[~self.arrow_mask]
             cgo_colors = self.colormap.get_color(self.color)[:,:3].reshape(-1, 3)
             start_colors = cgo_colors[::10]
             end_colors = cgo_colors[1::10]
@@ -87,6 +124,9 @@ class Arrows(Lines):
             cgo_list.extend(cylinders)
             cones = np.hstack([
                     np.full(starts.shape[0], "ALPHA")[:,None], transparency[:,None], np.full(starts.shape[0], "CONE")[:,None], cylinder_ends, ends, np.full(starts.shape[0], self.linewidth * self.head_width)[:,None], np.full(starts.shape[0], 0.0)[:,None], end_colors, end_colors, np.full((starts.shape[0],2), 0.0)
-            ]).flatten()
-            cgo_list.extend(cones)
+            ])
+            cones = cones[self.arrow_mask]
+            cgo_list.extend(cones.flatten())
         return cgo_list
+
+    

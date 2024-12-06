@@ -1,5 +1,6 @@
 import numpy as np
 import seaborn as sns
+import cmap
 
 def get_distinct_colors(n_colors = 20, repeats = 6):
 	"""
@@ -40,7 +41,7 @@ def get_colormap(colormap):
 			colors = [(i / (len(colors) - 1), c) for i, c in enumerate(colors)]
 			colormap = LinearSegmentedColormap.from_list("onwhite_r", colors)
 		else:
-			colormap = cm.get_cmap(colormap)
+			colormap = cmap.Colormap(colormap).to_mpl()
 	return colormap
 
 
