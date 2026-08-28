@@ -1,33 +1,59 @@
 from . import Mesh
 import numpy as np
+
+from ..util.geometries import icosphere
+
+
+def _frequency_from_resolution(resolution):
+    try:
+        steps = int(resolution)
+    except (TypeError, ValueError):
+        return 4
+    if steps <= 6:
+        return 2
+    if steps <= 10:
+        return 3
+    if steps <= 14:
+        return 4
+    if steps <= 18:
+        return 6
+    return 8
+
+
 class Sphere(Mesh):
-    def __init__(self, position, radius, color = None, resolution = 20, *args, **kwargs) -> None:
-        """ Creates a sphere mesh.
+    def __init__(
+        self,
+        position,
+        radius,
+        color=None,
+        resolution=20,
+        subdivisions=None,
+        frequency=None,
+        *args,
+        **kwargs
+    ) -> None:
+        """Creates a geodesic sphere mesh (uniform triangles, no polar pinch).
 
         Args:
             radius (float): The radius of the sphere.
             position (np.array): The position of the sphere.
             color (str): Optional. Defaults to "red". The color of the sphere.
-            resolution (int): Optional. Defaults to 20. The resolution of the sphere.
-
+            resolution (int): Optional. Defaults to 20. Legacy UV-sphere step
+                count; mapped to geodesic frequency when ``frequency`` /
+                ``subdivisions`` are omitted.
+            subdivisions (int): Optional. Power-of-two depth (frequency = 2**n).
+            frequency (int): Optional. Geodesic frequency (2/3/4/6/8 →
+                80/180/320/720/1280 triangles).
         """
-        u, v = np.mgrid[0:2*np.pi:resolution*1j, 0:np.pi:resolution*1j]
-        x = np.cos(u)*np.sin(v)
-        y = np.sin(u)*np.sin(v)
-        z = np.cos(v)
-        x = x.flatten()
-        y = y.flatten()
-        z = z.flatten()
-        vertices = np.vstack((x, y, z)).T * radius
-        normals = vertices / np.linalg.norm(vertices, axis=1)[:, None]
-        vertices = vertices + position
-        faces = []
-        for i in range(1, resolution):
-            for j in range(1, resolution):
-                faces.append([i*resolution+j-1, (i-1)*resolution+j-1, i*resolution+j])
-                faces.append([i*resolution+j, (i-1)*resolution+j-1, (i-1)*resolution+j])
-        faces = np.array(faces)
+        if frequency is None and subdivisions is not None:
+            frequency = 2 ** max(0, int(subdivisions))
+        if frequency is None:
+            frequency = _frequency_from_resolution(resolution)
+        unit_verts, faces, _edges = icosphere(frequency=frequency)
+        vertices = unit_verts * float(radius) + np.asarray(position, dtype=float).reshape(1, 3)
+        normals = unit_verts.copy()
         self.position = position
         self.radius = radius
+        self.frequency = int(frequency)
+        self.subdivisions = int(subdivisions) if subdivisions is not None else None
         super().__init__(vertices, color, normals, faces, *args, **kwargs)
-

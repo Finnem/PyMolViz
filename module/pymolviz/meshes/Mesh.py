@@ -71,8 +71,8 @@ class Mesh(Points):
         #vertices
         triangles = np.hstack([
             np.full(cgo_triangles.shape[0], "COLOR")[:,None], cgo_colors, \
-            np.full(cgo_triangles.shape[0], "VERTEX")[:,None], cgo_triangles, \
             np.full(cgo_triangles.shape[0], "NORMAL")[:,None], cgo_normals, \
+            np.full(cgo_triangles.shape[0], "VERTEX")[:,None], cgo_triangles, \
             ]).flatten()
         cgo_list.extend(triangles)
 

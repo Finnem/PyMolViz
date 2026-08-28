@@ -31,7 +31,7 @@ class CenteredBox(Mesh):
 
         # Define the faces by the indices of the vertices
         faces = np.array([
-        [0, 1, 2], [0, 2, 3],  # Bottom face
+        [0, 2, 1], [0, 3, 2],  # Bottom face
         [4, 5, 6], [4, 6, 7],  # Top face
         [0, 1, 5], [0, 5, 4],  # Front face
         [2, 3, 7], [2, 7, 6],  # Back face
@@ -39,8 +39,18 @@ class CenteredBox(Mesh):
         [1, 2, 6], [1, 6, 5]   # Right face
         ])
 
-        normals = vertices / np.linalg.norm(vertices, axis=1)[:, np.newaxis]
-        
+        normals = np.zeros_like(vertices, dtype=float)
+        for face in faces:
+            v0, v1, v2 = vertices[face[0]], vertices[face[1]], vertices[face[2]]
+            normal = np.cross(v1 - v0, v2 - v0)
+            length = np.linalg.norm(normal)
+            if length > 1e-12:
+                normal /= length
+            for idx in face:
+                normals[idx] += normal
+        lengths = np.linalg.norm(normals, axis=1, keepdims=True)
+        lengths[lengths < 1e-12] = 1.0
+        normals /= lengths
 
         super().__init__(vertices, color, normals, faces, *args, **kwargs)
 

@@ -27,6 +27,7 @@ class PyMolVizWizard(Wizard):
         ]
         self.add_visual_window = AddVisualWindow(self)
         self.camera_sphere = CameraCenterSphere(self.cmd)
+        self._last_center_display = None
         self._click_filter, self._click_widget = install_middle_click_filter(self)
         take_over_center_click(self.cmd)
 
@@ -47,11 +48,30 @@ class PyMolVizWizard(Wizard):
 
     def _sync_sphere(self):
         sphere = getattr(self, "camera_sphere", None)
-        if sphere is not None:
-            sphere.sync()
+        if sphere is None:
+            return
+        sphere.sync()
+        pos = sphere.current_position()
+        display = None
+        if pos is not None:
+            display = (round(pos[0], 3), round(pos[1], 3), round(pos[2], 3))
+        if display != self._last_center_display:
+            self._last_center_display = display
+            try:
+                self.cmd.refresh_wizard()
+            except Exception:
+                pass
 
     def get_prompt(self):
-        return self.prompt
+        lines = list(self.prompt)
+        sphere = getattr(self, "camera_sphere", None)
+        if sphere is not None:
+            pos = sphere.current_position()
+            if pos is not None:
+                lines.append(
+                    "Center: %.3f, %.3f, %.3f" % (pos[0], pos[1], pos[2])
+                )
+        return lines
 
     def get_panel(self):
         panel = [[1, "PyMOLViz", ""]]

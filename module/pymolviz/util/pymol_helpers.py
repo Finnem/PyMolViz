@@ -15,6 +15,10 @@ def restore_view(cmd_, view):
 
 def load_cgo_no_zoom(cmd_, cgo, name, state=1):
     """Load a CGO without auto-zooming the camera onto it."""
+    from .cgo import resolve_cgo_tokens
+
+    if any(isinstance(entry, str) for entry in cgo):
+        cgo = resolve_cgo_tokens(cgo)
     try:
         cmd_.load_cgo(cgo, name, state, zoom=0)
         return
@@ -25,6 +29,20 @@ def load_cgo_no_zoom(cmd_, cgo, name, state=1):
         cmd_.load_object(loadable.cgo, cgo, name, zoom=0)
         return
     cmd_.load_cgo(cgo, name, state)
+
+
+def replace_cgo_no_zoom(cmd_, cgo, name, state=1):
+    """Replace an existing CGO in place (no delete, no view restore)."""
+    load_cgo_no_zoom(cmd_, cgo, name, state)
+
+
+def set_cgo_transparency(cmd_, name, alpha=1.0):
+    """Apply object-level CGO opacity. PyMOL ignores ALPHA on SPHERE/CYLINDER."""
+    transparency = max(0.0, min(1.0, 1.0 - float(alpha)))
+    try:
+        cmd_.set("cgo_transparency", transparency, name)
+    except Exception:
+        pass
 
 
 def purge_objects(cmd_, names=(), prefixes=()):

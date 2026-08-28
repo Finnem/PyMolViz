@@ -1,6 +1,8 @@
 """Standalone window for building / adding visuals (CGOs)."""
 
-from .pick import qt_modules
+from .builders.box_page import BoxBuilderPage
+from .builders.sphere_page import SphereBuilderPage
+from .pick import bind_tool_window, configure_tool_window, qt_modules
 
 # Category → mesh primitive chooser. Field is a placeholder for now.
 MESH_TYPES = (
@@ -20,6 +22,9 @@ class AddVisualWindow:
         self._window = None
         self._stack = None
         self._mesh_choice = None
+        self._sphere_page = None
+        self._box_page = None
+        self._mesh_page_index = 1
 
     def show(self):
         QtCore, _, QtWidgets = qt_modules()
@@ -38,8 +43,9 @@ class AddVisualWindow:
 
         window = QtWidgets.QWidget()
         window.setWindowTitle("Add Visual")
+        configure_tool_window(window)
         window.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
-        window.resize(420, 360)
+        window.resize(520, 640)
 
         root = QtWidgets.QVBoxLayout(window)
         stack = QtWidgets.QStackedWidget()
@@ -48,12 +54,27 @@ class AddVisualWindow:
         stack.addWidget(self._build_category_page(QtWidgets))
         stack.addWidget(self._build_mesh_page(QtWidgets))
         stack.addWidget(self._build_field_page(QtWidgets))
+        self._sphere_page = SphereBuilderPage(
+            self.wizard.cmd,
+            on_back=lambda: self._goto(self._mesh_page_index),
+            on_create=self.close,
+            parent=window,
+        )
+        self._box_page = BoxBuilderPage(
+            self.wizard.cmd,
+            on_back=lambda: self._goto(self._mesh_page_index),
+            on_create=self.close,
+            parent=window,
+        )
+        stack.addWidget(self._sphere_page.widget)
+        stack.addWidget(self._box_page.widget)
         stack.setCurrentIndex(0)
 
         root.addWidget(stack)
         window.destroyed.connect(self._on_destroyed)
         self._window = window
         window.show()
+        bind_tool_window(window)
         window.raise_()
         window.activateWindow()
 
@@ -160,12 +181,27 @@ class AddVisualWindow:
             self.wizard.cmd.refresh_wizard()
         except Exception:
             pass
+        if name == "Sphere" and self._stack is not None and self._sphere_page is not None:
+            self._stack.setCurrentWidget(self._sphere_page.widget)
+            return
+        if name == "Box" and self._stack is not None and self._box_page is not None:
+            self._stack.setCurrentWidget(self._box_page.widget)
+            return
+        # Other mesh types remain stubs on the mesh list page.
 
     def _on_destroyed(self, *_args):
+        self._cleanup_builder_previews()
         self._window = None
         self._stack = None
 
+    def _cleanup_builder_previews(self):
+        if self._sphere_page is not None:
+            self._sphere_page.cleanup_preview()
+        if self._box_page is not None:
+            self._box_page.cleanup_preview()
+
     def close(self):
+        self._cleanup_builder_previews()
         window = self._window
         self._window = None
         self._stack = None

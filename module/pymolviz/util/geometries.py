@@ -15,6 +15,146 @@ def point_on_sphere(center, radius, theta, phi):
     )
 
 
+def _normalize3(vec):
+    x, y, z = (float(vec[0]), float(vec[1]), float(vec[2]))
+    length = math.sqrt(x * x + y * y + z * z)
+    if length < 1e-12:
+        return (0.0, 0.0, 1.0)
+    return (x / length, y / length, z / length)
+
+
+def _cross3(a, b):
+    return (
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    )
+
+
+def _dot3(a, b):
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def _outward_face(verts, i, j, k):
+    v0, v1, v2 = verts[i], verts[j], verts[k]
+    normal = _cross3(
+        (v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]),
+        (v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]),
+    )
+    center = (
+        (v0[0] + v1[0] + v2[0]) / 3.0,
+        (v0[1] + v1[1] + v2[1]) / 3.0,
+        (v0[2] + v1[2] + v2[2]) / 3.0,
+    )
+    if _dot3(normal, center) < 0.0:
+        return (i, k, j)
+    return (i, j, k)
+
+
+_GEODESIC_CACHE = {}
+
+_ICOSAHEDRON_VERTS = None
+_ICOSAHEDRON_FACES = None
+
+
+def _icosahedron():
+    global _ICOSAHEDRON_VERTS, _ICOSAHEDRON_FACES
+    if _ICOSAHEDRON_VERTS is not None:
+        return _ICOSAHEDRON_VERTS, _ICOSAHEDRON_FACES
+    phi = (1.0 + math.sqrt(5.0)) / 2.0
+    verts = [
+        _normalize3(v) for v in (
+            (-1.0, phi, 0.0), (1.0, phi, 0.0), (-1.0, -phi, 0.0), (1.0, -phi, 0.0),
+            (0.0, -1.0, phi), (0.0, 1.0, phi), (0.0, -1.0, -phi), (0.0, 1.0, -phi),
+            (phi, 0.0, -1.0), (phi, 0.0, 1.0), (-phi, 0.0, -1.0), (-phi, 0.0, 1.0),
+        )
+    ]
+    faces = [
+        _outward_face(verts, *face) for face in (
+            (0, 11, 5), (0, 5, 1), (0, 1, 7), (0, 7, 10), (0, 10, 11),
+            (1, 5, 9), (5, 11, 4), (11, 10, 2), (10, 7, 6), (7, 1, 8),
+            (3, 9, 4), (3, 4, 2), (3, 2, 6), (3, 6, 8), (3, 8, 9),
+            (4, 9, 5), (2, 4, 11), (6, 2, 10), (8, 6, 7), (9, 8, 1),
+        )
+    ]
+    _ICOSAHEDRON_VERTS = verts
+    _ICOSAHEDRON_FACES = faces
+    return verts, faces
+
+
+def geodesic_icosphere(frequency=4):
+    """Class-I geodesic sphere. Faces = 20 * frequency².
+
+    frequency 2/3/4/6/8 → 80 / 180 / 320 / 720 / 1280 triangles.
+    Returns (vertices, faces, edges) on the unit sphere, outward winding.
+    """
+    freq = max(1, int(frequency))
+    cached = _GEODESIC_CACHE.get(freq)
+    if cached is not None:
+        return cached
+
+    base_verts, base_faces = _icosahedron()
+    verts = []
+    index_of = {}
+
+    def add_vert(vec):
+        point = _normalize3(vec)
+        key = (round(point[0], 7), round(point[1], 7), round(point[2], 7))
+        existing = index_of.get(key)
+        if existing is not None:
+            return existing
+        idx = len(verts)
+        verts.append(point)
+        index_of[key] = idx
+        return idx
+
+    faces = []
+    inv = 1.0 / float(freq)
+    for ia, ib, ic in base_faces:
+        a, b, c = base_verts[ia], base_verts[ib], base_verts[ic]
+        grid = {}
+        for p in range(freq + 1):
+            for q in range(freq + 1 - p):
+                t = p * inv
+                s = q * inv
+                r = 1.0 - t - s
+                grid[(p, q)] = add_vert((
+                    r * a[0] + t * b[0] + s * c[0],
+                    r * a[1] + t * b[1] + s * c[1],
+                    r * a[2] + t * b[2] + s * c[2],
+                ))
+        for p in range(freq):
+            for q in range(freq - p):
+                v00 = grid[(p, q)]
+                v10 = grid[(p + 1, q)]
+                v01 = grid[(p, q + 1)]
+                faces.append(_outward_face(verts, v00, v10, v01))
+                if p + q + 1 < freq:
+                    v11 = grid[(p + 1, q + 1)]
+                    faces.append(_outward_face(verts, v10, v11, v01))
+
+    edges = set()
+    for i, j, k in faces:
+        edges.add((i, j) if i < j else (j, i))
+        edges.add((j, k) if j < k else (k, j))
+        edges.add((k, i) if k < i else (i, k))
+
+    result = (
+        np.asarray(verts, dtype=float),
+        np.asarray(faces, dtype=int),
+        np.asarray(sorted(edges), dtype=int),
+    )
+    _GEODESIC_CACHE[freq] = result
+    return result
+
+
+def icosphere(subdivisions=2, frequency=None):
+    """Unit geodesic sphere. ``frequency`` wins; else frequency = 2**subdivisions."""
+    if frequency is None:
+        frequency = 2 ** max(0, int(subdivisions))
+    return geodesic_icosphere(frequency)
+
+
 # Create a sphere mesh
 def get_sphere_mesh(position, radius = 1, resolution = 10):
     # Create a sphere mesh

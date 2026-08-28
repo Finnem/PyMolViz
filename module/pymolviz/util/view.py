@@ -44,3 +44,41 @@ def translation_ttt(center):
         0.0, 0.0, 1.0, 0.0,
         float(center[0]), float(center[1]), float(center[2]), 1.0,
     ]
+
+
+def scale_translation_ttt(center, scale):
+    """Uniform scale + translate for PyMOL object TTT.
+
+    PyMOL applies the bottom row before the diagonal scale (see ViewportCallback),
+    so world position = scale * local + scale * t_row  =>  t_row = center / scale.
+    """
+    s = float(scale)
+    if abs(s) < 1e-12:
+        s = 1e-12
+    cx, cy, cz = (float(center[0]), float(center[1]), float(center[2]))
+    return [
+        s, 0.0, 0.0, 0.0,
+        0.0, s, 0.0, 0.0,
+        0.0, 0.0, s, 0.0,
+        cx / s, cy / s, cz / s, 1.0,
+    ]
+
+
+def box_object_ttt(center, extent):
+    """Non-uniform scale + translate for a unit box (-1..1 on each axis)."""
+    sx = float(extent[0]) / 2.0
+    sy = float(extent[1]) / 2.0
+    sz = float(extent[2]) / 2.0
+    if abs(sx) < 1e-12:
+        sx = 1e-12
+    if abs(sy) < 1e-12:
+        sy = 1e-12
+    if abs(sz) < 1e-12:
+        sz = 1e-12
+    cx, cy, cz = (float(center[0]), float(center[1]), float(center[2]))
+    return [
+        sx, 0.0, 0.0, 0.0,
+        0.0, sy, 0.0, 0.0,
+        0.0, 0.0, sz, 0.0,
+        cx / sx, cy / sy, cz / sz, 1.0,
+    ]

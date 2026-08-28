@@ -34,6 +34,7 @@ class CameraCenterSphere:
         self._pending_snap = None
         self._pending_center_sele = None
         self._pending_center_pos = None
+        self._current_pos = None
         purge_objects(self.cmd, names=(self.name,), prefixes=("_pmv_cam_cb",))
         saved_view = self.cmd.get_view()
         cgo = wireframe_sphere_cgo((0.0, 0.0, 0.0), self.radius, self.color)
@@ -160,6 +161,18 @@ class CameraCenterSphere:
         if pos is not None:
             self._place(pos)
 
+    def current_position(self):
+        """Model-space position of the camera-center marker."""
+        if self._current_pos is not None:
+            return self._current_pos
+        view = self.prev_view
+        if view is None:
+            try:
+                view = tuple(self.cmd.get_view())
+            except Exception:
+                return None
+        return screen_center(view)
+
     def sync(self):
         self._apply_pending_snap()
         view = tuple(self.cmd.get_view())
@@ -189,6 +202,7 @@ class CameraCenterSphere:
         return True
 
     def _place(self, center):
+        self._current_pos = (float(center[0]), float(center[1]), float(center[2]))
         place_object(self.cmd, self.name, center)
 
     def close(self):
