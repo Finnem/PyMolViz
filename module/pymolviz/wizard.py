@@ -144,16 +144,10 @@ def start_wizard():
 
 
 def reload_wizard():
-    """Drop cached pymolviz modules, reimport, and start the wizard."""
-    import importlib
-    import sys
+    """Uninstall hooks, stop wizard, purge pymolviz.*, reinstall, reconcile."""
+    from .runtime.integration import reload_pymolviz
 
-    cmd.set_wizard()
-    for name in list(sys.modules):
-        if name == "pymolviz" or name.startswith("pymolviz."):
-            del sys.modules[name]
-    module = importlib.import_module("pymolviz.wizard")
-    module.start_wizard()
+    reload_pymolviz(restart_wizard=True)
 
 
 cmd.extend("pymolviz_wizard", start_wizard)

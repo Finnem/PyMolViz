@@ -6,6 +6,7 @@ import seaborn as sns
 
 from ..ColorMap import ColorMap
 from ..Displayable import Displayable
+from ..points import as_point_source, point_sources_from_sequence, resolve_xyz
 from ..PyMOLobjects.PseudoAtoms import PseudoAtoms
 from ..util.colors import get_distinct_colors
 from ..util.sanitize import sanitize_pymol_string
@@ -28,11 +29,17 @@ class Points(Displayable):
         radius (float): Optional. Defaults to .3. Only relevant if render_as is "Spheres". The radius of the spheres.
     """
 
-    def __init__(self, vertices, color = None, name = None, state = 1, transparency = 0, colormap = "RdYlBu_r", render_as = "Spheres", radius = .3, bypass_colormap = False, *args, **kwargs) -> None:
+    def __init__(self, vertices, color = None, name = None, state = 1, transparency = 0, colormap = "RdYlBu_r", render_as = "Spheres", radius = .3, bypass_colormap = False, vertex_sources = None, *args, **kwargs) -> None:
         global pmv_default_color_counter
         global pmv_default_color_palette
-        super().__init__(name)
-        #print(f"Colors were passed as {color}")
+        obj_id = kwargs.pop("obj_id", None) or kwargs.pop("id", None)
+        super().__init__(name, obj_id=obj_id)
+        if vertex_sources is not None:
+            self.vertex_sources = point_sources_from_sequence(vertex_sources)
+            vertices = np.array([resolve_xyz(v) for v in self.vertex_sources])
+        else:
+            self.vertex_sources = None
+            vertices = np.asarray(vertices, dtype=float).reshape(-1, 3)
         if color is None:
             color = pmv_default_color_palette[pmv_default_color_counter]
             kwargs["values_are_single_color"] = True
@@ -58,7 +65,11 @@ class Points(Displayable):
         self.radius = radius
         self.state = state
         self.transparency = transparency
-        #print(f"Got colors as {self.color}")
+
+    def rebuild(self, context=None) -> None:
+        if self.vertex_sources is None:
+            return
+        self.vertices = np.array([resolve_xyz(v, context) for v in self.vertex_sources], dtype=float)
 
 
     def as_pseudoatoms(self) -> PseudoAtoms:
@@ -176,6 +187,7 @@ class Points(Displayable):
         return cgo_list
 
     def _script_string(self):
+        self._try_rebuild()
         cgo_string_builder = []
         state = "" if self.state is None else f", state={self.state}"
         cgo_name = sanitize_pymol_string(self.name)
@@ -214,6 +226,7 @@ cmd.set("cgo_transparency", {transparency}, "{cgo_name}")
         return "\n".join(cgo_string_builder)
     
     def load(self):
+        self._try_rebuild()
         from pymol import cgo
         from pymol import cmd
         cgo_name = sanitize_pymol_string(self.name)

@@ -6,6 +6,7 @@ import numpy as np
 
 from ..Mesh import Mesh
 from ..Points import pmv_default_color_counter, pmv_default_color_palette
+from ...points import as_point_source, point_sources_from_sequence, resolve_xyz
 from ...util.colors import get_distinct_colors
 from ...util.math import get_perp
 
@@ -301,7 +302,8 @@ class PolylineTube(Mesh):
         *args,
         **kwargs,
     ) -> None:
-        self.path_vertices = np.asarray(path_vertices, dtype=float).reshape(-1, 3)
+        self.path_sources = point_sources_from_sequence(path_vertices)
+        self.path_vertices = np.array([resolve_xyz(p) for p in self.path_sources])
         self.tube_radius = tube_radius
         self.tubular_resolution = int(tubular_resolution)
         self.show_arrow = bool(show_arrow)
@@ -333,6 +335,9 @@ class PolylineTube(Mesh):
                 default_sides=max(16, self.tubular_resolution),
             )
 
+        self._last_verts = verts
+        self._last_faces = faces
+        self._last_normals = normals
         color_kw = resolve_mesh_color_kwargs(verts.shape[0], color)
         super().__init__(
             verts,
@@ -346,6 +351,34 @@ class PolylineTube(Mesh):
             **color_kw,
             **kwargs,
         )
+
+    def rebuild(self, context=None) -> None:
+        self.path_vertices = np.array([resolve_xyz(p, context) for p in self.path_sources])
+        verts, faces, normals = tube_mesh_from_polyline(
+            self.path_vertices,
+            self.tube_radius,
+            self.tubular_resolution,
+        )
+        if self.show_arrow:
+            r = tube_radius_per_vertex(self.tube_radius, self.path_vertices.shape[0])
+            T = polyline_tangents(self.path_vertices)
+            n_ref, b_ref = parallel_transport_normal_frames(T)
+            verts, faces, normals = append_cone_arrow_mesh(
+                verts,
+                faces,
+                normals,
+                base_center=self.path_vertices[-1],
+                tangent=T[-1],
+                plane_normal=n_ref[-1],
+                plane_binormal=b_ref[-1],
+                r_base=self.arrow_base_scale * r[-1],
+                height=self.arrow_height_scale * r[-1],
+                arrow_sides=self.arrow_sides,
+                default_sides=max(16, self.tubular_resolution),
+            )
+        self.vertices = verts
+        self.faces = faces
+        self.normals = normals
 
     @classmethod
     def from_line_vertices(

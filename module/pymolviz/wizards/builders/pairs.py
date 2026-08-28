@@ -51,9 +51,14 @@ def take_single_selection_point(
     cmd_,
     existing: Sequence[VisualPoint] = (),
     interactive_only: bool = False,
+    hook_to_selection: bool = True,
 ) -> Tuple[Optional[VisualPoint], str]:
     """Return (point, status) where status is empty / one / multiple."""
-    pts = selection_points(cmd_, existing, interactive_only=interactive_only)
+    pts = selection_points(
+        cmd_, existing,
+        interactive_only=interactive_only,
+        hook_to_selection=hook_to_selection,
+    )
     if not pts:
         return None, "empty"
     if len(pts) > 1:

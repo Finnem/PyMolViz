@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from typing import Callable, List, Optional
 
-from ..pick import qt_modules
+from ..pick import DeferredCallback, qt_modules, qt_widget_alive
+from ..tooltips import (
+    HOOK_TO_SELECTION_TIP,
+    SNAP_TO_ATOM_TIP,
+    apply_required_tooltips,
+    warn_missing_setting_tooltips,
+)
 from ..widgets.log_slider import LogSegmentRadiusWidget
 from .colors import (
     colors_for_new_points,
@@ -17,12 +23,7 @@ from .points import (
     export_points_to_selection,
     selection_points,
 )
-from .preview import (
-    SpherePreview,
-    build_cgo_collection,
-    build_sphere_cgo_list,
-    _commit_cgo,
-)
+from .preview import SpherePreview, build_cgo_collection, persist_collection
 from .wireframe_quality import (
     DEFAULT_WIREFRAME_QUALITY,
     effective_wireframe_quality,
@@ -49,12 +50,14 @@ class SphereBuilderPage:
         self._on_create = on_create
         self._points: List[VisualPoint] = []
         self._preview = SpherePreview(cmd_)
+        self._deferred = DeferredCallback()
         self._page = None
         self._table = None
         self._radius_widget = None
         self._wireframe = None
         self._wireframe_quality = None
         self._snap_atom = None
+        self._hook_selection = None
         self._object_name = None
         self._table_filter = None
         self._build(parent)
@@ -64,6 +67,7 @@ class SphereBuilderPage:
         return self._page
 
     def cleanup_preview(self):
+        self._deferred.cancel()
         self._preview.cleanup()
 
     def _build(self, parent):
@@ -77,7 +81,7 @@ class SphereBuilderPage:
         header = QtWidgets.QHBoxLayout()
         back = QtWidgets.QPushButton("← Back")
         back.setFlat(True)
-        back.clicked.connect(self._on_back)
+        back.clicked.connect(self._go_back)
         title = QtWidgets.QLabel("Sphere")
         title.setStyleSheet("font-size: 16px; font-weight: 600;")
         header.addWidget(back)
@@ -105,7 +109,8 @@ class SphereBuilderPage:
         pts_layout = QtWidgets.QVBoxLayout(pts_box)
         btn_row = QtWidgets.QHBoxLayout()
         self._snap_atom = QtWidgets.QCheckBox("Snap to atom")
-        self._snap_atom.setToolTip("Snap camera-center point to the nearest atom within 1 Å")
+        self._hook_selection = QtWidgets.QCheckBox("Hook to selection")
+        self._hook_selection.setChecked(True)
         add_cam = QtWidgets.QPushButton("Add camera center")
         add_cam.clicked.connect(self._add_camera_center)
         add_sel = QtWidgets.QPushButton("Add selection")
@@ -115,7 +120,11 @@ class SphereBuilderPage:
         btn_row.addWidget(add_cam)
         btn_row.addWidget(add_sel)
         btn_row.addWidget(export_sel)
-        pts_layout.addWidget(self._snap_atom)
+        flags = QtWidgets.QHBoxLayout()
+        flags.addWidget(self._snap_atom)
+        flags.addWidget(self._hook_selection)
+        flags.addStretch(1)
+        pts_layout.addLayout(flags)
         pts_layout.addLayout(btn_row)
 
         self._table = QtWidgets.QTableWidget(0, len(COLS))
@@ -164,8 +173,39 @@ class SphereBuilderPage:
         actions.addWidget(export_btn)
         root.addLayout(actions)
 
+        apply_required_tooltips(
+            [
+                (back, "Return to the mesh type list."),
+                (self._radius_widget, "Radius of each sphere in Ångströms."),
+                (self._wireframe, "Draw each sphere as a mesh cage instead of a filled surface."),
+                (
+                    self._wireframe_quality,
+                    "Mesh detail: 1=80, 2=180, 3=320, 4=720, 5=1280 triangles. "
+                    "Automatically limited when many points are present.",
+                    "Mesh quality",
+                ),
+                (self._snap_atom, SNAP_TO_ATOM_TIP),
+                (self._hook_selection, HOOK_TO_SELECTION_TIP),
+                (
+                    add_cam,
+                    "Add a point at the current camera/screen center. "
+                    "With Snap to atom, uses the nearest atom within 1 Å.",
+                ),
+                (add_sel, "Add one point per atom in the current PyMOL selection (sele)."),
+                (
+                    export_sel,
+                    "Create a PyMOL selection covering the table points as pseudoatoms.",
+                ),
+                (self._object_name, "Name of the PyMOL CGO object created or exported."),
+                (create_btn, "Commit the spheres to the session as a named CGO object."),
+                (export_btn, "Write a Python script that rebuilds this CGO."),
+            ],
+            context="SphereBuilderPage",
+        )
+
         self._page = page
         self._update_wireframe_quality_limits()
+        warn_missing_setting_tooltips(page, context="SphereBuilderPage")
 
     def _on_wireframe_toggled(self, checked):
         self._update_wireframe_quality_limits()
@@ -268,22 +308,29 @@ class SphereBuilderPage:
         item.setBackground(bg)
         item.setForeground(fg)
 
+    def _go_back(self):
+        self._deferred.cancel()
+        self._preview.cleanup()
+        self._on_back()
+
     def _schedule_preview(self):
-        QtCore, _, _ = qt_modules()
-        if QtCore is None:
-            return
-        QtCore.QTimer.singleShot(0, self._refresh_preview)
+        self._deferred.schedule(self._refresh_preview, page=self._page)
 
     def _refresh_preview(self):
-        if not self._points:
-            self._preview.cleanup()
+        if not qt_widget_alive(self._page):
             return
-        self._preview.update(
-            self._points,
-            self._radius_widget.value(),
-            self._wireframe.isChecked(),
-            self._wireframe_quality_level(),
-        )
+        try:
+            if not self._points:
+                self._preview.cleanup()
+                return
+            self._preview.update(
+                self._points,
+                self._radius_widget.value(),
+                self._wireframe.isChecked(),
+                self._wireframe_quality_level(),
+            )
+        except RuntimeError:
+            pass
 
     def _sync_table(self):
         self._update_wireframe_quality_limits()
@@ -336,12 +383,20 @@ class SphereBuilderPage:
         self._schedule_preview()
 
     def _add_camera_center(self):
-        pt = camera_center_point(self.cmd, self._snap_atom.isChecked(), self._points)
+        pt = camera_center_point(
+            self.cmd,
+            self._snap_atom.isChecked(),
+            self._points,
+            hook_to_selection=self._hook_selection.isChecked(),
+        )
         self._points.extend(self._stamp_new_points([pt]))
         self._sync_table()
 
     def _add_selection(self):
-        new_pts = selection_points(self.cmd, self._points)
+        new_pts = selection_points(
+            self.cmd, self._points,
+            hook_to_selection=self._hook_selection.isChecked(),
+        )
         if not new_pts:
             _, _, QtWidgets = qt_modules()
             if QtWidgets is not None:
@@ -380,16 +435,7 @@ class SphereBuilderPage:
         if not self._points:
             return
         name = self._object_name.text().strip() or "pmv_spheres"
-        radius = self._radius_widget.value()
-        wireframe = self._wireframe.isChecked()
-        quality = self._wireframe_quality_level()
-        _commit_cgo(
-            self.cmd,
-            name,
-            self._points,
-            lambda: build_sphere_cgo_list(self._points, radius, wireframe, wireframe_quality=quality),
-            lambda pt: build_sphere_cgo_list([pt], radius, wireframe, wireframe_quality=quality),
-        )
+        persist_collection(self.cmd, self._collection(name))
         self._preview.cleanup()
         if self._on_create is not None:
             self._on_create()

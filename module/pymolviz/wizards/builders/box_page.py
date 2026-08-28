@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from typing import Callable, List, Optional, Tuple
 
-from ..pick import qt_modules
+from ..pick import DeferredCallback, qt_modules, qt_widget_alive
+from ..tooltips import (
+    HOOK_TO_SELECTION_TIP,
+    SNAP_TO_ATOM_TIP,
+    apply_required_tooltips,
+    warn_missing_setting_tooltips,
+)
 from ..widgets.log_slider import LogSegmentRadiusWidget
 from .colors import colors_for_new_points, pick_rgb, readable_text_color
 from .points import (
@@ -13,12 +19,7 @@ from .points import (
     export_points_to_selection,
     selection_points,
 )
-from .preview import (
-    BoxPreview,
-    build_box_cgo_collection,
-    build_box_cgo_list,
-    _commit_cgo,
-)
+from .preview import BoxPreview, build_box_cgo_collection, persist_collection
 
 COLS = ("Name", "Source", "X", "Y", "Z")
 
@@ -38,6 +39,7 @@ class BoxBuilderPage:
         self._on_create = on_create
         self._points: List[VisualPoint] = []
         self._preview = BoxPreview(cmd_)
+        self._deferred = DeferredCallback()
         self._page = None
         self._table = None
         self._extent_x = None
@@ -45,6 +47,7 @@ class BoxBuilderPage:
         self._extent_z = None
         self._wireframe = None
         self._snap_atom = None
+        self._hook_selection = None
         self._object_name = None
         self._table_filter = None
         self._build(parent)
@@ -54,6 +57,7 @@ class BoxBuilderPage:
         return self._page
 
     def cleanup_preview(self):
+        self._deferred.cancel()
         self._preview.cleanup()
 
     def _build(self, parent):
@@ -67,7 +71,7 @@ class BoxBuilderPage:
         header = QtWidgets.QHBoxLayout()
         back = QtWidgets.QPushButton("← Back")
         back.setFlat(True)
-        back.clicked.connect(self._on_back)
+        back.clicked.connect(self._go_back)
         title = QtWidgets.QLabel("Box")
         title.setStyleSheet("font-size: 16px; font-weight: 600;")
         header.addWidget(back)
@@ -94,7 +98,8 @@ class BoxBuilderPage:
         pts_layout = QtWidgets.QVBoxLayout(pts_box)
         btn_row = QtWidgets.QHBoxLayout()
         self._snap_atom = QtWidgets.QCheckBox("Snap to atom")
-        self._snap_atom.setToolTip("Snap camera-center point to the nearest atom within 1 Å")
+        self._hook_selection = QtWidgets.QCheckBox("Hook to selection")
+        self._hook_selection.setChecked(True)
         add_cam = QtWidgets.QPushButton("Add camera center")
         add_cam.clicked.connect(self._add_camera_center)
         add_sel = QtWidgets.QPushButton("Add selection")
@@ -104,7 +109,11 @@ class BoxBuilderPage:
         btn_row.addWidget(add_cam)
         btn_row.addWidget(add_sel)
         btn_row.addWidget(export_sel)
-        pts_layout.addWidget(self._snap_atom)
+        flags = QtWidgets.QHBoxLayout()
+        flags.addWidget(self._snap_atom)
+        flags.addWidget(self._hook_selection)
+        flags.addStretch(1)
+        pts_layout.addLayout(flags)
         pts_layout.addLayout(btn_row)
 
         self._table = QtWidgets.QTableWidget(0, len(COLS))
@@ -153,7 +162,34 @@ class BoxBuilderPage:
         actions.addWidget(export_btn)
         root.addLayout(actions)
 
+        apply_required_tooltips(
+            [
+                (back, "Return to the mesh type list."),
+                (self._extent_x, "Full box width along X in Ångströms (centered on the point)."),
+                (self._extent_y, "Full box width along Y in Ångströms (centered on the point)."),
+                (self._extent_z, "Full box width along Z in Ångströms (centered on the point)."),
+                (self._wireframe, "Draw each box as an edge cage instead of filled faces."),
+                (self._snap_atom, SNAP_TO_ATOM_TIP),
+                (self._hook_selection, HOOK_TO_SELECTION_TIP),
+                (
+                    add_cam,
+                    "Add a point at the current camera/screen center. "
+                    "With Snap to atom, uses the nearest atom within 1 Å.",
+                ),
+                (add_sel, "Add one point per atom in the current PyMOL selection (sele)."),
+                (
+                    export_sel,
+                    "Create a PyMOL selection covering the table points as pseudoatoms.",
+                ),
+                (self._object_name, "Name of the PyMOL CGO object created or exported."),
+                (create_btn, "Commit the boxes to the session as a named CGO object."),
+                (export_btn, "Write a Python script that rebuilds this CGO."),
+            ],
+            context="BoxBuilderPage",
+        )
+
         self._page = page
+        warn_missing_setting_tooltips(page, context="BoxBuilderPage")
 
     def _extent(self) -> Tuple[float, float, float]:
         return (
@@ -230,21 +266,28 @@ class BoxBuilderPage:
         item.setBackground(bg)
         item.setForeground(fg)
 
+    def _go_back(self):
+        self._deferred.cancel()
+        self._preview.cleanup()
+        self._on_back()
+
     def _schedule_preview(self):
-        QtCore, _, _ = qt_modules()
-        if QtCore is None:
-            return
-        QtCore.QTimer.singleShot(0, self._refresh_preview)
+        self._deferred.schedule(self._refresh_preview, page=self._page)
 
     def _refresh_preview(self):
-        if not self._points:
-            self._preview.cleanup()
+        if not qt_widget_alive(self._page):
             return
-        self._preview.update(
-            self._points,
-            self._extent(),
-            self._wireframe.isChecked(),
-        )
+        try:
+            if not self._points:
+                self._preview.cleanup()
+                return
+            self._preview.update(
+                self._points,
+                self._extent(),
+                self._wireframe.isChecked(),
+            )
+        except RuntimeError:
+            pass
 
     def _sync_table(self):
         _, QtGui, QtWidgets = qt_modules()
@@ -296,12 +339,20 @@ class BoxBuilderPage:
         self._schedule_preview()
 
     def _add_camera_center(self):
-        pt = camera_center_point(self.cmd, self._snap_atom.isChecked(), self._points)
+        pt = camera_center_point(
+            self.cmd,
+            self._snap_atom.isChecked(),
+            self._points,
+            hook_to_selection=self._hook_selection.isChecked(),
+        )
         self._points.extend(self._stamp_new_points([pt]))
         self._sync_table()
 
     def _add_selection(self):
-        new_pts = selection_points(self.cmd, self._points)
+        new_pts = selection_points(
+            self.cmd, self._points,
+            hook_to_selection=self._hook_selection.isChecked(),
+        )
         if not new_pts:
             _, _, QtWidgets = qt_modules()
             if QtWidgets is not None:
@@ -339,15 +390,7 @@ class BoxBuilderPage:
         if not self._points:
             return
         name = self._object_name.text().strip() or "pmv_boxes"
-        extent = self._extent()
-        wireframe = self._wireframe.isChecked()
-        _commit_cgo(
-            self.cmd,
-            name,
-            self._points,
-            lambda: build_box_cgo_list(self._points, extent, wireframe),
-            lambda pt: build_box_cgo_list([pt], extent, wireframe),
-        )
+        persist_collection(self.cmd, self._collection(name))
         self._preview.cleanup()
         if self._on_create is not None:
             self._on_create()

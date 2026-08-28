@@ -5,5 +5,11 @@ this package must not pull wizard.py during submodule imports.
 """
 
 from .camera_center import CameraCenterSphere
+from .tooltips import apply_required_tooltips, require_tooltips, warn_missing_setting_tooltips
 
-__all__ = ["CameraCenterSphere"]
+__all__ = [
+    "CameraCenterSphere",
+    "apply_required_tooltips",
+    "require_tooltips",
+    "warn_missing_setting_tooltips",
+]

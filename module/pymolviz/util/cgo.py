@@ -19,24 +19,26 @@ def resolve_cgo_tokens(content: list) -> list:
     map_cgo_keys = {name: getattr(cgo, name) for name in _CGO_TOKEN_NAMES if hasattr(cgo, name)}
     out = []
     for entry in content:
-        if isinstance(entry, str):
-            if entry not in map_cgo_keys:
-                raise KeyError("Unknown CGO token %r" % entry)
-            out.append(map_cgo_keys[entry])
-            continue
         if isinstance(entry, bool):
             raise TypeError("Unexpected bool in CGO list: %r" % entry)
         if isinstance(entry, int) and entry in map_cgo_keys.values():
             out.append(entry)
             continue
+        if isinstance(entry, str) and entry in map_cgo_keys:
+            out.append(map_cgo_keys[entry])
+            continue
+        # Numeric strings (e.g. numpy-hstack '0.86') are values, not opcodes.
         try:
             out.append(float(entry))
+            continue
         except (TypeError, ValueError):
-            if entry not in map_cgo_keys and hasattr(cgo, entry):
-                map_cgo_keys[entry] = getattr(cgo, entry)
-            if entry not in map_cgo_keys:
-                raise KeyError("Unknown CGO token %r" % entry)
-            out.append(map_cgo_keys[entry])
+            pass
+        token = entry if isinstance(entry, str) else repr(entry)
+        if token not in map_cgo_keys and hasattr(cgo, token):
+            map_cgo_keys[token] = getattr(cgo, token)
+        if token not in map_cgo_keys:
+            raise KeyError("Unknown CGO token %r" % entry)
+        out.append(map_cgo_keys[token])
     return out
 
 _BOX_EDGES = (

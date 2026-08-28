@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Optional, Sequence, Tuple
 
+from ...points import AtomPoint, FixedPoint, PointSource
 from ...util.sanitize import sanitize_pymol_string
 from ...util.view import screen_center
 from .colors import DEFAULT_SPHERE_COLOR, colors_for_new_points
@@ -28,9 +29,27 @@ class VisualPoint:
     z: float
     color: RGB = field(default_factory=lambda: DEFAULT_SPHERE_COLOR)
     alpha: float = 1.0
+    point_source: Optional[PointSource] = None
+
+    def __post_init__(self):
+        if self.point_source is None:
+            self.point_source = FixedPoint((self.x, self.y, self.z))
 
     def xyz(self) -> Tuple[float, float, float]:
         return (float(self.x), float(self.y), float(self.z))
+
+    def resolve(self, context=None) -> Tuple[float, float, float]:
+        if self.point_source is not None:
+            xyz = self.point_source.resolve(context)
+            return (float(xyz[0]), float(xyz[1]), float(xyz[2]))
+        return self.xyz()
+
+    def sync_from_source(self, context=None) -> "VisualPoint":
+        xyz = self.resolve(context)
+        return VisualPoint(
+            self.name, self.source, xyz[0], xyz[1], xyz[2],
+            self.color, self.alpha, self.point_source,
+        )
 
     def rgba(self) -> Tuple[float, float, float, float]:
         return (
@@ -41,13 +60,23 @@ class VisualPoint:
         )
 
     def with_xyz(self, xyz: Sequence[float]) -> "VisualPoint":
-        return VisualPoint(self.name, self.source, float(xyz[0]), float(xyz[1]), float(xyz[2]), self.color, self.alpha)
+        fp = FixedPoint(xyz)
+        return VisualPoint(
+            self.name, self.source, float(xyz[0]), float(xyz[1]), float(xyz[2]),
+            self.color, self.alpha, fp,
+        )
 
     def with_name(self, name: str) -> "VisualPoint":
-        return VisualPoint(str(name), self.source, self.x, self.y, self.z, self.color, self.alpha)
+        return VisualPoint(
+            str(name), self.source, self.x, self.y, self.z,
+            self.color, self.alpha, self.point_source,
+        )
 
     def with_source(self, source: str) -> "VisualPoint":
-        return VisualPoint(self.name, str(source), self.x, self.y, self.z, self.color, self.alpha)
+        return VisualPoint(
+            self.name, str(source), self.x, self.y, self.z,
+            self.color, self.alpha, self.point_source,
+        )
 
     def with_color(self, color: Sequence[float]) -> "VisualPoint":
         alpha = float(color[3]) if len(color) >= 4 else self.alpha
@@ -59,6 +88,7 @@ class VisualPoint:
             self.z,
             (float(color[0]), float(color[1]), float(color[2])),
             alpha,
+            self.point_source,
         )
 
 
@@ -167,7 +197,9 @@ def _count_selection_atoms(cmd_, sele_expr: str, state: int = 0) -> int:
 def _iterate_atoms(cmd_, sele_expr: str, atoms: list, state: int = 0) -> bool:
     """Fill atoms with [model, chain, elem, resn, resi, id, x, y, z] per atom."""
     expressions = (
+        "atoms.append([model, chain, elem, resn, resi, ID, name, x, y, z])",
         "atoms.append([model, chain, elem, resn, resi, ID, x, y, z])",
+        "atoms.append([model, chain, elem, resn, resi, index, name, x, y, z])",
         "atoms.append([model, chain, elem, resn, resi, index, x, y, z])",
     )
     for expr in expressions:
@@ -211,7 +243,12 @@ def nearest_atom_within(cmd_, pos: Sequence[float], radius: float = 1.0, sele: s
     atoms = []
     if not _iterate_atoms(cmd_, sele, atoms, state):
         return None
-    for model, chain, elem, resn, resi, atom_id, x, y, z in atoms:
+    for row in atoms:
+        if len(row) >= 10:
+            model, chain, elem, resn, resi, atom_id, atom_name, x, y, z = row[:10]
+        else:
+            model, chain, elem, resn, resi, atom_id, x, y, z = row[:9]
+            atom_name = elem
         d2 = _dist2(pos, (x, y, z))
         if d2 <= best_d2:
             best_d2 = d2
@@ -219,6 +256,7 @@ def nearest_atom_within(cmd_, pos: Sequence[float], radius: float = 1.0, sele: s
                 "model": model,
                 "chain": chain or "",
                 "elem": elem or "",
+                "name": atom_name or elem or "",
                 "resn": resn or "",
                 "resi": resi or "",
                 "index": int(atom_id),
@@ -229,7 +267,26 @@ def nearest_atom_within(cmd_, pos: Sequence[float], radius: float = 1.0, sele: s
     return best
 
 
-def camera_center_point(cmd_, snap_to_atom: bool = False, existing: Sequence[VisualPoint] = ()):
+def _point_source_for_atom(hook_to_selection, model, atom_id, chain, resi, atom_name, xyz):
+    xyz = (float(xyz[0]), float(xyz[1]), float(xyz[2]))
+    if hook_to_selection:
+        return AtomPoint(
+            model,
+            int(atom_id),
+            chain=chain or "",
+            resi=resi or "",
+            name=atom_name or "",
+            last_xyz=xyz,
+        )
+    return FixedPoint(xyz)
+
+
+def camera_center_point(
+    cmd_,
+    snap_to_atom: bool = False,
+    existing: Sequence[VisualPoint] = (),
+    hook_to_selection: bool = True,
+):
     view = tuple(cmd_.get_view())
     pos = screen_center(view)
     source = "manual"
@@ -238,6 +295,7 @@ def camera_center_point(cmd_, snap_to_atom: bool = False, existing: Sequence[Vis
         atom = nearest_atom_within(cmd_, pos, radius=1.0)
         if atom is not None:
             pos = (atom["x"], atom["y"], atom["z"])
+            source = "selection"
             name = atom_point_name(
                 atom["model"],
                 elem=atom["elem"],
@@ -246,13 +304,24 @@ def camera_center_point(cmd_, snap_to_atom: bool = False, existing: Sequence[Vis
                 chain=atom["chain"],
                 index=atom["index"],
             )
-    return VisualPoint(name, source, pos[0], pos[1], pos[2])
+            pt_source = _point_source_for_atom(
+                hook_to_selection,
+                atom["model"],
+                atom["index"],
+                atom["chain"],
+                atom["resi"],
+                atom.get("name") or atom["elem"],
+                pos,
+            )
+            return VisualPoint(name, source, pos[0], pos[1], pos[2], point_source=pt_source)
+    return VisualPoint(name, source, pos[0], pos[1], pos[2], point_source=FixedPoint(pos))
 
 
 def selection_points(
     cmd_,
     existing: Sequence[VisualPoint] = (),
     interactive_only: bool = False,
+    hook_to_selection: bool = True,
 ) -> List[VisualPoint]:
     sele = _active_selection(cmd_, interactive_only=interactive_only)
     if sele is None:
@@ -263,7 +332,12 @@ def selection_points(
         return []
     used = {p.name for p in existing}
     out = []
-    for model, chain, elem, resn, resi, atom_id, x, y, z in atoms:
+    for row in atoms:
+        if len(row) >= 10:
+            model, chain, elem, resn, resi, atom_id, atom_name, x, y, z = row[:10]
+        else:
+            model, chain, elem, resn, resi, atom_id, x, y, z = row[:9]
+            atom_name = elem
         name = atom_point_name(
             model,
             elem=elem,
@@ -278,7 +352,14 @@ def selection_points(
             name = "%s_%d" % (base, n)
             n += 1
         used.add(name)
-        out.append(VisualPoint(name, "selection", float(x), float(y), float(z)))
+        xyz = (float(x), float(y), float(z))
+        out.append(VisualPoint(
+            name, "selection", xyz[0], xyz[1], xyz[2],
+            point_source=_point_source_for_atom(
+                hook_to_selection, model, atom_id, chain, resi,
+                atom_name or elem or "", xyz,
+            ),
+        ))
     return out
 
 

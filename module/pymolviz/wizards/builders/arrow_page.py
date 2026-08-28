@@ -4,8 +4,13 @@ from __future__ import annotations
 
 from typing import Callable, List, Optional
 
-from ..pick import qt_modules
-from .arrow_geom import TokenCGO, build_arrow_cgo_list
+from ..pick import DeferredCallback, qt_modules, qt_widget_alive
+from ..tooltips import (
+    HOOK_TO_SELECTION_TIP,
+    SNAP_TO_ATOM_TIP,
+    apply_required_tooltips,
+    warn_missing_setting_tooltips,
+)
 from .colors import colors_for_new_points, pick_rgb, readable_text_color
 from .line_style import ARROW_QUALITY_SEGMENTS, LineOptionsWidget
 from .pairs import VisualPair, flatten_pair_points, take_single_selection_point
@@ -14,7 +19,7 @@ from .points import (
     camera_center_point,
     export_points_to_selection,
 )
-from .preview import ArrowPreview, _commit_pairs
+from .preview import ArrowPreview, build_arrow_collection, persist_collection
 
 COLS = ("Start", "Start src", "End", "End src", "X0", "Y0", "Z0", "X1", "Y1", "Z1")
 QUALITY_HINTS = {
@@ -46,12 +51,14 @@ class ArrowBuilderPage:
         self._pending_first = None
         self._ignore_xyz = None
         self._poll_timer = None
+        self._deferred = DeferredCallback()
         self._page = None
         self._table = None
         self._quality = None
         self._quality_hint = None
         self._line_options = None
         self._snap_atom = None
+        self._hook_selection = None
         self._status = None
         self._select_pair_btn = None
         self._abort_btn = None
@@ -65,7 +72,11 @@ class ArrowBuilderPage:
         return self._page
 
     def cleanup_preview(self):
-        self._abort_pair(silent=True)
+        self._deferred.cancel()
+        self._stop_poll_timer()
+        self._phase = None
+        self._pending_first = None
+        self._ignore_xyz = None
         self._preview.cleanup()
 
     def _existing_points(self) -> List[VisualPoint]:
@@ -114,12 +125,12 @@ class ArrowBuilderPage:
         pts_box = QtWidgets.QGroupBox("Pairs")
         pts_layout = QtWidgets.QVBoxLayout(pts_box)
         self._snap_atom = QtWidgets.QCheckBox("Snap to atom")
-        self._snap_atom.setToolTip("Snap camera-center point to the nearest atom within 1 Å")
+        self._hook_selection = QtWidgets.QCheckBox("Hook to selection")
+        self._hook_selection.setChecked(True)
         btn_row = QtWidgets.QHBoxLayout()
         self._select_pair_btn = QtWidgets.QPushButton("Select Pair")
         self._select_pair_btn.clicked.connect(self._on_select_pair)
         mcs_btn = QtWidgets.QPushButton("Pair MCS")
-        mcs_btn.setToolTip("Maximum common substructure pairing (not implemented)")
         mcs_btn.clicked.connect(self._on_pair_mcs)
         self._add_cam_btn = QtWidgets.QPushButton("Add camera")
         self._add_cam_btn.clicked.connect(self._on_add_camera)
@@ -136,7 +147,11 @@ class ArrowBuilderPage:
         self._status = QtWidgets.QLabel("Add a pair with Select Pair or Add camera.")
         self._status.setWordWrap(True)
         self._status.setStyleSheet("color: gray;")
-        pts_layout.addWidget(self._snap_atom)
+        flags = QtWidgets.QHBoxLayout()
+        flags.addWidget(self._snap_atom)
+        flags.addWidget(self._hook_selection)
+        flags.addStretch(1)
+        pts_layout.addLayout(flags)
         pts_layout.addLayout(btn_row)
         pts_layout.addWidget(self._status)
 
@@ -185,13 +200,49 @@ class ArrowBuilderPage:
         actions.addWidget(export_btn)
         root.addLayout(actions)
 
+        apply_required_tooltips(
+            [
+                (back, "Return to the mesh type list."),
+                (
+                    self._quality,
+                    "0 = 2D lines; 1–5 = cylinder / cone meshes with more vertices",
+                    "Quality",
+                ),
+                (self._snap_atom, SNAP_TO_ATOM_TIP),
+                (self._hook_selection, HOOK_TO_SELECTION_TIP),
+                (
+                    self._select_pair_btn,
+                    "Pick start and end from the current PyMOL selection (one atom at a time).",
+                ),
+                (mcs_btn, "Maximum common substructure pairing (not implemented)."),
+                (
+                    self._add_cam_btn,
+                    "Use the camera/screen center as the next pair endpoint. "
+                    "With Snap to atom, uses the nearest atom within 1 Å.",
+                ),
+                (self._abort_btn, "Cancel the in-progress pair and keep existing rows."),
+                (
+                    export_sel,
+                    "Create a PyMOL selection covering the pair endpoints as pseudoatoms.",
+                ),
+                (self._object_name, "Name of the PyMOL CGO object created or exported."),
+                (create_btn, "Commit the arrows to the session as a named CGO object."),
+                (export_btn, "Write a Python script that rebuilds this CGO."),
+            ],
+            context="ArrowBuilderPage",
+        )
+
         self._poll_timer = QtCore.QTimer(page)
         self._poll_timer.setInterval(250)
         self._poll_timer.timeout.connect(self._poll_selection)
         self._page = page
+        warn_missing_setting_tooltips(page, context="ArrowBuilderPage")
 
     def _go_back(self):
+        self._deferred.cancel()
+        self._stop_poll_timer()
         self._abort_pair(silent=True)
+        self._preview.cleanup()
         self._on_back()
 
     def _on_quality_changed(self, *_args):
@@ -226,32 +277,54 @@ class ArrowBuilderPage:
         dz = point.z - self._ignore_xyz[2]
         return (dx * dx + dy * dy + dz * dz) < 1e-6
 
-    def _set_phase(self, phase, first=None, hint=None):
+    def _set_phase(self, phase, first=None, hint=None, schedule_preview=True):
         self._phase = phase
         self._pending_first = first
         if phase is None:
             self._ignore_xyz = None
+        if qt_widget_alive(self._page):
+            waiting = phase in ("first", "second")
+            try:
+                self._abort_btn.setVisible(waiting)
+                self._select_pair_btn.setText("Select Pair" if not waiting else "Use selection")
+                if hint is not None:
+                    self._status.setText(hint)
+            except RuntimeError:
+                pass
         waiting = phase in ("first", "second")
-        self._abort_btn.setVisible(waiting)
-        self._select_pair_btn.setText("Select Pair" if not waiting else "Use selection")
-        if hint is not None:
-            self._status.setText(hint)
         if waiting:
-            self._poll_timer.start()
+            self._start_poll_timer()
         else:
-            self._poll_timer.stop()
-        self._schedule_preview()
+            self._stop_poll_timer()
+        if schedule_preview:
+            self._schedule_preview()
 
     def _abort_pair(self, silent=False):
-        self._set_phase(None, None, None if silent else "Pair selection aborted.")
-        if not silent:
-            self._status.setText("Add a pair with Select Pair or Add camera.")
+        self._set_phase(
+            None,
+            None,
+            None if silent else "Pair selection aborted.",
+            schedule_preview=not silent,
+        )
+        if not silent and qt_widget_alive(self._status):
+            try:
+                self._status.setText("Add a pair with Select Pair or Add camera.")
+            except RuntimeError:
+                pass
+
+    def _selection_point(self, interactive_only=False):
+        return take_single_selection_point(
+            self.cmd,
+            self._existing_points(),
+            interactive_only=interactive_only,
+            hook_to_selection=self._hook_selection.isChecked(),
+        )
 
     def _on_select_pair(self):
         if self._phase in ("first", "second"):
             self._use_current_selection()
             return
-        point, status = take_single_selection_point(self.cmd, self._existing_points())
+        point, status = self._selection_point()
         if status == "multiple":
             self._not_implemented(
                 "Not Implemented",
@@ -270,7 +343,7 @@ class ArrowBuilderPage:
     def _use_current_selection(self):
         if self._phase not in ("first", "second"):
             return
-        point, status = take_single_selection_point(self.cmd, self._existing_points())
+        point, status = self._selection_point()
         if status == "multiple":
             self._not_implemented(
                 "Not Implemented",
@@ -285,19 +358,36 @@ class ArrowBuilderPage:
             return
         self._accept_point(point)
 
+    def _start_poll_timer(self):
+        if not qt_widget_alive(self._poll_timer):
+            return
+        try:
+            self._poll_timer.start()
+        except RuntimeError:
+            pass
+
+    def _stop_poll_timer(self):
+        if not qt_widget_alive(self._poll_timer):
+            return
+        try:
+            self._poll_timer.stop()
+        except RuntimeError:
+            pass
+
     def _poll_selection(self):
         if self._phase not in ("first", "second"):
             return
-        point, status = take_single_selection_point(
-            self.cmd, self._existing_points(), interactive_only=True,
-        )
+        if not qt_widget_alive(self._page):
+            self._stop_poll_timer()
+            return
+        point, status = self._selection_point(interactive_only=True)
         if status == "multiple":
-            self._poll_timer.stop()
+            self._stop_poll_timer()
             self._not_implemented(
                 "Not Implemented",
                 "Selecting multiple atoms as a pair is not implemented yet.",
             )
-            self._poll_timer.start()
+            self._start_poll_timer()
             return
         if status == "one" and not self._same_as_ignored(point):
             self._accept_point(point)
@@ -343,7 +433,12 @@ class ArrowBuilderPage:
         self._sync_table()
 
     def _on_add_camera(self):
-        pt = camera_center_point(self.cmd, self._snap_atom.isChecked(), self._existing_points())
+        pt = camera_center_point(
+            self.cmd,
+            self._snap_atom.isChecked(),
+            self._existing_points(),
+            hook_to_selection=self._hook_selection.isChecked(),
+        )
         if self._phase is None:
             self._accept_first(pt)
             return
@@ -406,18 +501,20 @@ class ArrowBuilderPage:
         ))
 
     def _schedule_preview(self):
-        QtCore, _, _ = qt_modules()
-        if QtCore is None:
-            return
-        QtCore.QTimer.singleShot(0, self._refresh_preview)
+        self._deferred.schedule(self._refresh_preview, page=self._page)
 
     def _refresh_preview(self):
-        self._preview.update(
-            self._pairs,
-            self._quality.value(),
-            self._style(),
-            pending=self._pending_first,
-        )
+        if not qt_widget_alive(self._page):
+            return
+        try:
+            self._preview.update(
+                self._pairs,
+                self._quality.value(),
+                self._style(),
+                pending=self._pending_first,
+            )
+        except RuntimeError:
+            pass
 
     def _sync_table(self):
         _, QtGui, QtWidgets = qt_modules()
@@ -500,14 +597,11 @@ class ArrowBuilderPage:
         if not self._pairs:
             return
         name = self._object_name.text().strip() or "pmv_arrows"
-        quality = int(self._quality.value())
-        style = self._style()
-        _commit_pairs(
+        persist_collection(
             self.cmd,
-            name,
-            self._pairs,
-            lambda: build_arrow_cgo_list(self._pairs, quality, style),
-            lambda pair: build_arrow_cgo_list([pair], quality, style),
+            build_arrow_collection(
+                self._pairs, int(self._quality.value()), self._style(), name,
+            ),
         )
         self._preview.cleanup()
         if self._on_create is not None:
@@ -523,9 +617,6 @@ class ArrowBuilderPage:
         )
         if not path:
             return
-        tokens = build_arrow_cgo_list(self._pairs, int(self._quality.value()), self._style())
-        from ...meshes.CGOCollection import CGOCollection
-
-        collection = CGOCollection([TokenCGO(tokens, name)], name=name)
-        collection.transparency = 1.0 - min(p.alpha for p in self._pairs)
-        collection.write(path)
+        build_arrow_collection(
+            self._pairs, int(self._quality.value()), self._style(), name,
+        ).write(path)

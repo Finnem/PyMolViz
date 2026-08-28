@@ -25,6 +25,19 @@ class Mesh(Points):
         self.faces = np.array(faces, dtype=int).reshape(-1, 3) if faces is not None else np.arange(vertices.shape[0]).reshape(-1, 3)
         super().__init__(vertices.reshape(-1, 3), color, name, state, transparency, colormap, *args, **kwargs)
         
+    def _colors_for_indices(self, indices):
+        if getattr(self, "bypass_colormap", False):
+            colors = np.asarray(self.color, dtype=float).reshape(-1, 3)
+            if colors.shape[0] == 1:
+                return np.repeat(colors, len(indices), axis=0)
+            if colors.shape[0] == self.vertices.shape[0]:
+                return colors[indices]
+            return np.repeat(colors[:1], len(indices), axis=0)
+        color = np.asarray(self.color)
+        if color.ndim == 0 or color.shape[0] != self.vertices.shape[0]:
+            return self.color
+        return self.color[indices]
+
     def to_wireframe(self, *args, **kwargs):
         """ Converts the mesh to a wireframe.
         
@@ -35,8 +48,9 @@ class Mesh(Points):
         vertex_indices = []
         if not "state" in kwargs:
             kwargs["state"] = self.state
-        if not "colormap" in kwargs:
+        if not "colormap" in kwargs and not getattr(self, "bypass_colormap", False):
             kwargs["colormap"] = self.colormap
+        kwargs.setdefault("bypass_colormap", getattr(self, "bypass_colormap", False))
 
         for face in self.faces:
             vertex_indices.extend([face[0], face[1], face[1], face[2], face[2], face[0]])
@@ -44,7 +58,7 @@ class Mesh(Points):
         if not "render_as" in kwargs:
             kwargs["render_as"] = "lines"
         
-        return Lines(self.vertices[vertex_indices], self.color[vertex_indices], *args, **kwargs)
+        return Lines(self.vertices[vertex_indices], self._colors_for_indices(vertex_indices), *args, **kwargs)
 
 
     def _create_CGO_list(self) -> str:
@@ -56,8 +70,14 @@ class Mesh(Points):
         """
 
 
+        if getattr(self, "wireframe", False):
+            wire = self.to_wireframe(render_as="cylinders", linewidth=0.012)
+            return wire._create_CGO_list()
+
         if getattr(self, "bypass_colormap", False):
             cgo_colors = np.asarray(self.color, dtype=float).reshape(-1, 3)
+            if cgo_colors.shape[0] != self.vertices.shape[0]:
+                cgo_colors = np.repeat(cgo_colors[:1], self.vertices.shape[0], axis=0)
         else:
             cgo_colors = self.colormap.get_color(self.color)[:, :3]
         cgo_triangles = self.vertices[self.faces].reshape(-1, 3)

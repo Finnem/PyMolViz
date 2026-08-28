@@ -205,6 +205,9 @@ class AddVisualWindow:
         self._cleanup_builder_previews()
         self._window = None
         self._stack = None
+        self._sphere_page = None
+        self._box_page = None
+        self._arrow_page = None
 
     def _cleanup_builder_previews(self):
         if self._sphere_page is not None:

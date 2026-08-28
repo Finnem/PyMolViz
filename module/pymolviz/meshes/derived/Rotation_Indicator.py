@@ -5,6 +5,7 @@ from typing import Tuple
 import numpy as np
 
 from ..Mesh import Mesh
+from ...points import as_point_source, resolve_xyz
 from .PolylineTube import (
     append_cone_arrow_mesh,
     quad_strip_to_triangles,
@@ -100,8 +101,8 @@ class Rotation_Indicator(Mesh):
         *args,
         **kwargs,
     ) -> None:
-        self.center_position = np.asarray(center_position, dtype=float).reshape(3)
-        self.outer_start = np.asarray(outer_start, dtype=float).reshape(3)
+        self.center_position = as_point_source(center_position)
+        self.outer_start = as_point_source(outer_start)
         self.rotation_axis = np.asarray(rotation_axis, dtype=float).reshape(3)
         self.angle = float(angle)
         self.linewidth = float(linewidth)
@@ -109,7 +110,9 @@ class Rotation_Indicator(Mesh):
         self.arrow_height_scale = float(arrow_height_scale)
         self.arrow_sides = arrow_sides
 
-        rotation_start = self.outer_start - self.center_position
+        center_xyz = np.asarray(resolve_xyz(self.center_position), dtype=float).reshape(3)
+        outer_xyz = np.asarray(resolve_xyz(self.outer_start), dtype=float).reshape(3)
+        rotation_start = outer_xyz - center_xyz
         w = self.rotation_axis / (np.linalg.norm(self.rotation_axis) + 1e-15)
         rad0 = np.linalg.norm(rotation_start)
         if rad0 < 1e-12:
@@ -125,7 +128,7 @@ class Rotation_Indicator(Mesh):
         n_v = max(6, int(tubular_resolution))
 
         verts, faces, normals = _partial_torus_geometry(
-            self.center_position,
+            center_xyz,
             w,
             rotation_start,
             self.angle,
@@ -137,7 +140,7 @@ class Rotation_Indicator(Mesh):
         if show_arrow:
             ca, sa = np.cos(self.angle), np.sin(self.angle)
             n_end = ca * u0 + sa * v0
-            L_end = self.center_position + R_major * n_end
+            L_end = center_xyz + R_major * n_end
             t_hat = R_major * (-sa * u0 + ca * v0)
             t_hat /= np.linalg.norm(t_hat) + 1e-15
             verts, faces, normals = append_cone_arrow_mesh(
@@ -167,3 +170,46 @@ class Rotation_Indicator(Mesh):
             **color_kw,
             **kwargs,
         )
+        self.show_arrow = bool(show_arrow)
+        self.resolution = int(resolution)
+        self.tubular_resolution = int(tubular_resolution)
+
+    def rebuild(self, context=None) -> None:
+        center_xyz = np.asarray(resolve_xyz(self.center_position, context), dtype=float).reshape(3)
+        outer_xyz = np.asarray(resolve_xyz(self.outer_start, context), dtype=float).reshape(3)
+        rotation_start = outer_xyz - center_xyz
+        w = self.rotation_axis / (np.linalg.norm(self.rotation_axis) + 1e-15)
+        rad0 = np.linalg.norm(rotation_start)
+        if rad0 < 1e-12:
+            return
+        u0 = rotation_start / rad0
+        u0 = u0 - float(np.dot(u0, w)) * w
+        u0 = u0 / (np.linalg.norm(u0) + 1e-15)
+        v0 = np.cross(w, u0)
+        R_major = rad0 * (1.0 + self.linewidth)
+        r_minor = rad0 * self.linewidth
+        n_u = max(2, int(self.resolution))
+        n_v = max(6, int(self.tubular_resolution))
+        verts, faces, normals = _partial_torus_geometry(
+            center_xyz, w, rotation_start, self.angle, self.linewidth, n_u, n_v,
+        )
+        if self.show_arrow:
+            ca, sa = np.cos(self.angle), np.sin(self.angle)
+            n_end = ca * u0 + sa * v0
+            L_end = center_xyz + R_major * n_end
+            t_hat = R_major * (-sa * u0 + ca * v0)
+            t_hat /= np.linalg.norm(t_hat) + 1e-15
+            verts, faces, normals = append_cone_arrow_mesh(
+                verts, faces, normals,
+                base_center=L_end,
+                tangent=t_hat,
+                plane_normal=n_end / (np.linalg.norm(n_end) + 1e-15),
+                plane_binormal=w,
+                r_base=self.arrow_base_scale * r_minor,
+                height=self.arrow_height_scale * r_minor,
+                arrow_sides=self.arrow_sides,
+                default_sides=max(16, n_v),
+            )
+        self.vertices = verts
+        self.faces = faces
+        self.normals = normals

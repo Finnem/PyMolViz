@@ -74,6 +74,15 @@ class LogSegmentRadiusWidget:
         finally:
             self._blocking = False
 
+    def setToolTip(self, text):
+        text = str(text or "")
+        self._widget.setToolTip(text)
+        self._slider.setToolTip(text)
+        self._spin.setToolTip(text)
+
+    def toolTip(self):
+        return self._widget.toolTip()
+
     def connect_changed(self, callback):
         self._slider.valueChanged.connect(lambda *_: callback())
         self._spin.valueChanged.connect(lambda *_: callback())

@@ -15,6 +15,62 @@ def qt_modules():
         return None, None, None
 
 
+def qt_widget_alive(widget) -> bool:
+    """Return False when the underlying C/C++ Qt object was deleted."""
+    if widget is None:
+        return False
+    try:
+        import shiboken6 as shiboken
+        return shiboken.isValid(widget)
+    except ImportError:
+        try:
+            import shiboken2 as shiboken
+            return shiboken.isValid(widget)
+        except ImportError:
+            pass
+    try:
+        import sip
+        return not sip.isdeleted(widget)
+    except ImportError:
+        pass
+    try:
+        widget.objectName()
+        return True
+    except RuntimeError:
+        return False
+
+
+class DeferredCallback:
+    """Coalesce QTimer.singleShot(0, ...) callbacks and cancel on page teardown."""
+
+    def __init__(self):
+        self._generation = 0
+
+    def cancel(self):
+        self._generation += 1
+
+    def schedule(self, callback, page=None):
+        QtCore, _, _ = qt_modules()
+        if QtCore is None:
+            return
+        if page is not None and not qt_widget_alive(page):
+            return
+        self._generation += 1
+        generation = self._generation
+
+        def _run():
+            if generation != self._generation:
+                return
+            if page is not None and not qt_widget_alive(page):
+                return
+            try:
+                callback()
+            except RuntimeError:
+                pass
+
+        QtCore.QTimer.singleShot(0, _run)
+
+
 _OPEN_TOOL_WINDOWS = []
 _RAISE_FILTER = None
 

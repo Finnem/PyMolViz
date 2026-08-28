@@ -1,6 +1,7 @@
 from . import Mesh
 import numpy as np
 
+from ..points import as_point_source, resolve_xyz
 from ..util.geometries import icosphere
 
 
@@ -20,6 +21,13 @@ def _frequency_from_resolution(resolution):
     return 8
 
 
+def _build_sphere_mesh(position, radius, frequency):
+    unit_verts, faces, _edges = icosphere(frequency=frequency)
+    vertices = unit_verts * float(radius) + np.asarray(position, dtype=float).reshape(1, 3)
+    normals = unit_verts.copy()
+    return vertices, normals, faces
+
+
 class Sphere(Mesh):
     def __init__(
         self,
@@ -29,31 +37,29 @@ class Sphere(Mesh):
         resolution=20,
         subdivisions=None,
         frequency=None,
+        wireframe=False,
         *args,
         **kwargs
     ) -> None:
-        """Creates a geodesic sphere mesh (uniform triangles, no polar pinch).
-
-        Args:
-            radius (float): The radius of the sphere.
-            position (np.array): The position of the sphere.
-            color (str): Optional. Defaults to "red". The color of the sphere.
-            resolution (int): Optional. Defaults to 20. Legacy UV-sphere step
-                count; mapped to geodesic frequency when ``frequency`` /
-                ``subdivisions`` are omitted.
-            subdivisions (int): Optional. Power-of-two depth (frequency = 2**n).
-            frequency (int): Optional. Geodesic frequency (2/3/4/6/8 →
-                80/180/320/720/1280 triangles).
-        """
         if frequency is None and subdivisions is not None:
             frequency = 2 ** max(0, int(subdivisions))
         if frequency is None:
             frequency = _frequency_from_resolution(resolution)
-        unit_verts, faces, _edges = icosphere(frequency=frequency)
-        vertices = unit_verts * float(radius) + np.asarray(position, dtype=float).reshape(1, 3)
-        normals = unit_verts.copy()
-        self.position = position
-        self.radius = radius
+        self.position = as_point_source(position)
+        self.geom_radius = float(radius)
+        self.radius = self.geom_radius
         self.frequency = int(frequency)
         self.subdivisions = int(subdivisions) if subdivisions is not None else None
+        self.wireframe = bool(wireframe)
+        self.resolution = int(resolution)
+        pos = resolve_xyz(self.position)
+        vertices, normals, faces = _build_sphere_mesh(pos, self.geom_radius, self.frequency)
         super().__init__(vertices, color, normals, faces, *args, **kwargs)
+        self.radius = self.geom_radius
+
+    def rebuild(self, context=None) -> None:
+        pos = resolve_xyz(self.position, context)
+        vertices, normals, faces = _build_sphere_mesh(pos, self.geom_radius, self.frequency)
+        self.vertices = vertices
+        self.normals = normals
+        self.faces = faces
