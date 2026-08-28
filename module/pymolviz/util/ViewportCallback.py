@@ -50,6 +50,7 @@ viewport.add_object("{name}")""")
     def __call__(self):
         from pymol import cmd
         from chempy import cpv
+        from .view import camera_to_model_offset
         change = False
         for name in self.names:
             if name not in cmd.get_names('objects'):
@@ -62,41 +63,31 @@ viewport.add_object("{name}")""")
             if len(viewports[self.x]) == 0:
                 viewports.pop(self.x)
             return
-        
+
         v = cmd.get_view()
         if v == self.prev_v:
             return
         self.prev_v = v
-        
-        # inverted world to camera space => camera to world space matrix
-        R_mc = [v[0:3], v[3:6], v[6:9]]
-        
+
         # target position in camera space
         z = v[11]/50 # zoom
         width, height = [v for v in cmd.get_viewport()]
         x, y = self.x * 8.5, self.y * 8.5 # 8.5 is a magic number
         position = [ x * z * width / height, y * z, 0] # for some reason this is still not quite accurate when resizing
-        
-        
-        # target orientation in world space
-        model_space_position = cpv.transform(R_mc, position)
-        
-        t = v[12:15] # offset from model origin
-        
-        # target position in world space
-        t = cpv.add(t, model_space_position)
-        
+
+        model_space_position = camera_to_model_offset(v, position)
+        t = cpv.add(v[12:15], model_space_position)
         t = [n/-z for n in t]
 
         m = [-z, 0, 0, 0,
-            0, -z, 0, 0, 
-            0, 0, -z, 0, 
+            0, -z, 0, 0,
+            0, 0, -z, 0,
             *t, 1]
-        
+
         for name in self.names:
             if name in cmd.get_names('objects'):
                 cmd.set_object_ttt(name, m)
-        
+
         cmd.set('auto_zoom', 0)
 
 class ViewportCallbackFunction(Displayable):

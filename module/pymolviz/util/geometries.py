@@ -1,5 +1,19 @@
+import math
+
 import numpy as np
 from scipy.spatial.transform import Rotation
+
+
+def point_on_sphere(center, radius, theta, phi):
+    """Spherical coordinates → Cartesian point on a sphere."""
+    cx, cy, cz = center
+    st = math.sin(theta)
+    return (
+        cx + radius * st * math.cos(phi),
+        cy + radius * st * math.sin(phi),
+        cz + radius * math.cos(theta),
+    )
+
 
 # Create a sphere mesh
 def get_sphere_mesh(position, radius = 1, resolution = 10):

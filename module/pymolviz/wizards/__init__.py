@@ -1,3 +1,9 @@
-from ..wizard import PyMolVizWizard, start_wizard
+"""Wizard submodules (camera cage, pick, UI windows).
 
-__all__ = ["PyMolVizWizard", "start_wizard"]
+Import PyMolVizWizard / start_wizard from pymolviz.wizard, not from here —
+this package must not pull wizard.py during submodule imports.
+"""
+
+from .camera_center import CameraCenterSphere
+
+__all__ = ["CameraCenterSphere"]
