@@ -185,17 +185,18 @@ def _iterate_atoms(cmd_, sele_expr: str, atoms: list, state: int = 0) -> bool:
     return False
 
 
-def _active_selection(cmd_) -> Optional[str]:
+def _active_selection(cmd_, interactive_only: bool = False) -> Optional[str]:
     """Return a selection expression with at least one atom, or None."""
     state = _current_state(cmd_)
     candidates = ["(sele)", "(selextended)", "(pk1)"]
-    try:
-        for name in cmd_.get_names("selections"):
-            expr = _selection_expr(name)
-            if expr not in candidates:
-                candidates.append(expr)
-    except Exception:
-        pass
+    if not interactive_only:
+        try:
+            for name in cmd_.get_names("selections"):
+                expr = _selection_expr(name)
+                if expr not in candidates:
+                    candidates.append(expr)
+        except Exception:
+            pass
     for expr in candidates:
         if _count_selection_atoms(cmd_, expr, state) > 0:
             return expr
@@ -248,8 +249,12 @@ def camera_center_point(cmd_, snap_to_atom: bool = False, existing: Sequence[Vis
     return VisualPoint(name, source, pos[0], pos[1], pos[2])
 
 
-def selection_points(cmd_, existing: Sequence[VisualPoint] = ()) -> List[VisualPoint]:
-    sele = _active_selection(cmd_)
+def selection_points(
+    cmd_,
+    existing: Sequence[VisualPoint] = (),
+    interactive_only: bool = False,
+) -> List[VisualPoint]:
+    sele = _active_selection(cmd_, interactive_only=interactive_only)
     if sele is None:
         return []
     state = _current_state(cmd_)

@@ -1,5 +1,6 @@
 """Standalone window for building / adding visuals (CGOs)."""
 
+from .builders.arrow_page import ArrowBuilderPage
 from .builders.box_page import BoxBuilderPage
 from .builders.sphere_page import SphereBuilderPage
 from .pick import bind_tool_window, configure_tool_window, qt_modules
@@ -24,6 +25,7 @@ class AddVisualWindow:
         self._mesh_choice = None
         self._sphere_page = None
         self._box_page = None
+        self._arrow_page = None
         self._mesh_page_index = 1
 
     def show(self):
@@ -45,7 +47,7 @@ class AddVisualWindow:
         window.setWindowTitle("Add Visual")
         configure_tool_window(window)
         window.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
-        window.resize(520, 640)
+        window.resize(540, 720)
 
         root = QtWidgets.QVBoxLayout(window)
         stack = QtWidgets.QStackedWidget()
@@ -66,8 +68,15 @@ class AddVisualWindow:
             on_create=self.close,
             parent=window,
         )
+        self._arrow_page = ArrowBuilderPage(
+            self.wizard.cmd,
+            on_back=lambda: self._goto(self._mesh_page_index),
+            on_create=self.close,
+            parent=window,
+        )
         stack.addWidget(self._sphere_page.widget)
         stack.addWidget(self._box_page.widget)
+        stack.addWidget(self._arrow_page.widget)
         stack.setCurrentIndex(0)
 
         root.addWidget(stack)
@@ -187,6 +196,9 @@ class AddVisualWindow:
         if name == "Box" and self._stack is not None and self._box_page is not None:
             self._stack.setCurrentWidget(self._box_page.widget)
             return
+        if name == "Arrows" and self._stack is not None and self._arrow_page is not None:
+            self._stack.setCurrentWidget(self._arrow_page.widget)
+            return
         # Other mesh types remain stubs on the mesh list page.
 
     def _on_destroyed(self, *_args):
@@ -199,6 +211,8 @@ class AddVisualWindow:
             self._sphere_page.cleanup_preview()
         if self._box_page is not None:
             self._box_page.cleanup_preview()
+        if self._arrow_page is not None:
+            self._arrow_page.cleanup_preview()
 
     def close(self):
         self._cleanup_builder_previews()

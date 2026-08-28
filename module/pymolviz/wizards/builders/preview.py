@@ -29,6 +29,9 @@ PREVIEW_SPHERE_PREFIX = "_pmv_sph_"
 PREVIEW_BOX_PREFIX = "_pmv_box_"
 PREVIEW_MARKER_PREFIX = "_pmv_pt_"
 PREVIEW_BOX_MARKER_PREFIX = "_pmv_box_mk_"
+PREVIEW_ARROW_PREFIX = "_pmv_arr_"
+PREVIEW_ARROW_MARKER_PREFIX = "_pmv_arr_mk_"
+PREVIEW_ARROW_PENDING = "_pmv_arr_pend"
 
 SPHERE_COLOR = (1.0, 0.85, 0.15)
 MARKER_COLOR = (0.2, 0.85, 1.0)
@@ -456,3 +459,110 @@ class SpherePreview:
         self._alphas = []
         self._sphere_names = []
         self._marker_names = []
+
+
+def _commit_pairs(cmd_, name: str, pairs, build_all, build_one):
+    """Commit pair CGOs; group when alphas differ."""
+    if not pairs:
+        return
+    alphas = [float(pair.alpha) for pair in pairs]
+    if max(alphas) - min(alphas) < 1e-6:
+        _load_merged_cgo(cmd_, name, build_all(), alpha=alphas[0])
+        return
+    members = []
+    for i, pair in enumerate(pairs):
+        member = "%s_%d" % (name, i + 1)
+        members.append(member)
+        _load_merged_cgo(cmd_, member, build_one(pair), alpha=pair.alpha)
+    try:
+        cmd_.group(name, " ".join(members))
+    except Exception:
+        pass
+
+
+class ArrowPreview:
+    """One arrow CGO per pair, plus a pending first-point marker."""
+
+    def __init__(self, cmd_):
+        self.cmd = cmd_
+        self._signatures = []
+        self._arrow_names: List[str] = []
+        self._marker_names: List[str] = []
+        self._pending_name = None
+
+    def update(self, pairs, quality: int, style, pending=None):
+        from .arrow_geom import arrow_cgo
+
+        if not pairs and pending is None:
+            self.cleanup()
+            return
+
+        signatures = [
+            (pair.start.xyz(), pair.end.xyz(), pair.color, float(pair.alpha), int(quality), style)
+            for pair in pairs
+        ]
+        count_changed = len(pairs) != len(self._arrow_names)
+        self._sync_object_count(len(pairs))
+        if signatures != self._signatures or count_changed:
+            for i, pair in enumerate(pairs):
+                tokens = _resolve_cgo_tokens(
+                    arrow_cgo(pair.start.xyz(), pair.end.xyz(), pair.color, quality, style, pair.alpha)
+                )
+                replace_cgo_no_zoom(self.cmd, tokens, self._arrow_names[i])
+                set_cgo_transparency(self.cmd, self._arrow_names[i], pair.alpha)
+                marker = _resolve_cgo_tokens(_unit_marker_cgo())
+                replace_cgo_no_zoom(self.cmd, marker, self._marker_names[i * 2])
+                replace_cgo_no_zoom(self.cmd, marker, self._marker_names[i * 2 + 1])
+                self.cmd.set_object_ttt(self._marker_names[i * 2], scale_translation_ttt(pair.start.xyz(), MARKER_RADIUS))
+                self.cmd.set_object_ttt(self._marker_names[i * 2 + 1], scale_translation_ttt(pair.end.xyz(), MARKER_RADIUS))
+            self._signatures = signatures
+
+        if pending is None:
+            if self._pending_name is not None:
+                try:
+                    self.cmd.delete(self._pending_name)
+                except Exception:
+                    pass
+                self._pending_name = None
+        else:
+            if self._pending_name is None:
+                self._pending_name = PREVIEW_ARROW_PENDING
+                load_cgo_no_zoom(self.cmd, _resolve_cgo_tokens(_unit_marker_cgo()), self._pending_name)
+            self.cmd.set_object_ttt(self._pending_name, scale_translation_ttt(pending.xyz(), MARKER_RADIUS * 1.4))
+
+    def _sync_object_count(self, count: int):
+        while len(self._arrow_names) < count:
+            idx = len(self._arrow_names)
+            arrow_name = "%s%d" % (PREVIEW_ARROW_PREFIX, idx)
+            load_cgo_no_zoom(self.cmd, _resolve_cgo_tokens(_unit_marker_cgo()), arrow_name)
+            self._arrow_names.append(arrow_name)
+            for extra in (0, 1):
+                marker_name = "%s%d" % (PREVIEW_ARROW_MARKER_PREFIX, idx * 2 + extra)
+                load_cgo_no_zoom(self.cmd, _resolve_cgo_tokens(_unit_marker_cgo()), marker_name)
+                self._marker_names.append(marker_name)
+        while len(self._arrow_names) > count:
+            name = self._arrow_names.pop()
+            try:
+                self.cmd.delete(name)
+            except Exception:
+                pass
+        while len(self._marker_names) > count * 2:
+            name = self._marker_names.pop()
+            try:
+                self.cmd.delete(name)
+            except Exception:
+                pass
+
+    def cleanup(self):
+        names = list(self._arrow_names + self._marker_names)
+        if self._pending_name:
+            names.append(self._pending_name)
+        purge_objects(
+            self.cmd,
+            names=tuple(names),
+            prefixes=(PREVIEW_ARROW_PREFIX, PREVIEW_ARROW_MARKER_PREFIX, PREVIEW_ARROW_PENDING),
+        )
+        self._signatures = []
+        self._arrow_names = []
+        self._marker_names = []
+        self._pending_name = None
