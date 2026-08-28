@@ -1,0 +1,19 @@
+---
+description: Run Qt wizard tests after wizard UI or preview-lifetime changes
+globs: module/pymolviz/wizards/**,module/pymolviz/wizard.py
+alwaysApply: false
+---
+
+# Tests for wizard / Qt layer
+
+Wizard code is **Layer 4** — not in default CI. After UI or preview changes, run:
+
+```bash
+pytest -m qt tests/qt -q
+```
+
+Covers: `apply_required_tooltips` / `require_tooltips`, `qt_widget_alive`, `DeferredCallback` cancel and deleted-widget guards (deleted-`QSpinBox` class of bugs).
+
+Do not add unit tests that import `pymolviz.wizard` (subclasses `pymol.wizard.Wizard`). Test logic via `wizards/tooltips.py`, `wizards/pick.py`, or `@pytest.mark.qt` only.
+
+Do not script viewer clicks or pixel checks in automated tests.

@@ -1,0 +1,21 @@
+---
+description: Run FakeCmd runtime tests after PyMOLRuntime or session changes
+globs: module/pymolviz/runtime/**
+alwaysApply: false
+---
+
+# Tests for runtime layer
+
+After changes here, run:
+
+```bash
+pytest tests/runtime -q
+```
+
+Coverage: `AtomPoint.resolve` (object+ID, residue fallback, `PointUnresolvedError`), `PyMOLRuntime` materialize/sync/remove/reconcile, session blob read/write without touching live `pymol.session`.
+
+If production code calls a new `cmd.*` API, implement it on `tests/fakes/cmd.py` before writing the test.
+
+Related unit tests: `tests/unit/test_points.py`, `tests/unit/test_serialize.py`.
+
+Opt-in live PyMOL: `pytest -m pymol tests/pymol/test_session.py`

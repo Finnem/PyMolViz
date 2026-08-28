@@ -1,0 +1,19 @@
+---
+description: Run unit tests after PointSource, serialization, or Displayable changes
+globs: module/pymolviz/points.py,module/pymolviz/serialization.py,module/pymolviz/Displayable.py
+alwaysApply: false
+---
+
+# Tests for points & persistence
+
+After changes here, run and extend:
+
+```bash
+pytest tests/unit/test_points.py tests/unit/test_serialize.py -q
+```
+
+- `points.py` → `as_point_source`, `FixedPoint`/`AtomPoint` resolve, hook-to-selection helper
+- `serialization.py` → schema-1 `to_dict`/`from_dict` roundtrip, JSON-safe types, session document helpers
+- `Displayable.py` → stable `id` across `rebuild`, not derived from `name` (`tests/unit/test_rebuild.py`)
+
+Add cases when introducing new point types or persisted fields.

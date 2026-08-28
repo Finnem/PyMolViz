@@ -23,5 +23,10 @@ dependencies = [
 [project.urls]
 Homepage = "https://github.com/Finnem/PyMolViz"
 
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0",
+]
+
 [tool.setuptools.packages.find]
 include = ["pymolviz*"]

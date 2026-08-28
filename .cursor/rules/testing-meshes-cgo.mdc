@@ -1,0 +1,19 @@
+---
+description: Run unit tests after mesh, CGO, or line-style changes
+globs: module/pymolviz/meshes/**,module/pymolviz/util/cgo.py,module/pymolviz/util/line_style.py
+alwaysApply: false
+---
+
+# Tests for meshes & CGO helpers
+
+After changes here, run:
+
+```bash
+pytest tests/unit/test_rebuild.py tests/unit/test_cgo_tokens.py tests/unit/test_line_style.py -q
+```
+
+- `util/cgo.py` `resolve_cgo_tokens` — numeric strings like `'0.86'` must stay floats, not opcodes (`test_cgo_tokens.py`)
+- `util/line_style.py` — dash segment counts, margins (`test_line_style.py`)
+- `Sphere`, `Cylinder`, `Arrows`, etc. — construct with literal xyz, `rebuild(None)`, token-shape snapshots in `test_rebuild.py`
+
+Do not compare full float vertex dumps; check opcode kinds and counts.

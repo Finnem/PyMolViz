@@ -1,0 +1,37 @@
+---
+description: PyMolViz pytest pyramid — default commands and reliability rules
+alwaysApply: true
+---
+
+# PyMolViz testing
+
+Automated tests live in `tests/`. The repo-root `test/` folder holds **exported PyMOL visual scripts** — never run those under pytest.
+
+## Default (always run after logic changes)
+
+```bash
+pytest tests/unit tests/runtime
+```
+
+Install deps: `pip install -e "module/[test]"`
+
+## Pyramid
+
+| Layer | When | Marker |
+|-------|------|--------|
+| Unit | Semantic code, no real PyMOL/Qt | default |
+| FakeCmd runtime | `cmd`-facing runtime/session code | default |
+| Real PyMOL | Live `load_cgo`, session hooks | `@pytest.mark.pymol` |
+| Qt wizard | Tooltips, deferred preview callbacks | `@pytest.mark.qt` |
+
+Opt-in: `pytest -m pymol tests/pymol` · `pytest -m qt tests/qt`
+
+## Agent workflow
+
+1. After editing production code, run the **mapped test file(s)** for that area (see scoped rules).
+2. Prefer extending existing tests over new one-off scripts.
+3. New `cmd.*` usage in runtime → add the method to `tests/fakes/cmd.py` first.
+4. Unit tests: stub pymol via `tests/conftest.py` or import leaf modules only; do **not** import `pymolviz.wizard`.
+5. Assert token **shapes** (opcode sequences, segment counts), not golden float geometry dumps.
+6. No sleeps or `QTimer` waits in unit/runtime tests — invoke callbacks directly.
+7. GUI/wizard changes are optional-layer only; keep CI on unit + runtime.

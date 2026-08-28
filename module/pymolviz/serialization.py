@@ -652,6 +652,31 @@ def from_dict(data: dict):
     return displayable_from_dict(data)
 
 
+def session_document(objects) -> dict:
+    """Plain session blob for ``pymol.session.pymolviz``."""
+    doc = {
+        "schema": SCHEMA_VERSION,
+        "objects": [displayable_to_dict(obj) for obj in objects],
+    }
+    assert_plain(doc)
+    return doc
+
+
+def session_from_document(data: dict) -> list:
+    """Deserialize objects from a session document."""
+    if not isinstance(data, dict):
+        return []
+    out = []
+    for item in data.get("objects", []):
+        if not isinstance(item, dict):
+            continue
+        try:
+            out.append(displayable_from_dict(item))
+        except Exception:
+            continue
+    return out
+
+
 def style_hash(obj) -> str:
     data = to_dict(obj)
 
