@@ -11,6 +11,23 @@ from ..tooltips import (
     apply_required_tooltips,
     warn_missing_setting_tooltips,
 )
+from .anchor_table import (
+    ARROW_END_NAME_COL,
+    ARROW_END_SRC_COL,
+    ARROW_START_NAME_COL,
+    ARROW_START_SRC_COL,
+    ARROW_X0_COL,
+    ARROW_X1_COL,
+    ARROW_Y0_COL,
+    ARROW_Y1_COL,
+    ARROW_Z0_COL,
+    ARROW_Z1_COL,
+    arrow_anchor_col_indices,
+    arrow_columns,
+    block_table_selection_signals,
+    sync_anchor_cell,
+    unblock_table_selection_signals,
+)
 from .colors import colors_for_new_points, pick_rgb, readable_text_color
 from .line_style import ARROW_QUALITY_SEGMENTS, LineOptionsWidget
 from .pairs import VisualPair, flatten_pair_points, take_single_selection_point
@@ -20,8 +37,9 @@ from .points import (
     export_points_to_selection,
 )
 from .preview import ArrowPreview, build_arrow_collection, persist_collection
+from .zoom_selection import ZOOM_TO_SELECTION_TIP, points_from_pair_rows, wire_zoom_to_selection
 
-COLS = ("Start", "Start src", "End", "End src", "X0", "Y0", "Z0", "X1", "Y1", "Z1")
+COLS = arrow_columns()
 QUALITY_HINTS = {
     0: "2D lines",
     1: "cylinder / cone · 6 sides",
@@ -59,6 +77,7 @@ class ArrowBuilderPage:
         self._line_options = None
         self._snap_atom = None
         self._hook_selection = None
+        self._zoom_selection = None
         self._status = None
         self._select_pair_btn = None
         self._abort_btn = None
@@ -125,8 +144,9 @@ class ArrowBuilderPage:
         pts_box = QtWidgets.QGroupBox("Pairs")
         pts_layout = QtWidgets.QVBoxLayout(pts_box)
         self._snap_atom = QtWidgets.QCheckBox("Snap to atom")
-        self._hook_selection = QtWidgets.QCheckBox("Hook to selection")
+        self._hook_selection = QtWidgets.QCheckBox("Anchor new points")
         self._hook_selection.setChecked(True)
+        self._zoom_selection = QtWidgets.QCheckBox("Zoom to selection")
         btn_row = QtWidgets.QHBoxLayout()
         self._select_pair_btn = QtWidgets.QPushButton("Select Pair")
         self._select_pair_btn.clicked.connect(self._on_select_pair)
@@ -150,6 +170,7 @@ class ArrowBuilderPage:
         flags = QtWidgets.QHBoxLayout()
         flags.addWidget(self._snap_atom)
         flags.addWidget(self._hook_selection)
+        flags.addWidget(self._zoom_selection)
         flags.addStretch(1)
         pts_layout.addLayout(flags)
         pts_layout.addLayout(btn_row)
@@ -159,10 +180,16 @@ class ArrowBuilderPage:
         self._table.setHorizontalHeaderLabels(list(COLS))
         self._table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self._table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
-        self._table.horizontalHeader().setStretchLastSection(True)
+        self._table.horizontalHeader().setStretchLastSection(False)
         self._table.cellChanged.connect(self._on_cell_changed)
         self._table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self._table.customContextMenuRequested.connect(self._show_pairs_context_menu)
+        wire_zoom_to_selection(
+            self._table,
+            self._zoom_selection,
+            self.cmd,
+            lambda rows: points_from_pair_rows(self._pairs, rows),
+        )
 
         class _TableKeyFilter(QtCore.QObject):
             def __init__(self, owner):
@@ -210,6 +237,7 @@ class ArrowBuilderPage:
                 ),
                 (self._snap_atom, SNAP_TO_ATOM_TIP),
                 (self._hook_selection, HOOK_TO_SELECTION_TIP),
+                (self._zoom_selection, ZOOM_TO_SELECTION_TIP),
                 (
                     self._select_pair_btn,
                     "Pick start and end from the current PyMOL selection (one atom at a time).",
@@ -265,6 +293,25 @@ class ArrowBuilderPage:
             QtWidgets.QMessageBox.information(self._page, title, text)
         else:
             raise NotImplementedError(text)
+
+    _MULTIPLE_ATOMS_MSG = (
+        "Multiple atoms selected — pick one atom at a time, "
+        "then Use selection or keep picking."
+    )
+
+    def _reject_multiple_atoms(self, *, dialog=False):
+        """Clear a multi-atom sele and nudge the user without spamming dialogs."""
+        self._clear_pymol_selection()
+        if qt_widget_alive(self._status):
+            try:
+                self._status.setText(self._MULTIPLE_ATOMS_MSG)
+            except RuntimeError:
+                pass
+        if dialog:
+            self._not_implemented(
+                "Not Implemented",
+                "Selecting multiple atoms as a pair is not implemented yet.",
+            )
 
     def _on_pair_mcs(self):
         self._not_implemented("Pair MCS", "Pair MCS is not implemented yet.")
@@ -326,10 +373,7 @@ class ArrowBuilderPage:
             return
         point, status = self._selection_point()
         if status == "multiple":
-            self._not_implemented(
-                "Not Implemented",
-                "Selecting multiple atoms as a pair is not implemented yet.",
-            )
+            self._reject_multiple_atoms(dialog=True)
             return
         if status == "one":
             self._accept_first(point)
@@ -345,10 +389,7 @@ class ArrowBuilderPage:
             return
         point, status = self._selection_point()
         if status == "multiple":
-            self._not_implemented(
-                "Not Implemented",
-                "Selecting multiple atoms as a pair is not implemented yet.",
-            )
+            self._reject_multiple_atoms(dialog=True)
             return
         if status == "empty":
             self._status.setText("Nothing selected. Pick one atom or use Add camera.")
@@ -382,12 +423,7 @@ class ArrowBuilderPage:
             return
         point, status = self._selection_point(interactive_only=True)
         if status == "multiple":
-            self._stop_poll_timer()
-            self._not_implemented(
-                "Not Implemented",
-                "Selecting multiple atoms as a pair is not implemented yet.",
-            )
-            self._start_poll_timer()
+            self._reject_multiple_atoms(dialog=False)
             return
         if status == "one" and not self._same_as_ignored(point):
             self._accept_point(point)
@@ -460,7 +496,7 @@ class ArrowBuilderPage:
                     self._pairs[row] = self._pairs[row].with_color(rgba)
             self._refresh_preview()
             for row in rows:
-                item = self._table.item(row, 0)
+                item = self._table.item(row, ARROW_START_NAME_COL)
                 if item is not None:
                     self._style_name_cell(item, self._pairs[row])
 
@@ -516,33 +552,71 @@ class ArrowBuilderPage:
         except RuntimeError:
             pass
 
+    def _anchor_cols(self):
+        return arrow_anchor_col_indices(COLS)
+
+    def _on_start_anchor_toggled(self, row: int, checked: bool):
+        if row < 0 or row >= len(self._pairs):
+            return
+        pair = self._pairs[row]
+        start = pair.start
+        if not start.can_anchor():
+            return
+        self._pairs[row] = pair.with_start(start.with_anchored(checked))
+        self._schedule_preview()
+
+    def _on_end_anchor_toggled(self, row: int, checked: bool):
+        if row < 0 or row >= len(self._pairs):
+            return
+        pair = self._pairs[row]
+        end = pair.end
+        if not end.can_anchor():
+            return
+        self._pairs[row] = pair.with_end(end.with_anchored(checked))
+        self._schedule_preview()
+
     def _sync_table(self):
-        _, QtGui, QtWidgets = qt_modules()
+        QtCore, QtGui, QtWidgets = qt_modules()
+        start_col, end_col = self._anchor_cols()
+        sel_blocked = block_table_selection_signals(self._table)
         self._table.blockSignals(True)
         try:
             self._table.setRowCount(len(self._pairs))
             for row, pair in enumerate(self._pairs):
-                values = (
-                    pair.start.name,
-                    pair.start.source,
-                    pair.end.name,
-                    pair.end.source,
-                    "%.3f" % pair.start.x, "%.3f" % pair.start.y, "%.3f" % pair.start.z,
-                    "%.3f" % pair.end.x, "%.3f" % pair.end.y, "%.3f" % pair.end.z,
+                sync_anchor_cell(
+                    self._table, row, start_col, pair.start,
+                    self._on_start_anchor_toggled, QtWidgets, QtCore,
                 )
-                for col, text in enumerate(values):
+                sync_anchor_cell(
+                    self._table, row, end_col, pair.end,
+                    self._on_end_anchor_toggled, QtWidgets, QtCore,
+                )
+                values = (
+                    (ARROW_START_NAME_COL, pair.start.name),
+                    (ARROW_START_SRC_COL, pair.start.source),
+                    (ARROW_END_NAME_COL, pair.end.name),
+                    (ARROW_END_SRC_COL, pair.end.source),
+                    (ARROW_X0_COL, "%.3f" % pair.start.x),
+                    (ARROW_Y0_COL, "%.3f" % pair.start.y),
+                    (ARROW_Z0_COL, "%.3f" % pair.start.z),
+                    (ARROW_X1_COL, "%.3f" % pair.end.x),
+                    (ARROW_Y1_COL, "%.3f" % pair.end.y),
+                    (ARROW_Z1_COL, "%.3f" % pair.end.z),
+                )
+                for col, text in values:
                     item = self._table.item(row, col)
                     if item is None:
                         item = QtWidgets.QTableWidgetItem()
                         self._table.setItem(row, col, item)
                     item.setText(text)
-                    if col in (0, 2):
+                    if col in (ARROW_START_NAME_COL, ARROW_END_NAME_COL):
                         self._style_name_cell(item, pair)
                     else:
                         item.setBackground(QtGui.QBrush())
                         item.setForeground(QtGui.QBrush())
         finally:
             self._table.blockSignals(False)
+            unblock_table_selection_signals(self._table, sel_blocked)
         self._schedule_preview()
 
     def _on_cell_changed(self, row, col):
@@ -554,26 +628,29 @@ class ArrowBuilderPage:
         text = item.text()
         pair = self._pairs[row]
         start, end = pair.start, pair.end
+        start_col, end_col = self._anchor_cols()
+        if col in (start_col, end_col):
+            return
         try:
-            if col == 0:
+            if col == ARROW_START_NAME_COL:
                 start = start.with_name(text)
-            elif col == 1:
+            elif col == ARROW_START_SRC_COL:
                 start = start.with_source(text)
-            elif col == 2:
+            elif col == ARROW_END_NAME_COL:
                 end = end.with_name(text)
-            elif col == 3:
+            elif col == ARROW_END_SRC_COL:
                 end = end.with_source(text)
-            elif col == 4:
+            elif col == ARROW_X0_COL:
                 start = start.with_xyz((float(text), start.y, start.z))
-            elif col == 5:
+            elif col == ARROW_Y0_COL:
                 start = start.with_xyz((start.x, float(text), start.z))
-            elif col == 6:
+            elif col == ARROW_Z0_COL:
                 start = start.with_xyz((start.x, start.y, float(text)))
-            elif col == 7:
+            elif col == ARROW_X1_COL:
                 end = end.with_xyz((float(text), end.y, end.z))
-            elif col == 8:
+            elif col == ARROW_Y1_COL:
                 end = end.with_xyz((end.x, float(text), end.z))
-            elif col == 9:
+            elif col == ARROW_Z1_COL:
                 end = end.with_xyz((end.x, end.y, float(text)))
             else:
                 return

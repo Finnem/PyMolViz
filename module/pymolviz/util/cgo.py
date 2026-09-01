@@ -41,6 +41,132 @@ def resolve_cgo_tokens(content: list) -> list:
         out.append(map_cgo_keys[token])
     return out
 
+
+def _py_cgo_token(token):
+    """Unwrap numpy scalars; leave Python scalars and strings as-is."""
+    if isinstance(token, bool):
+        return token
+    if isinstance(token, (str, int, float)):
+        return token
+    item = getattr(token, "item", None)
+    if callable(item):
+        try:
+            return token.item()
+        except Exception:
+            return token
+    return token
+
+
+def _cgo_opcode_kind(token, opcode_ints):
+    """Return a named opcode, or None.
+
+    Real PyMOL stores opcodes as floats (VERTEX is 4.0, and so is TRIANGLES).
+    Coordinate payloads can hold the same values, so callers must only invoke
+    this at opcode positions and then skip each opcode's payload.
+    """
+    py = _py_cgo_token(token)
+    if isinstance(py, bool):
+        return None
+    if isinstance(py, str):
+        return py if py in opcode_ints else None
+    try:
+        value = float(py)
+    except (TypeError, ValueError):
+        return None
+    for name, code in opcode_ints.items():
+        if code is None:
+            continue
+        try:
+            if value == float(code):
+                return name
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+# Tokens after the opcode. Primitive modes (TRIANGLES/LINES/…) are not listed:
+# VERTEX aliases TRIANGLES (both 4.0), so a mode must be skipped via BEGIN, not
+# matched as VERTEX.
+_CGO_SKIP_AFTER = {
+    "COLOR": 3,
+    "NORMAL": 3,
+    "ALPHA": 1,
+    "LINEWIDTH": 1,
+    "END": 0,
+}
+
+
+def offset_cgo_vertices(content, delta):
+    """Add ``delta`` to VERTEX/SPHERE/CYLINDER/CONE positions in a CGO list.
+
+    The token after BEGIN is a primitive mode (TRIANGLES/LINES/…). In real
+    PyMOL that mode value aliases VERTEX (both 4.0), so it must not be shifted.
+    Payloads are skipped so a coordinate of 4.0 is not treated as VERTEX.
+    """
+    from pymol import cgo
+
+    dx, dy, dz = (float(delta[0]), float(delta[1]), float(delta[2]))
+    opcode_ints = {
+        "BEGIN": getattr(cgo, "BEGIN", None),
+        "END": getattr(cgo, "END", None),
+        "COLOR": getattr(cgo, "COLOR", None),
+        "NORMAL": getattr(cgo, "NORMAL", None),
+        "VERTEX": getattr(cgo, "VERTEX", None),
+        "SPHERE": getattr(cgo, "SPHERE", None),
+        "CYLINDER": getattr(cgo, "CYLINDER", None),
+        "CONE": getattr(cgo, "CONE", None),
+        "ALPHA": getattr(cgo, "ALPHA", None),
+        "LINEWIDTH": getattr(cgo, "LINEWIDTH", None),
+    }
+    i = 0
+    n = len(content)
+    after_begin = False
+    while i < n:
+        if after_begin:
+            after_begin = False
+            i += 1
+            continue
+        kind = _cgo_opcode_kind(content[i], opcode_ints)
+        if kind == "BEGIN":
+            after_begin = True
+            i += 1
+            continue
+        if kind == "VERTEX" and i + 3 < n:
+            content[i + 1] = float(content[i + 1]) + dx
+            content[i + 2] = float(content[i + 2]) + dy
+            content[i + 3] = float(content[i + 3]) + dz
+            i += 4
+            continue
+        if kind == "SPHERE" and i + 4 < n:
+            content[i + 1] = float(content[i + 1]) + dx
+            content[i + 2] = float(content[i + 2]) + dy
+            content[i + 3] = float(content[i + 3]) + dz
+            i += 5
+            continue
+        if kind == "CYLINDER" and i + 6 < n:
+            content[i + 1] = float(content[i + 1]) + dx
+            content[i + 2] = float(content[i + 2]) + dy
+            content[i + 3] = float(content[i + 3]) + dz
+            content[i + 4] = float(content[i + 4]) + dx
+            content[i + 5] = float(content[i + 5]) + dy
+            content[i + 6] = float(content[i + 6]) + dz
+            i += 14
+            continue
+        if kind == "CONE" and i + 6 < n:
+            content[i + 1] = float(content[i + 1]) + dx
+            content[i + 2] = float(content[i + 2]) + dy
+            content[i + 3] = float(content[i + 3]) + dz
+            content[i + 4] = float(content[i + 4]) + dx
+            content[i + 5] = float(content[i + 5]) + dy
+            content[i + 6] = float(content[i + 6]) + dz
+            i += 17
+            continue
+        if kind in _CGO_SKIP_AFTER:
+            i += 1 + _CGO_SKIP_AFTER[kind]
+            continue
+        i += 1
+    return content
+
 _BOX_EDGES = (
     (0, 1), (1, 2), (2, 3), (3, 0),
     (4, 5), (5, 6), (6, 7), (7, 4),

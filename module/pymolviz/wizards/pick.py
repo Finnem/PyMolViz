@@ -2,9 +2,7 @@
 
 import math
 
-from ..util.view import model_to_camera
-
-PICK_SELE = "visible and enabled and not hydro"
+PICK_SELE = "visible and enabled"
 
 
 def qt_modules():
@@ -285,6 +283,7 @@ def bind_tool_window(widget):
     _install_raise_on_parent_activate(anchor)
 
     def _do_bind():
+        was_visible = widget.isVisible()
         try:
             wh = widget.windowHandle()
             ah = anchor.windowHandle()
@@ -300,17 +299,23 @@ def bind_tool_window(widget):
                     _x11_pin_to_parent_desktop(child_wid, parent_wid)
                 except Exception:
                     pass
+        if was_visible and not widget.isVisible():
+            try:
+                widget.show()
+                widget.raise_()
+            except Exception:
+                pass
 
     _do_bind()
     QtCore.QTimer.singleShot(0, _do_bind)
 
 
 def configure_tool_window(widget, anchor=None):
-    """Normal dialog owned by PyMOL — not a sticky Tool / always-on-top window.
+    """Keep wizard popups visible above the PyMOL viewer.
 
-    Qt.Tool + WindowStaysOnTopHint is what leaked across virtual desktops:
-    on X11 that becomes UTILITY + STICKY / _NET_WM_DESKTOP=all; on Windows /
-    WSLg it becomes WS_EX_TOPMOST, which is shown on every desktop.
+    OR Tool / StayOnTop onto existing flags — replacing flags entirely breaks
+    some PyMOL Qt builds (window never maps). Avoid setParent(); use
+    bind_tool_window() after show() for transient-parent / desktop pinning.
     """
     QtCore, _, QtWidgets = qt_modules()
     if QtCore is None:
@@ -318,11 +323,11 @@ def configure_tool_window(widget, anchor=None):
     if anchor is None:
         anchor = find_pymol_window(QtWidgets)
     widget._pmv_window_anchor = anchor
-    flags = widget.windowFlags()
-    flags &= ~QtCore.Qt.Tool
-    flags &= ~QtCore.Qt.WindowStaysOnTopHint
-    flags |= QtCore.Qt.Dialog
-    widget.setWindowFlags(flags)
+    widget.setWindowFlags(
+        widget.windowFlags()
+        | QtCore.Qt.Tool
+        | QtCore.Qt.WindowStaysOnTopHint
+    )
 
 
 def find_viewer_widget(QtWidgets):
@@ -351,6 +356,52 @@ def find_viewer_widget(QtWidgets):
     return ranked[-1][-1]
 
 
+def _widget_is_descendant(widget, root):
+    if widget is None or root is None:
+        return False
+    current = widget
+    for _ in range(64):
+        if current is root:
+            return True
+        try:
+            current = current.parentWidget()
+        except Exception:
+            return False
+        if current is None:
+            return False
+    return False
+
+
+def pointer_over_viewer():
+    """True when the cursor is on the 3D view (or Qt is unavailable).
+
+    Idle ``cmd`` polls from QTimer cancel PyMOL object-list hover; skip them
+    while the pointer is on the names panel or other chrome.
+    """
+    QtCore, QtGui, QtWidgets = qt_modules()
+    if QtWidgets is None or QtGui is None:
+        return True
+    try:
+        app = QtWidgets.QApplication.instance()
+        if app is None or not hasattr(app, "widgetAt"):
+            return True
+        under = app.widgetAt(QtGui.QCursor.pos())
+    except Exception:
+        return True
+    if under is None:
+        try:
+            buttons = app.mouseButtons()
+            if buttons and int(buttons) != 0:
+                return True
+        except Exception:
+            pass
+        return False
+    viewer = find_viewer_widget(QtWidgets)
+    if viewer is None:
+        return True
+    return _widget_is_descendant(under, viewer)
+
+
 def widget_fb_scale(widget):
     scale = getattr(widget, "fb_scale", None)
     if scale:
@@ -377,6 +428,8 @@ def atom_sele(ids, index):
 
 def pick_atom(view, coords, widget, x, y, viewport, fov, ortho, ids=None, max_px=24.0):
     """Nearest atom under the cursor using cached view/coords. No cmd calls."""
+    import numpy as np
+
     click_x, click_y = qt_to_pymol_xy(widget, x, y)
     try:
         width, height = float(viewport[0]), float(viewport[1])
@@ -387,37 +440,46 @@ def pick_atom(view, coords, widget, x, y, viewport, fov, ortho, ids=None, max_px
         width, height = float(widget.width()) * scale, float(widget.height()) * scale
     if width < 1 or height < 1 or coords is None or len(coords) == 0:
         return None
+    pts = np.asarray(coords, dtype=float)
+    if pts.ndim != 2 or pts.shape[1] < 3:
+        return None
+    pts = pts[:, :3]
     rect_bottom = max(widget_fb_scale(widget) * widget.height() - height, 0.0)
     sx = float(click_x)
     sy = float(click_y) - rect_bottom
     fov_width = 2.0 * math.tan(math.radians(max(abs(float(fov)), 1.0)) / 2.0)
     origin_depth = max(abs(float(view[11])), 1e-6)
-    best = None
-    best_index = None
-    best_key = None
     front = float(view[15])
     back = float(view[16])
-    for index, pos in enumerate(coords):
-        point = (float(pos[0]), float(pos[1]), float(pos[2]))
-        cx, cy, cz = model_to_camera(view, point)
-        depth = origin_depth if ortho else -cz
-        if depth < 1e-4:
-            continue
-        if front > 0.0 and back > front and (depth < front * 0.5 or depth > back * 1.5):
-            continue
-        angstrom_per_px = depth * fov_width / height
-        if angstrom_per_px < 1e-8:
-            continue
-        dx = (width * 0.5 + cx / angstrom_per_px) - sx
-        dy = (height * 0.5 + cy / angstrom_per_px) - sy
-        dist2 = dx * dx + dy * dy
-        if dist2 > max_px * max_px:
-            continue
-        key = (dist2, depth)
-        if best_key is None or key < best_key:
-            best_key = key
-            best = point
-            best_index = index
-    if best is None:
+    relx = pts[:, 0] - float(view[12])
+    rely = pts[:, 1] - float(view[13])
+    relz = pts[:, 2] - float(view[14])
+    cx = float(view[0]) * relx + float(view[3]) * rely + float(view[6]) * relz + float(view[9])
+    cy = float(view[1]) * relx + float(view[4]) * rely + float(view[7]) * relz + float(view[10])
+    cz = float(view[2]) * relx + float(view[5]) * rely + float(view[8]) * relz + float(view[11])
+    if ortho:
+        depth = np.full(pts.shape[0], origin_depth, dtype=float)
+    else:
+        depth = -cz
+    valid = depth >= 1e-4
+    if front > 0.0 and back > front:
+        valid &= (depth >= front * 0.5) & (depth <= back * 1.5)
+    angstrom_per_px = depth * fov_width / height
+    valid &= angstrom_per_px >= 1e-8
+    if not np.any(valid):
         return None
+    safe = np.where(valid, angstrom_per_px, 1.0)
+    dx = (width * 0.5 + cx / safe) - sx
+    dy = (height * 0.5 + cy / safe) - sy
+    dist2 = dx * dx + dy * dy
+    valid &= dist2 <= (max_px * max_px)
+    if not np.any(valid):
+        return None
+    # Prefer nearer in screen pixels, then closer in depth.
+    order = dist2 + depth * 1e-9
+    order = np.where(valid, order, np.inf)
+    best_index = int(np.argmin(order))
+    if not np.isfinite(order[best_index]):
+        return None
+    best = (float(pts[best_index, 0]), float(pts[best_index, 1]), float(pts[best_index, 2]))
     return best, atom_sele(ids, best_index)

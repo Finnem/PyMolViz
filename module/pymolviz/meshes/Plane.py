@@ -38,3 +38,4 @@ class Plane(Mesh):
         self.vertices = vertices
         self.normals = normals
         self.faces = faces
+        self.invalidate_cgo_cache()

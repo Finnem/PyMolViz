@@ -12,6 +12,18 @@ from ..tooltips import (
     warn_missing_setting_tooltips,
 )
 from ..widgets.log_slider import LogSegmentRadiusWidget
+from .anchor_table import (
+    POINT_NAME_COL,
+    POINT_SOURCE_COL,
+    POINT_X_COL,
+    POINT_Y_COL,
+    POINT_Z_COL,
+    anchor_col_index,
+    block_table_selection_signals,
+    point_columns,
+    sync_anchor_cell,
+    unblock_table_selection_signals,
+)
 from .colors import colors_for_new_points, pick_rgb, readable_text_color
 from .points import (
     VisualPoint,
@@ -20,8 +32,9 @@ from .points import (
     selection_points,
 )
 from .preview import BoxPreview, build_box_cgo_collection, persist_collection
+from .zoom_selection import ZOOM_TO_SELECTION_TIP, points_from_rows, wire_zoom_to_selection
 
-COLS = ("Name", "Source", "X", "Y", "Z")
+COLS = point_columns()
 
 
 class BoxBuilderPage:
@@ -48,6 +61,7 @@ class BoxBuilderPage:
         self._wireframe = None
         self._snap_atom = None
         self._hook_selection = None
+        self._zoom_selection = None
         self._object_name = None
         self._table_filter = None
         self._build(parent)
@@ -98,8 +112,9 @@ class BoxBuilderPage:
         pts_layout = QtWidgets.QVBoxLayout(pts_box)
         btn_row = QtWidgets.QHBoxLayout()
         self._snap_atom = QtWidgets.QCheckBox("Snap to atom")
-        self._hook_selection = QtWidgets.QCheckBox("Hook to selection")
+        self._hook_selection = QtWidgets.QCheckBox("Anchor new points")
         self._hook_selection.setChecked(True)
+        self._zoom_selection = QtWidgets.QCheckBox("Zoom to selection")
         add_cam = QtWidgets.QPushButton("Add camera center")
         add_cam.clicked.connect(self._add_camera_center)
         add_sel = QtWidgets.QPushButton("Add selection")
@@ -112,6 +127,7 @@ class BoxBuilderPage:
         flags = QtWidgets.QHBoxLayout()
         flags.addWidget(self._snap_atom)
         flags.addWidget(self._hook_selection)
+        flags.addWidget(self._zoom_selection)
         flags.addStretch(1)
         pts_layout.addLayout(flags)
         pts_layout.addLayout(btn_row)
@@ -120,10 +136,16 @@ class BoxBuilderPage:
         self._table.setHorizontalHeaderLabels(list(COLS))
         self._table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self._table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
-        self._table.horizontalHeader().setStretchLastSection(True)
+        self._table.horizontalHeader().setStretchLastSection(False)
         self._table.cellChanged.connect(self._on_cell_changed)
         self._table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self._table.customContextMenuRequested.connect(self._show_points_context_menu)
+        wire_zoom_to_selection(
+            self._table,
+            self._zoom_selection,
+            self.cmd,
+            lambda rows: points_from_rows(self._points, rows),
+        )
 
         class _TableKeyFilter(QtCore.QObject):
             def __init__(self, owner):
@@ -171,6 +193,7 @@ class BoxBuilderPage:
                 (self._wireframe, "Draw each box as an edge cage instead of filled faces."),
                 (self._snap_atom, SNAP_TO_ATOM_TIP),
                 (self._hook_selection, HOOK_TO_SELECTION_TIP),
+                (self._zoom_selection, ZOOM_TO_SELECTION_TIP),
                 (
                     add_cam,
                     "Add a point at the current camera/screen center. "
@@ -215,7 +238,7 @@ class BoxBuilderPage:
                     self._points[row] = self._points[row].with_color(rgba)
             self._refresh_preview()
             for row in targets:
-                item = self._table.item(row, 0)
+                item = self._table.item(row, POINT_NAME_COL)
                 if item is not None:
                     self._style_name_cell(item, self._points[row])
 
@@ -289,26 +312,51 @@ class BoxBuilderPage:
         except RuntimeError:
             pass
 
+    def _anchor_col(self) -> int:
+        return anchor_col_index(COLS)
+
+    def _on_anchor_toggled(self, row: int, checked: bool):
+        if row < 0 or row >= len(self._points):
+            return
+        pt = self._points[row]
+        if not pt.can_anchor():
+            return
+        self._points[row] = pt.with_anchored(checked)
+        self._schedule_preview()
+
     def _sync_table(self):
-        _, QtGui, QtWidgets = qt_modules()
+        QtCore, QtGui, QtWidgets = qt_modules()
+        anchor_col = self._anchor_col()
+        sel_blocked = block_table_selection_signals(self._table)
         self._table.blockSignals(True)
         try:
             self._table.setRowCount(len(self._points))
             for row, pt in enumerate(self._points):
-                values = (pt.name, pt.source, "%.3f" % pt.x, "%.3f" % pt.y, "%.3f" % pt.z)
-                for col, text in enumerate(values):
+                sync_anchor_cell(
+                    self._table, row, anchor_col, pt,
+                    self._on_anchor_toggled, QtWidgets, QtCore,
+                )
+                values = (
+                    (POINT_NAME_COL, pt.name),
+                    (POINT_SOURCE_COL, pt.source),
+                    (POINT_X_COL, "%.3f" % pt.x),
+                    (POINT_Y_COL, "%.3f" % pt.y),
+                    (POINT_Z_COL, "%.3f" % pt.z),
+                )
+                for col, text in values:
                     item = self._table.item(row, col)
                     if item is None:
                         item = QtWidgets.QTableWidgetItem()
                         self._table.setItem(row, col, item)
                     item.setText(text)
-                    if col == 0:
+                    if col == POINT_NAME_COL:
                         self._style_name_cell(item, pt)
                     else:
                         item.setBackground(QtGui.QBrush())
                         item.setForeground(QtGui.QBrush())
         finally:
             self._table.blockSignals(False)
+            unblock_table_selection_signals(self._table, sel_blocked)
         self._schedule_preview()
 
     def _on_cell_changed(self, row, col):
@@ -319,16 +367,18 @@ class BoxBuilderPage:
             return
         text = item.text()
         pt = self._points[row]
+        if col == anchor_col_index(COLS):
+            return
         try:
-            if col == 0:
+            if col == POINT_NAME_COL:
                 pt = pt.with_name(text)
-            elif col == 1:
+            elif col == POINT_SOURCE_COL:
                 pt = pt.with_source(text)
-            elif col == 2:
+            elif col == POINT_X_COL:
                 pt = pt.with_xyz((float(text), pt.y, pt.z))
-            elif col == 3:
+            elif col == POINT_Y_COL:
                 pt = pt.with_xyz((pt.x, float(text), pt.z))
-            elif col == 4:
+            elif col == POINT_Z_COL:
                 pt = pt.with_xyz((pt.x, pt.y, float(text)))
             else:
                 return

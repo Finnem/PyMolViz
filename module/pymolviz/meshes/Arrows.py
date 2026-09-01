@@ -241,6 +241,7 @@ class Arrows(Lines):
         return np.hstack([original_lines, new_lines.reshape(-1, 24)]).reshape(-1, 3)
 
     def rebuild(self, context=None) -> None:
+        self.invalidate_cgo_cache()
         if self._start_sources is None or self._end_sources is None:
             return
         starts_arr = np.array([resolve_xyz(s, context) for s in self._start_sources])

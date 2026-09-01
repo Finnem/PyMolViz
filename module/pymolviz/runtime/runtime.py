@@ -8,7 +8,7 @@ from ..util.pymol_helpers import load_cgo_no_zoom, replace_cgo_no_zoom, set_cgo_
 from ..util.sanitize import sanitize_pymol_string
 from .bindings import BindingRegistry, PyMOLBinding
 from .context import ResolveContext
-from .renderer import cgo_tokens
+from .renderer import resolved_cgo_tokens
 
 _DEFAULT = None
 
@@ -69,9 +69,9 @@ class PyMOLRuntime:
     def _load(self, obj, name, replace=False):
         context = self._context()
         try:
-            tokens = cgo_tokens(obj, context)
+            tokens = resolved_cgo_tokens(obj, context)
         except PointUnresolvedError:
-            tokens = cgo_tokens(obj, None)
+            tokens = resolved_cgo_tokens(obj, None)
         state = int(getattr(obj, "state", 1) or 1)
         if replace:
             replace_cgo_no_zoom(self.cmd, tokens, name, state)
@@ -92,6 +92,17 @@ class PyMOLRuntime:
             return self.materialize(obj)
         self._load(obj, binding.pymol_name, replace=True)
         binding.style_hash = style_hash(obj)
+        return binding.pymol_name
+
+    def replace_cgo(self, obj):
+        """Reload CGO tokens without resolving or remeshing."""
+        binding = self.bindings.get(obj.id)
+        if binding is None:
+            return self.materialize(obj)
+        tokens = list(resolved_cgo_tokens(obj, None))
+        state = int(getattr(obj, "state", 1) or 1)
+        replace_cgo_no_zoom(self.cmd, tokens, binding.pymol_name, state)
+        self._apply_transparency(obj, binding.pymol_name)
         return binding.pymol_name
 
     def remove(self, obj):

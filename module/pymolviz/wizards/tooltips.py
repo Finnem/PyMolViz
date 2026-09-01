@@ -15,8 +15,13 @@ from .pick import qt_modules
 LOGGER = logging.getLogger("pymolviz.wizards")
 
 HOOK_TO_SELECTION_TIP = (
-    "When on, selection and snap-to-atom points stay attached to that atom "
-    "(follow if the atom moves). When off, store the xyz at pick time."
+    "Default for new points: when on, selection and snap-to-atom points "
+    "start anchored to that atom (follow if it moves). "
+    "Toggle per point in the Anchor column."
+)
+ANCHOR_TIP = (
+    "When checked, the CGO follows this atom if it moves. "
+    "When unchecked, the position stays fixed at the current xyz."
 )
 SNAP_TO_ATOM_TIP = "Snap camera-center point to the nearest atom within 1 Å."
 

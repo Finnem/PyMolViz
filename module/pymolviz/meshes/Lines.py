@@ -98,6 +98,7 @@ class Lines(Points):
         self._end_sources = point_sources_from_sequence(value)
 
     def rebuild(self, context=None) -> None:
+        self.invalidate_cgo_cache()
         if self._start_sources is None or self._end_sources is None:
             return
         starts_arr = np.array([resolve_xyz(s, context) for s in self._start_sources])

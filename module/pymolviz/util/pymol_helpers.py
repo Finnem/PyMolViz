@@ -19,21 +19,38 @@ def load_cgo_no_zoom(cmd_, cgo, name, state=1):
 
     if any(isinstance(entry, str) for entry in cgo):
         cgo = resolve_cgo_tokens(cgo)
+    view = cmd_.get_view()
     try:
         cmd_.load_cgo(cgo, name, state, zoom=0)
-        return
     except TypeError:
-        pass
-    loadable = getattr(cmd_, "loadable", None)
-    if loadable is not None:
-        cmd_.load_object(loadable.cgo, cgo, name, zoom=0)
-        return
-    cmd_.load_cgo(cgo, name, state)
+        loadable = getattr(cmd_, "loadable", None)
+        if loadable is not None:
+            try:
+                cmd_.load_object(loadable.cgo, cgo, name, zoom=0)
+            except TypeError:
+                cmd_.load_object(loadable.cgo, cgo, name)
+        else:
+            cmd_.load_cgo(cgo, name, state)
+    restore_view(cmd_, view)
 
 
 def replace_cgo_no_zoom(cmd_, cgo, name, state=1):
-    """Replace an existing CGO in place (no delete, no view restore)."""
-    load_cgo_no_zoom(cmd_, cgo, name, state)
+    """Replace an existing CGO in place (no delete, no view save/restore)."""
+    from .cgo import resolve_cgo_tokens
+
+    if any(isinstance(entry, str) for entry in cgo):
+        cgo = resolve_cgo_tokens(cgo)
+    try:
+        cmd_.load_cgo(cgo, name, state, zoom=0)
+    except TypeError:
+        loadable = getattr(cmd_, "loadable", None)
+        if loadable is not None:
+            try:
+                cmd_.load_object(loadable.cgo, cgo, name, zoom=0)
+            except TypeError:
+                cmd_.load_object(loadable.cgo, cgo, name)
+        else:
+            cmd_.load_cgo(cgo, name, state)
 
 
 def set_cgo_transparency(cmd_, name, alpha=1.0):
@@ -43,6 +60,34 @@ def set_cgo_transparency(cmd_, name, alpha=1.0):
         cmd_.set("cgo_transparency", transparency, name)
     except Exception:
         pass
+
+
+WIZARD_EPHEMERAL_NAMES = (
+    "pmv_camera_center",
+    "_pmv_cent_tmp",
+)
+WIZARD_PREVIEW_PREFIXES = (
+    "_pmv_prev_",
+    "_pmv_sph_",
+    "_pmv_box_",
+    "_pmv_pt_",
+    "_pmv_box_mk_",
+    "_pmv_arr_",
+    "_pmv_arr_mk_",
+)
+WIZARD_EPHEMERAL_PREFIXES = WIZARD_PREVIEW_PREFIXES + (
+    "_pmv_cam_cb",
+)
+
+
+def purge_preview_objects(cmd_):
+    """Drop uncommitted builder preview CGOs only."""
+    purge_objects(cmd_, prefixes=WIZARD_PREVIEW_PREFIXES)
+
+
+def purge_ephemeral_wizard_objects(cmd_):
+    """Remove all wizard UI / preview CGOs (wizard not running)."""
+    purge_objects(cmd_, names=WIZARD_EPHEMERAL_NAMES, prefixes=WIZARD_EPHEMERAL_PREFIXES)
 
 
 def purge_objects(cmd_, names=(), prefixes=()):
@@ -68,6 +113,15 @@ def place_object(cmd_, name, center):
 def set_button_action(cmd_, button, modifier, action):
     try:
         cmd_.button(button, modifier, action)
+    except Exception:
+        pass
+
+
+def extend_cmd(cmd_, name, func):
+    """Register a command for the CLI and as ``cmd.<name>`` (PyMOL 3 omits the attribute)."""
+    cmd_.extend(name, func)
+    try:
+        setattr(cmd_, name, func)
     except Exception:
         pass
 

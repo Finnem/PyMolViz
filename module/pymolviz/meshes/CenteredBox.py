@@ -55,6 +55,7 @@ class CenteredBox(Mesh):
         self.vertices = vertices
         self.normals = normals
         self.faces = faces
+        self.invalidate_cgo_cache()
 
     def from_corners(corner1, corner2, color="red", *args, **kwargs):
         cx1, cy1, cz1 = corner1

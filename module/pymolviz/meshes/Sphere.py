@@ -4,6 +4,8 @@ import numpy as np
 from ..points import as_point_source, resolve_xyz
 from ..util.geometries import icosphere
 
+_UNIT_ICOSPHERE = {}
+
 
 def _frequency_from_resolution(resolution):
     try:
@@ -21,11 +23,21 @@ def _frequency_from_resolution(resolution):
     return 8
 
 
+def _unit_icosphere(frequency):
+    key = int(frequency)
+    cached = _UNIT_ICOSPHERE.get(key)
+    if cached is None:
+        verts, faces, _edges = icosphere(frequency=key)
+        cached = (np.asarray(verts, dtype=float), np.asarray(faces, dtype=int))
+        _UNIT_ICOSPHERE[key] = cached
+    return cached
+
+
 def _build_sphere_mesh(position, radius, frequency):
-    unit_verts, faces, _edges = icosphere(frequency=frequency)
+    unit_verts, faces = _unit_icosphere(frequency)
     vertices = unit_verts * float(radius) + np.asarray(position, dtype=float).reshape(1, 3)
     normals = unit_verts.copy()
-    return vertices, normals, faces
+    return vertices, normals, faces.copy()
 
 
 class Sphere(Mesh):
@@ -63,3 +75,4 @@ class Sphere(Mesh):
         self.vertices = vertices
         self.normals = normals
         self.faces = faces
+        self.invalidate_cgo_cache()

@@ -50,6 +50,12 @@ def add(obj):
         return
     _live[str(obj.id)] = obj
     persist()
+    from .follow import capture_baseline, invalidate_watchlist
+    invalidate_watchlist()
+    try:
+        capture_baseline()
+    except Exception:
+        pass
 
 
 def add_object(cmd, obj):
@@ -65,10 +71,18 @@ def read_session(cmd=None):
 def remove(obj):
     _live.pop(str(getattr(obj, "id", obj)), None)
     persist()
+    from .follow import capture_baseline, invalidate_watchlist
+    invalidate_watchlist()
+    try:
+        capture_baseline()
+    except Exception:
+        pass
 
 
 def clear():
     _live.clear()
+    from .follow import invalidate_watchlist
+    invalidate_watchlist()
 
 
 def read_blob():
@@ -92,4 +106,10 @@ def restore_from_session():
         if is_ephemeral(obj):
             continue
         _live[str(obj.id)] = obj
+    from .follow import capture_baseline, invalidate_watchlist
+    invalidate_watchlist()
+    try:
+        capture_baseline()
+    except Exception:
+        pass
     return all_objects()

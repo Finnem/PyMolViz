@@ -3,7 +3,13 @@
 from .builders.arrow_page import ArrowBuilderPage
 from .builders.box_page import BoxBuilderPage
 from .builders.sphere_page import SphereBuilderPage
-from .pick import bind_tool_window, configure_tool_window, qt_modules
+from .pick import (
+    bind_tool_window,
+    configure_tool_window,
+    find_pymol_window,
+    qt_modules,
+)
+from .pick import _qt_platform_name
 
 # Category → mesh primitive chooser. Field is a placeholder for now.
 MESH_TYPES = (
@@ -27,6 +33,9 @@ class AddVisualWindow:
         self._box_page = None
         self._arrow_page = None
         self._mesh_page_index = 1
+        self._sphere_stack_index = None
+        self._box_stack_index = None
+        self._arrow_stack_index = None
 
     def show(self):
         QtCore, _, QtWidgets = qt_modules()
@@ -34,18 +43,39 @@ class AddVisualWindow:
             self.wizard.prompt = ["Add Visual requires the PyMOL Qt UI"]
             return
 
-        if self._window is not None:
-            try:
-                if self._window.isVisible():
-                    self._window.raise_()
-                    self._window.activateWindow()
-                    return
-            except RuntimeError:
-                self._window = None
+        self._discard_window()
 
-        window = QtWidgets.QWidget()
+        try:
+            self._open_window(QtCore, QtWidgets)
+        except Exception as exc:
+            self._reset_window()
+            self.wizard.prompt = ["Add Visual failed: %s" % exc]
+            try:
+                QtWidgets.QMessageBox.warning(
+                    None,
+                    "Add Visual",
+                    "Could not open Add Visual:\n\n%s" % exc,
+                )
+            except Exception:
+                pass
+
+    def _discard_window(self):
+        window = self._window
+        self._reset_window()
+        if window is None:
+            return
+        try:
+            window.close()
+            window.deleteLater()
+        except RuntimeError:
+            pass
+
+    def _open_window(self, QtCore, QtWidgets):
+        anchor = find_pymol_window(QtWidgets)
+        window = QtWidgets.QDialog(anchor)
         window.setWindowTitle("Add Visual")
-        configure_tool_window(window)
+        window.setModal(False)
+        configure_tool_window(window, anchor=anchor)
         window.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
         window.resize(540, 720)
 
@@ -56,27 +86,6 @@ class AddVisualWindow:
         stack.addWidget(self._build_category_page(QtWidgets))
         stack.addWidget(self._build_mesh_page(QtWidgets))
         stack.addWidget(self._build_field_page(QtWidgets))
-        self._sphere_page = SphereBuilderPage(
-            self.wizard.cmd,
-            on_back=lambda: self._goto(self._mesh_page_index),
-            on_create=self.close,
-            parent=window,
-        )
-        self._box_page = BoxBuilderPage(
-            self.wizard.cmd,
-            on_back=lambda: self._goto(self._mesh_page_index),
-            on_create=self.close,
-            parent=window,
-        )
-        self._arrow_page = ArrowBuilderPage(
-            self.wizard.cmd,
-            on_back=lambda: self._goto(self._mesh_page_index),
-            on_create=self.close,
-            parent=window,
-        )
-        stack.addWidget(self._sphere_page.widget)
-        stack.addWidget(self._box_page.widget)
-        stack.addWidget(self._arrow_page.widget)
         stack.setCurrentIndex(0)
 
         root.addWidget(stack)
@@ -86,6 +95,60 @@ class AddVisualWindow:
         bind_tool_window(window)
         window.raise_()
         window.activateWindow()
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            app.processEvents()
+        if not window.isVisible():
+            raise RuntimeError(
+                "Add Visual window did not become visible "
+                "(Qt platform=%r)" % (_qt_platform_name(),)
+            )
+
+    def _reset_window(self):
+        self._window = None
+        self._stack = None
+        self._sphere_page = None
+        self._box_page = None
+        self._arrow_page = None
+        self._sphere_stack_index = None
+        self._box_stack_index = None
+        self._arrow_stack_index = None
+
+    def _ensure_sphere_page(self):
+        if self._sphere_page is not None:
+            return
+        parent = self._window
+        self._sphere_page = SphereBuilderPage(
+            self.wizard.cmd,
+            on_back=lambda: self._goto(self._mesh_page_index),
+            on_create=self.close,
+            parent=parent,
+        )
+        self._sphere_stack_index = self._stack.addWidget(self._sphere_page.widget)
+
+    def _ensure_box_page(self):
+        if self._box_page is not None:
+            return
+        parent = self._window
+        self._box_page = BoxBuilderPage(
+            self.wizard.cmd,
+            on_back=lambda: self._goto(self._mesh_page_index),
+            on_create=self.close,
+            parent=parent,
+        )
+        self._box_stack_index = self._stack.addWidget(self._box_page.widget)
+
+    def _ensure_arrow_page(self):
+        if self._arrow_page is not None:
+            return
+        parent = self._window
+        self._arrow_page = ArrowBuilderPage(
+            self.wizard.cmd,
+            on_back=lambda: self._goto(self._mesh_page_index),
+            on_create=self.close,
+            parent=parent,
+        )
+        self._arrow_stack_index = self._stack.addWidget(self._arrow_page.widget)
 
     def _build_category_page(self, QtWidgets):
         page = QtWidgets.QWidget()
@@ -190,24 +253,36 @@ class AddVisualWindow:
             self.wizard.cmd.refresh_wizard()
         except Exception:
             pass
-        if name == "Sphere" and self._stack is not None and self._sphere_page is not None:
-            self._stack.setCurrentWidget(self._sphere_page.widget)
-            return
-        if name == "Box" and self._stack is not None and self._box_page is not None:
-            self._stack.setCurrentWidget(self._box_page.widget)
-            return
-        if name == "Arrows" and self._stack is not None and self._arrow_page is not None:
-            self._stack.setCurrentWidget(self._arrow_page.widget)
-            return
+        try:
+            if name == "Sphere":
+                self._ensure_sphere_page()
+                if self._stack is not None:
+                    self._stack.setCurrentIndex(self._sphere_stack_index)
+                return
+            if name == "Box":
+                self._ensure_box_page()
+                if self._stack is not None:
+                    self._stack.setCurrentIndex(self._box_stack_index)
+                return
+            if name == "Arrows":
+                self._ensure_arrow_page()
+                if self._stack is not None:
+                    self._stack.setCurrentIndex(self._arrow_stack_index)
+                return
+        except Exception as exc:
+            self.wizard.prompt = ["Mesh builder failed: %s" % exc]
+            _, _, QtWidgets = qt_modules()
+            if QtWidgets is not None:
+                QtWidgets.QMessageBox.warning(
+                    self._window,
+                    "Add Visual",
+                    "Could not open %s builder:\n\n%s" % (name, exc),
+                )
         # Other mesh types remain stubs on the mesh list page.
 
     def _on_destroyed(self, *_args):
         self._cleanup_builder_previews()
-        self._window = None
-        self._stack = None
-        self._sphere_page = None
-        self._box_page = None
-        self._arrow_page = None
+        self._reset_window()
 
     def _cleanup_builder_previews(self):
         if self._sphere_page is not None:
@@ -220,8 +295,7 @@ class AddVisualWindow:
     def close(self):
         self._cleanup_builder_previews()
         window = self._window
-        self._window = None
-        self._stack = None
+        self._reset_window()
         if window is None:
             return
         try:

@@ -47,7 +47,7 @@ class FixedPoint(PointSource):
       self.y = float(arr[1])
       self.z = float(arr[2])
 
-  def resolve(self, context=None) -> XYZ:
+  def resolve(self, context=None, remember=True) -> XYZ:
       return (self.x, self.y, self.z)
 
   @property
@@ -91,35 +91,12 @@ class AtomPoint(PointSource):
     def last_xyz(self) -> Optional[XYZ]:
         return self._last_xyz
 
-    def resolve(self, context) -> XYZ:
-        if context is None:
-            if self._last_xyz is not None:
-                return self._last_xyz
-            raise PointUnresolvedError(
-                "AtomPoint %r/%d cannot resolve without a PyMOL context"
-                % (self.object, self.atom_id)
-            )
-        cmd = context.cmd
-        state = getattr(context, "state", 1) or 1
-        expr = 'object "%s" and id %d' % (self.object, self.atom_id)
-        atoms = []
-        for iterate_expr in (
-            "atoms.append([x, y, z])",
-            "atoms.append([x,y,z])",
-        ):
-            atoms.clear()
-            try:
-                if state:
-                    cmd.iterate_state(state, expr, iterate_expr, space={"atoms": atoms})
-                else:
-                    cmd.iterate(expr, iterate_expr, space={"atoms": atoms})
-                if atoms:
-                    xyz = (float(atoms[0][0]), float(atoms[0][1]), float(atoms[0][2]))
-                    self._last_xyz = xyz
-                    return xyz
-            except Exception:
-                continue
-
+    def _lookup_xyz(self, cmd, state) -> Optional[XYZ]:
+        exprs = [
+            'object "%s" and id %d' % (self.object, self.atom_id),
+            'object "%s" and index %d' % (self.object, self.atom_id),
+            "(%s)`%d" % (self.object, self.atom_id),
+        ]
         fallback_parts = ['object "%s"' % self.object]
         if self.chain:
             fallback_parts.append('chain "%s"' % self.chain)
@@ -127,25 +104,47 @@ class AtomPoint(PointSource):
             fallback_parts.append("resi %s" % self.resi)
         if self.name:
             fallback_parts.append('name "%s"' % self.name)
-        fallback_expr = " and ".join(fallback_parts)
-        atoms.clear()
-        try:
-            if state:
-                cmd.iterate_state(state, fallback_expr, "atoms.append([x,y,z])", space={"atoms": atoms})
-            else:
-                cmd.iterate(fallback_expr, "atoms.append([x,y,z])", space={"atoms": atoms})
-            if atoms:
-                xyz = (float(atoms[0][0]), float(atoms[0][1]), float(atoms[0][2]))
-                self._last_xyz = xyz
-                return xyz
-        except Exception:
-            pass
+        exprs.append(" and ".join(fallback_parts))
+        atoms = []
+        for expr in exprs:
+            for iterate_expr in (
+                "atoms.append([x, y, z])",
+                "atoms.append([x,y,z])",
+            ):
+                atoms.clear()
+                try:
+                    if state:
+                        cmd.iterate_state(state, expr, iterate_expr, space={"atoms": atoms})
+                    else:
+                        cmd.iterate(expr, iterate_expr, space={"atoms": atoms})
+                    if atoms:
+                        return (
+                            float(atoms[0][0]),
+                            float(atoms[0][1]),
+                            float(atoms[0][2]),
+                        )
+                except Exception:
+                    continue
+        return None
 
-        raise PointUnresolvedError(
-            "Atom not found: object=%r id=%d (fallback chain=%r resi=%r name=%r); "
-            "last-known xyz %s retained"
-            % (self.object, self.atom_id, self.chain, self.resi, self.name, self._last_xyz)
-        )
+    def resolve(self, context, remember=True) -> XYZ:
+        if context is None:
+            if self._last_xyz is not None:
+                return self._last_xyz
+            raise PointUnresolvedError(
+                "AtomPoint %r/%d cannot resolve without a PyMOL context"
+                % (self.object, self.atom_id)
+            )
+        xyz = self._lookup_xyz(context.cmd, getattr(context, "state", 1) or 1)
+        if xyz is None:
+            raise PointUnresolvedError(
+                "Atom not found: object=%r id=%d (fallback chain=%r resi=%r name=%r); "
+                "last-known xyz %s retained"
+                % (self.object, self.atom_id, self.chain, self.resi, self.name, self._last_xyz)
+            )
+        if remember:
+            self._last_xyz = xyz
+        return xyz
 
     def to_dict(self) -> dict:
         data = {
@@ -188,7 +187,7 @@ class PseudoAtomPoint(PointSource):
     def last_xyz(self) -> Optional[XYZ]:
         return self._last_xyz
 
-    def resolve(self, context) -> XYZ:
+    def resolve(self, context, remember=True) -> XYZ:
         if context is None:
             if self._last_xyz is not None:
                 return self._last_xyz
@@ -208,7 +207,8 @@ class PseudoAtomPoint(PointSource):
                 cmd.iterate(expr, "atoms.append([x,y,z])", space={"atoms": atoms})
             if atoms:
                 xyz = (float(atoms[0][0]), float(atoms[0][1]), float(atoms[0][2]))
-                self._last_xyz = xyz
+                if remember:
+                    self._last_xyz = xyz
                 return xyz
         except Exception:
             pass

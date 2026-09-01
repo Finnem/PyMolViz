@@ -3,6 +3,22 @@
 from ..util.pymol_helpers import set_button_action
 from .pick import find_viewer_widget, qt_modules
 
+_ACTIVE_CLICK_FILTER = None
+_ACTIVE_CLICK_WIDGET = None
+
+
+def _teardown_global_click_filter():
+    global _ACTIVE_CLICK_FILTER, _ACTIVE_CLICK_WIDGET
+    widget = _ACTIVE_CLICK_WIDGET
+    filt = _ACTIVE_CLICK_FILTER
+    _ACTIVE_CLICK_FILTER = None
+    _ACTIVE_CLICK_WIDGET = None
+    if widget is not None and filt is not None:
+        try:
+            widget.removeEventFilter(filt)
+        except Exception:
+            pass
+
 
 def take_over_center_click(cmd_):
     """Wizard owns click-to-center so PyMOL's delayed 'cent' cannot be cancelled."""
@@ -11,11 +27,28 @@ def take_over_center_click(cmd_):
 
 def restore_viewing_mouse(cmd_):
     """Restore default middle-click centering when the wizard closes."""
+    _teardown_global_click_filter()
+    try:
+        cmd_.button("all", "all", "reset")
+    except Exception:
+        pass
     set_button_action(cmd_, "single_middle", "none", "cent")
     try:
         cmd_.unpick()
     except Exception:
         pass
+    try:
+        cmd_.edit_mode(0)
+    except Exception:
+        pass
+    for args in (
+        ("3button", "all", "reset"),
+        ("3button", "all", "auto"),
+    ):
+        try:
+            cmd_.button(*args)
+        except Exception:
+            pass
 
 
 def install_middle_click_filter(wizard):
@@ -25,6 +58,8 @@ def install_middle_click_filter(wizard):
     widget = find_viewer_widget(QtWidgets)
     if widget is None:
         return None, None
+
+    _teardown_global_click_filter()
 
     class _MiddleClickFilter(QtCore.QObject):
         _drag_px = 20
@@ -37,6 +72,8 @@ def install_middle_click_filter(wizard):
         def eventFilter(self, watched, event):
             if watched is not widget:
                 return False
+            if getattr(wizard, "_closed", False):
+                return False
             middle = getattr(QtCore.Qt, "MiddleButton", None)
             if middle is None:
                 middle = QtCore.Qt.MouseButton.MiddleButton
@@ -44,6 +81,11 @@ def install_middle_click_filter(wizard):
             sphere = getattr(wizard, "camera_sphere", None)
             if sphere is None:
                 return False
+
+            if etype == QtCore.QEvent.MouseMove and event.buttons():
+                wizard._request_sphere_sync()
+            if etype == getattr(QtCore.QEvent, "Wheel", None) or etype == 31:
+                wizard._request_sphere_sync()
 
             if etype == QtCore.QEvent.MouseButtonPress and event.button() == middle:
                 local = widget.mapFromGlobal(QtGui.QCursor.pos())
@@ -60,9 +102,6 @@ def install_middle_click_filter(wizard):
                         if not self._dragged:
                             self._dragged = True
                             sphere.follow()
-                        return False
-                    # Keep tiny jitter from becoming a translate; we own click-to-center.
-                    return True
                 return False
 
             if etype == QtCore.QEvent.MouseButtonRelease and event.button() == middle:
@@ -78,4 +117,7 @@ def install_middle_click_filter(wizard):
 
     filt = _MiddleClickFilter(widget)
     widget.installEventFilter(filt)
+    global _ACTIVE_CLICK_FILTER, _ACTIVE_CLICK_WIDGET
+    _ACTIVE_CLICK_FILTER = filt
+    _ACTIVE_CLICK_WIDGET = widget
     return filt, widget

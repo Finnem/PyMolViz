@@ -70,9 +70,15 @@ class Mesh(Points):
         """
 
 
+        cached = getattr(self, "_cached_cgo", None)
+        if cached is not None:
+            return cached
+
         if getattr(self, "wireframe", False):
             wire = self.to_wireframe(render_as="cylinders", linewidth=0.012)
-            return wire._create_CGO_list()
+            cgo_list = list(wire._create_CGO_list())
+            self._cached_cgo = cgo_list
+            return cgo_list
 
         if getattr(self, "bypass_colormap", False):
             cgo_colors = np.asarray(self.color, dtype=float).reshape(-1, 3)
@@ -99,6 +105,7 @@ class Mesh(Points):
         # ending
         cgo_list.append("END")
 
+        self._cached_cgo = cgo_list
         return cgo_list
 
          

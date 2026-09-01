@@ -66,7 +66,26 @@ class Points(Displayable):
         self.state = state
         self.transparency = transparency
 
+    def invalidate_cgo_cache(self) -> None:
+        self._cached_cgo = None
+        self._cached_resolved = None
+
+    def shift_vertices(self, delta) -> None:
+        """Translate baked vertices and cached CGO without remeshing."""
+        d = np.asarray(delta, dtype=float).reshape(3)
+        self.vertices = np.asarray(self.vertices, dtype=float).reshape(-1, 3) + d
+        cached = getattr(self, "_cached_cgo", None)
+        resolved = getattr(self, "_cached_resolved", None)
+        if cached is None and resolved is None:
+            return
+        from ..util.cgo import offset_cgo_vertices
+        if cached is not None:
+            offset_cgo_vertices(cached, d)
+        if resolved is not None:
+            offset_cgo_vertices(resolved, d)
+
     def rebuild(self, context=None) -> None:
+        self.invalidate_cgo_cache()
         if self.vertex_sources is None:
             return
         self.vertices = np.array([resolve_xyz(v, context) for v in self.vertex_sources], dtype=float)

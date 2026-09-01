@@ -8,6 +8,8 @@ View layout (column-major 3x3 model→camera in [0:9]):
   [17]    ortho flag / FOV-related
 """
 
+import math
+
 
 def camera_to_model_offset(view, cam_offset):
     """Map a camera-space offset through R^T into model space."""
@@ -34,6 +36,45 @@ def screen_center(view):
     # Origin in camera space is view[9:12]. Screen center at that depth is (0, 0, z).
     rx, ry, rz = camera_to_model_offset(view, (-float(view[9]), -float(view[10]), 0.0))
     return (float(view[12]) + rx, float(view[13]) + ry, float(view[14]) + rz)
+
+
+def click_ray_points(view, sx, sy, width, height, fov, n=8):
+    """Model-space samples along the pick ray through a framebuffer pixel.
+
+    ``sx, sy`` are PyMOL framebuffer coordinates (Y from the bottom).
+    """
+    width = max(float(width), 1.0)
+    height = max(float(height), 1.0)
+    origin_depth = max(abs(float(view[11])), 1e-6)
+    fov_width = 2.0 * math.tan(math.radians(max(abs(float(fov)), 1.0)) / 2.0)
+    angstrom_per_px = origin_depth * fov_width / height
+    cam_x = (float(sx) - width * 0.5) * angstrom_per_px
+    cam_y = (float(sy) - height * 0.5) * angstrom_per_px
+    plane = camera_to_model_offset(
+        view,
+        (cam_x - float(view[9]), cam_y - float(view[10]), 0.0),
+    )
+    origin = (
+        float(view[12]) + plane[0],
+        float(view[13]) + plane[1],
+        float(view[14]) + plane[2],
+    )
+    look = camera_to_model_offset(view, (0.0, 0.0, -1.0))
+    near = max(float(view[15]), 0.5)
+    far = max(float(view[16]), near + 1.0)
+    start = near - origin_depth
+    span = far - near
+    if n < 2:
+        n = 2
+    points = []
+    for i in range(n):
+        t = start + span * (float(i) / float(n - 1))
+        points.append((
+            origin[0] + look[0] * t,
+            origin[1] + look[1] * t,
+            origin[2] + look[2] * t,
+        ))
+    return points
 
 
 def translation_ttt(center):
