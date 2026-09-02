@@ -155,6 +155,33 @@ class LineOptionsWidget:
             ends=self._ends.currentText(),
         )
 
+    def set_style(self, style: LineStyle):
+        if style is None:
+            return
+        self._dash.blockSignals(True)
+        self._scale.blockSignals(True)
+        self._margin.blockSignals(True)
+        self._ends.blockSignals(True)
+        try:
+            dash = getattr(style, "dash", None)
+            if dash:
+                index = self._dash.findText(str(dash))
+                if index >= 0:
+                    self._dash.setCurrentIndex(index)
+            self._scale.setValue(float(getattr(style, "dash_scale", 1.0)))
+            self._margin.setValue(float(getattr(style, "margin", 0.0)))
+            ends = getattr(style, "ends", None)
+            if ends:
+                index = self._ends.findText(str(ends))
+                if index >= 0:
+                    self._ends.setCurrentIndex(index)
+        finally:
+            self._dash.blockSignals(False)
+            self._scale.blockSignals(False)
+            self._margin.blockSignals(False)
+            self._ends.blockSignals(False)
+        self._preview.set_style(self.style())
+
     def _emit(self, *_args):
         self._preview.set_style(self.style())
         if self._on_change is not None:

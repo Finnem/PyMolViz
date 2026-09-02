@@ -63,12 +63,17 @@ class VisualPoint:
     alpha: float = 1.0
     point_source: Optional[PointSource] = None
     atom_ref: Optional[AtomRef] = None
+    anchor_intent: Optional[bool] = None
 
     def __post_init__(self):
         if self.point_source is None:
             self.point_source = FixedPoint((self.x, self.y, self.z))
         if self.atom_ref is None:
             self.atom_ref = atom_ref_from_point_source(self.point_source)
+        if self.anchor_intent is None:
+            self.anchor_intent = isinstance(
+                self.point_source, (AtomPoint, PseudoAtomPoint)
+            )
 
     def xyz(self) -> Tuple[float, float, float]:
         return (float(self.x), float(self.y), float(self.z))
@@ -82,8 +87,23 @@ class VisualPoint:
     def is_anchored(self) -> bool:
         return isinstance(self.point_source, (AtomPoint, PseudoAtomPoint))
 
+    def wants_anchor(self) -> bool:
+        if self.anchor_intent is None:
+            return self.is_anchored()
+        return bool(self.anchor_intent)
+
     def can_anchor(self) -> bool:
         return self.atom_ref is not None
+
+    def with_anchor_intent(self, anchored: bool) -> "VisualPoint":
+        """Record checkbox state without swapping the live PointSource."""
+        if not self.can_anchor():
+            return self
+        return self._replace(anchor_intent=bool(anchored))
+
+    def commit_anchor(self) -> "VisualPoint":
+        """Apply pending checkbox state to the PointSource (Create / Update)."""
+        return self.with_anchored(self.wants_anchor())
 
     def with_anchored(self, anchored: bool) -> "VisualPoint":
         ref = self.atom_ref
@@ -101,7 +121,7 @@ class VisualPoint:
             )
         else:
             ps = FixedPoint(xyz)
-        return self._replace(point_source=ps, atom_ref=ref)
+        return self._replace(point_source=ps, atom_ref=ref, anchor_intent=bool(anchored))
 
     def sync_from_source(self, context=None) -> "VisualPoint":
         xyz = self.resolve(context)
@@ -126,6 +146,7 @@ class VisualPoint:
             kwargs.get("alpha", self.alpha),
             kwargs.get("point_source", self.point_source),
             kwargs.get("atom_ref", self.atom_ref),
+            kwargs.get("anchor_intent", self.anchor_intent),
         )
 
     def with_xyz(self, xyz: Sequence[float]) -> "VisualPoint":
@@ -135,6 +156,7 @@ class VisualPoint:
             y=float(xyz[1]),
             z=float(xyz[2]),
             point_source=fp,
+            anchor_intent=False,
         )
 
     def with_name(self, name: str) -> "VisualPoint":
@@ -160,6 +182,11 @@ def assign_distinct_colors(points: List[VisualPoint]) -> None:
 def apply_global_color(points: List[VisualPoint], color: RGB) -> None:
     for i, pt in enumerate(points):
         points[i] = pt.with_color(color)
+
+
+def commit_point_anchors(points: Sequence[VisualPoint]) -> List[VisualPoint]:
+    """Swap PointSources to match checkbox state at Create / Update."""
+    return [pt.commit_anchor() for pt in points]
 
 
 def abbreviate_object_name(name: str, max_len: int = 11) -> str:

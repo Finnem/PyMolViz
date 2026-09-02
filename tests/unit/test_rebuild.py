@@ -161,3 +161,63 @@ def test_sphere_shift_vertices_patches_resolved_float_cgo(monkeypatch):
     x1_mean = sum(vertex_xs_after) / len(vertex_xs_after)
     assert x1_mean == pytest.approx(x0_mean + 5.0)
     assert resolved[1] == 4.0
+
+
+def test_clone_baked_shares_faces_and_isolates_vertices():
+    sphere = Sphere((0.0, 0.0, 0.0), 1.0, bypass_colormap=True, frequency=4)
+    tokens = sphere._create_CGO_list()
+    cloned = sphere.clone_baked()
+    assert cloned is not sphere
+    assert cloned.id != sphere.id
+    assert cloned.faces is sphere.faces
+    assert cloned.vertices is not sphere.vertices
+    assert np.allclose(cloned.vertices, sphere.vertices)
+    assert cloned._cached_cgo is not tokens
+    cloned.shift_vertices((3.0, 0.0, 0.0))
+    assert np.allclose(sphere.vertices.mean(axis=0), [0.0, 0.0, 0.0], atol=0.5)
+    assert cloned.vertices.mean(axis=0)[0] == pytest.approx(
+        sphere.vertices.mean(axis=0)[0] + 3.0, abs=0.5,
+    )
+
+
+def _vertex_xs(tokens):
+    from pymol import cgo
+
+    xs = []
+    i = 0
+    n = len(tokens)
+    after_begin = False
+    while i < n:
+        if after_begin:
+            after_begin = False
+            i += 1
+            continue
+        tok = tokens[i]
+        if tok == cgo.BEGIN:
+            after_begin = True
+            i += 1
+            continue
+        if tok == cgo.VERTEX and i + 3 < n:
+            xs.append(float(tokens[i + 1]))
+            i += 4
+            continue
+        i += 1
+    return xs
+
+
+def test_collection_merged_tokens_track_child_shift():
+    from pymolviz.meshes.CGOCollection import CGOCollection
+    from pymolviz.runtime.renderer import resolved_cgo_tokens
+
+    s1 = Sphere((0.0, 0.0, 0.0), 1.0, bypass_colormap=True, frequency=2)
+    s2 = Sphere((8.0, 0.0, 0.0), 1.0, bypass_colormap=True, frequency=2)
+    coll = CGOCollection([s1, s2])
+    before = resolved_cgo_tokens(coll, None)
+    xs0 = _vertex_xs(before)
+    assert xs0
+    cached = coll._cached_merged_resolved
+    s1.shift_vertices((4.0, 0.0, 0.0))
+    after = resolved_cgo_tokens(coll, None)
+    assert after is not cached
+    xs1 = _vertex_xs(after)
+    assert sum(xs1) / len(xs1) == pytest.approx(sum(xs0) / len(xs0) + 2.0, abs=0.05)

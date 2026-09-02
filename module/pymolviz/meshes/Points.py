@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import copy
 import logging
+import uuid
+
 import numpy as np
 import seaborn as sns
 
@@ -69,9 +72,11 @@ class Points(Displayable):
     def invalidate_cgo_cache(self) -> None:
         self._cached_cgo = None
         self._cached_resolved = None
+        self._geom_serial = getattr(self, "_geom_serial", 0) + 1
 
     def shift_vertices(self, delta) -> None:
         """Translate baked vertices and cached CGO without remeshing."""
+        self._geom_serial = getattr(self, "_geom_serial", 0) + 1
         d = np.asarray(delta, dtype=float).reshape(3)
         self.vertices = np.asarray(self.vertices, dtype=float).reshape(-1, 3) + d
         cached = getattr(self, "_cached_cgo", None)
@@ -83,6 +88,32 @@ class Points(Displayable):
             offset_cgo_vertices(cached, d)
         if resolved is not None:
             offset_cgo_vertices(resolved, d)
+
+    def clone_baked(self):
+        """Shallow-copy this mesh, sharing topology and copying vertex/CGO buffers.
+
+        Does not remesh. Faces stay the same object; vertices and cached CGO
+        lists are copied so later shifts do not mutate the source.
+        """
+        cloned = copy.copy(self)
+        cloned._id = uuid.uuid4().hex
+        verts = getattr(self, "vertices", None)
+        if verts is not None:
+            cloned.vertices = np.array(verts, copy=True, dtype=float)
+        normals = getattr(self, "normals", None)
+        if normals is not None:
+            cloned.normals = np.array(normals, copy=True, dtype=float)
+        color = getattr(self, "color", None)
+        if color is not None and not np.isscalar(color):
+            cloned.color = np.array(color, copy=True)
+        cached = getattr(self, "_cached_cgo", None)
+        cloned._cached_cgo = list(cached) if cached is not None else None
+        resolved = getattr(self, "_cached_resolved", None)
+        cloned._cached_resolved = list(resolved) if resolved is not None else None
+        pair_spans = getattr(self, "_pair_spans", None)
+        if pair_spans is not None:
+            cloned._pair_spans = list(pair_spans)
+        return cloned
 
     def rebuild(self, context=None) -> None:
         self.invalidate_cgo_cache()

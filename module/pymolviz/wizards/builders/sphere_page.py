@@ -32,10 +32,16 @@ from .colors import (
 from .points import (
     VisualPoint,
     camera_center_point,
+    commit_point_anchors,
     export_points_to_selection,
     selection_points,
 )
-from .preview import SpherePreview, build_cgo_collection, persist_collection
+from .preview import (
+    SpherePreview,
+    build_cgo_collection,
+    persist_live_preview,
+    retarget_point_collection,
+)
 from .zoom_selection import ZOOM_TO_SELECTION_TIP, points_from_rows, wire_zoom_to_selection
 from .wireframe_quality import (
     DEFAULT_WIREFRAME_QUALITY,
@@ -73,7 +79,10 @@ class SphereBuilderPage:
         self._hook_selection = None
         self._zoom_selection = None
         self._object_name = None
+        self._create_btn = None
         self._table_filter = None
+        self._editing_id = None
+        self._suspend_preview = False
         self._build(parent)
 
     @property
@@ -83,6 +92,49 @@ class SphereBuilderPage:
     def cleanup_preview(self):
         self._deferred.cancel()
         self._preview.cleanup()
+
+    def reset_for_create(self):
+        self._editing_id = None
+        self._points = []
+        if self._object_name is not None:
+            self._object_name.setText("pmv_spheres")
+        if self._create_btn is not None:
+            self._create_btn.setText("Create CGO")
+        if self._radius_widget is not None:
+            self._radius_widget.set_value(1.0)
+        if self._wireframe is not None:
+            self._wireframe.setChecked(False)
+        if self._wireframe_quality is not None:
+            self._wireframe_quality.setValue(DEFAULT_WIREFRAME_QUALITY)
+        if self._table is not None:
+            self._sync_table()
+        self._preview.cleanup()
+
+    def load_object(self, obj):
+        from .load_visual import points_from_mesh, sphere_options
+        from ..catalog import display_name
+
+        self._editing_id = str(obj.id)
+        self._points = points_from_mesh(obj)
+        opts = sphere_options(obj)
+        self._deferred.cancel()
+        self._suspend_preview = True
+        try:
+            if self._object_name is not None:
+                self._object_name.setText(display_name(obj) or "pmv_spheres")
+            if self._create_btn is not None:
+                self._create_btn.setText("Update CGO")
+            if self._radius_widget is not None:
+                self._radius_widget.set_value(opts["radius"])
+            if self._wireframe is not None:
+                self._wireframe.setChecked(opts["wireframe"])
+            if self._wireframe_quality is not None:
+                self._wireframe_quality.setValue(int(opts["quality"]))
+            if self._table is not None:
+                self._sync_table()
+        finally:
+            self._suspend_preview = False
+        self._preview.adopt(obj)
 
     def _build(self, parent):
         QtCore, QtGui, QtWidgets = qt_modules()
@@ -186,12 +238,12 @@ class SphereBuilderPage:
         self._object_name = QtWidgets.QLineEdit()
         self._object_name.setPlaceholderText("Object name")
         self._object_name.setText("pmv_spheres")
-        create_btn = QtWidgets.QPushButton("Create CGO")
-        create_btn.clicked.connect(self._create_cgo)
+        self._create_btn = QtWidgets.QPushButton("Create CGO")
+        self._create_btn.clicked.connect(self._create_cgo)
         export_btn = QtWidgets.QPushButton("Export CGO")
         export_btn.clicked.connect(self._export_cgo)
         actions.addWidget(self._object_name, stretch=2)
-        actions.addWidget(create_btn)
+        actions.addWidget(self._create_btn)
         actions.addWidget(export_btn)
         root.addLayout(actions)
 
@@ -220,7 +272,7 @@ class SphereBuilderPage:
                     "Create a PyMOL selection covering the table points as pseudoatoms.",
                 ),
                 (self._object_name, "Name of the PyMOL CGO object created or exported."),
-                (create_btn, "Commit the spheres to the session as a named CGO object."),
+                (self._create_btn, "Commit the spheres to the session as a named CGO object."),
                 (export_btn, "Write a Python script that rebuilds this CGO."),
             ],
             context="SphereBuilderPage",
@@ -337,6 +389,8 @@ class SphereBuilderPage:
         self._on_back()
 
     def _schedule_preview(self):
+        if self._suspend_preview:
+            return
         self._deferred.schedule(self._refresh_preview, page=self._page)
 
     def _refresh_preview(self):
@@ -364,10 +418,9 @@ class SphereBuilderPage:
         pt = self._points[row]
         if not pt.can_anchor():
             return
-        self._points[row] = pt.with_anchored(checked)
-        self._schedule_preview()
+        self._points[row] = pt.with_anchor_intent(checked)
 
-    def _sync_table(self):
+    def _sync_table(self, preview=True):
         self._update_wireframe_quality_limits()
         QtCore, QtGui, QtWidgets = qt_modules()
         anchor_col = self._anchor_col()
@@ -401,7 +454,8 @@ class SphereBuilderPage:
         finally:
             self._table.blockSignals(False)
             unblock_table_selection_signals(self._table, sel_blocked)
-        self._schedule_preview()
+        if preview:
+            self._schedule_preview()
 
     def _on_cell_changed(self, row, col):
         if row < 0 or row >= len(self._points):
@@ -439,8 +493,9 @@ class SphereBuilderPage:
             self._points,
             hook_to_selection=self._hook_selection.isChecked(),
         )
-        self._points.extend(self._stamp_new_points([pt]))
-        self._sync_table()
+        new_pts = self._stamp_new_points([pt])
+        self._points.extend(new_pts)
+        self._add_preview_points(new_pts)
 
     def _add_selection(self):
         new_pts = selection_points(
@@ -457,24 +512,40 @@ class SphereBuilderPage:
                     "Pick atoms first (they go into sele), then try again.",
                 )
             return
-        self._points.extend(self._stamp_new_points(new_pts))
-        self._sync_table()
+        new_pts = self._stamp_new_points(new_pts)
+        self._points.extend(new_pts)
+        self._add_preview_points(new_pts)
+
+    def _add_preview_points(self, new_pts):
+        before = self._wireframe_quality.value()
+        self._update_wireframe_quality_limits()
+        if self._wireframe_quality.value() != before:
+            self._sync_table(preview=True)
+            return
+        added = self._preview.add_points(
+            new_pts,
+            self._radius_widget.value(),
+            self._wireframe.isChecked(),
+            self._wireframe_quality_level(),
+        )
+        self._sync_table(preview=not added)
 
     def _delete_selected(self):
         rows = sorted({i.row() for i in self._table.selectedIndexes()}, reverse=True)
         if not rows:
             return
+        self._preview.remove_rows(rows)
         for row in rows:
             if 0 <= row < len(self._points):
                 del self._points[row]
-        self._sync_table()
+        self._sync_table(preview=False)
 
     def _export_selection(self):
         export_points_to_selection(self.cmd, self._points)
 
     def _collection(self, name: str):
         return build_cgo_collection(
-            self._points,
+            commit_point_anchors(self._points),
             self._radius_widget.value(),
             self._wireframe.isChecked(),
             name=name,
@@ -485,8 +556,16 @@ class SphereBuilderPage:
         if not self._points:
             return
         name = self._object_name.text().strip() or "pmv_spheres"
-        persist_collection(self.cmd, self._collection(name))
-        self._preview.cleanup()
+        persist_live_preview(
+            self.cmd,
+            self._preview,
+            name,
+            obj_id=self._editing_id,
+            retarget=lambda coll: retarget_point_collection(
+                coll, commit_point_anchors(self._points),
+            ),
+            fallback=lambda: self._collection(name),
+        )
         if self._on_create is not None:
             self._on_create()
 

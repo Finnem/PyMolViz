@@ -30,13 +30,18 @@ from .anchor_table import (
 )
 from .colors import colors_for_new_points, pick_rgb, readable_text_color
 from .line_style import ARROW_QUALITY_SEGMENTS, LineOptionsWidget
-from .pairs import VisualPair, flatten_pair_points, take_single_selection_point
+from .pairs import VisualPair, commit_pair_anchors, flatten_pair_points, take_single_selection_point
 from .points import (
     VisualPoint,
     camera_center_point,
     export_points_to_selection,
 )
-from .preview import ArrowPreview, build_arrow_collection, persist_collection
+from .preview import (
+    ArrowPreview,
+    build_arrow_collection,
+    persist_live_preview,
+    retarget_arrow_collection,
+)
 from .zoom_selection import ZOOM_TO_SELECTION_TIP, points_from_pair_rows, wire_zoom_to_selection
 
 COLS = arrow_columns()
@@ -83,7 +88,10 @@ class ArrowBuilderPage:
         self._abort_btn = None
         self._add_cam_btn = None
         self._object_name = None
+        self._create_btn = None
         self._table_filter = None
+        self._editing_id = None
+        self._suspend_preview = False
         self._build(parent)
 
     @property
@@ -97,6 +105,45 @@ class ArrowBuilderPage:
         self._pending_first = None
         self._ignore_xyz = None
         self._preview.cleanup()
+
+    def reset_for_create(self):
+        self._editing_id = None
+        self._pairs = []
+        self._phase = None
+        self._pending_first = None
+        if self._object_name is not None:
+            self._object_name.setText("pmv_arrows")
+        if self._create_btn is not None:
+            self._create_btn.setText("Create CGO")
+        if self._quality is not None:
+            self._quality.setValue(3)
+        if self._table is not None:
+            self._sync_table()
+        self._preview.cleanup()
+
+    def load_object(self, obj):
+        from .load_visual import arrow_options, pairs_from_mesh
+        from ..catalog import display_name
+
+        self._editing_id = str(obj.id)
+        self._pairs = pairs_from_mesh(obj)
+        opts = arrow_options(obj)
+        self._deferred.cancel()
+        self._suspend_preview = True
+        try:
+            if self._object_name is not None:
+                self._object_name.setText(display_name(obj) or "pmv_arrows")
+            if self._create_btn is not None:
+                self._create_btn.setText("Update CGO")
+            if self._quality is not None:
+                self._quality.setValue(int(opts["quality"]))
+            if self._line_options is not None:
+                self._line_options.set_style(opts.get("line_style"))
+            if self._table is not None:
+                self._sync_table()
+        finally:
+            self._suspend_preview = False
+        self._preview.adopt(obj)
 
     def _existing_points(self) -> List[VisualPoint]:
         pts = flatten_pair_points(self._pairs)
@@ -218,12 +265,12 @@ class ArrowBuilderPage:
         self._object_name = QtWidgets.QLineEdit()
         self._object_name.setPlaceholderText("Object name")
         self._object_name.setText("pmv_arrows")
-        create_btn = QtWidgets.QPushButton("Create CGO")
-        create_btn.clicked.connect(self._create_cgo)
+        self._create_btn = QtWidgets.QPushButton("Create CGO")
+        self._create_btn.clicked.connect(self._create_cgo)
         export_btn = QtWidgets.QPushButton("Export CGO")
         export_btn.clicked.connect(self._export_cgo)
         actions.addWidget(self._object_name, stretch=2)
-        actions.addWidget(create_btn)
+        actions.addWidget(self._create_btn)
         actions.addWidget(export_btn)
         root.addLayout(actions)
 
@@ -254,7 +301,7 @@ class ArrowBuilderPage:
                     "Create a PyMOL selection covering the pair endpoints as pseudoatoms.",
                 ),
                 (self._object_name, "Name of the PyMOL CGO object created or exported."),
-                (create_btn, "Commit the arrows to the session as a named CGO object."),
+                (self._create_btn, "Commit the arrows to the session as a named CGO object."),
                 (export_btn, "Write a Python script that rebuilds this CGO."),
             ],
             context="ArrowBuilderPage",
@@ -465,8 +512,13 @@ class ArrowBuilderPage:
             return
         self._clear_pymol_selection()
         self._pairs.append(self._stamp_pair(first, point))
+        pair = self._pairs[-1]
+        added = self._preview.add_pairs(
+            [pair], int(self._quality.value()), self._style(),
+            current_pairs=self._pairs[:-1],
+        )
         self._set_phase(None, None, "Pair added: %s → %s" % (first.name, point.name))
-        self._sync_table()
+        self._sync_table(preview=not added)
 
     def _on_add_camera(self):
         pt = camera_center_point(
@@ -537,6 +589,8 @@ class ArrowBuilderPage:
         ))
 
     def _schedule_preview(self):
+        if self._suspend_preview:
+            return
         self._deferred.schedule(self._refresh_preview, page=self._page)
 
     def _refresh_preview(self):
@@ -562,8 +616,7 @@ class ArrowBuilderPage:
         start = pair.start
         if not start.can_anchor():
             return
-        self._pairs[row] = pair.with_start(start.with_anchored(checked))
-        self._schedule_preview()
+        self._pairs[row] = pair.with_start(start.with_anchor_intent(checked))
 
     def _on_end_anchor_toggled(self, row: int, checked: bool):
         if row < 0 or row >= len(self._pairs):
@@ -572,10 +625,9 @@ class ArrowBuilderPage:
         end = pair.end
         if not end.can_anchor():
             return
-        self._pairs[row] = pair.with_end(end.with_anchored(checked))
-        self._schedule_preview()
+        self._pairs[row] = pair.with_end(end.with_anchor_intent(checked))
 
-    def _sync_table(self):
+    def _sync_table(self, preview=True):
         QtCore, QtGui, QtWidgets = qt_modules()
         start_col, end_col = self._anchor_cols()
         sel_blocked = block_table_selection_signals(self._table)
@@ -617,7 +669,8 @@ class ArrowBuilderPage:
         finally:
             self._table.blockSignals(False)
             unblock_table_selection_signals(self._table, sel_blocked)
-        self._schedule_preview()
+        if preview:
+            self._schedule_preview()
 
     def _on_cell_changed(self, row, col):
         if row < 0 or row >= len(self._pairs):
@@ -662,10 +715,15 @@ class ArrowBuilderPage:
 
     def _delete_selected(self):
         rows = sorted(self._selected_rows(), reverse=True)
+        if not rows:
+            return
+        self._preview.remove_rows(
+            rows, int(self._quality.value()), self._style(), self._pairs,
+        )
         for row in rows:
             if 0 <= row < len(self._pairs):
                 del self._pairs[row]
-        self._sync_table()
+        self._sync_table(preview=False)
 
     def _export_selection(self):
         export_points_to_selection(self.cmd, flatten_pair_points(self._pairs))
@@ -674,13 +732,21 @@ class ArrowBuilderPage:
         if not self._pairs:
             return
         name = self._object_name.text().strip() or "pmv_arrows"
-        persist_collection(
+        persist_live_preview(
             self.cmd,
-            build_arrow_collection(
-                self._pairs, int(self._quality.value()), self._style(), name,
+            self._preview,
+            name,
+            obj_id=self._editing_id,
+            retarget=lambda coll: retarget_arrow_collection(
+                coll, commit_pair_anchors(self._pairs),
+            ),
+            fallback=lambda: build_arrow_collection(
+                commit_pair_anchors(self._pairs),
+                int(self._quality.value()),
+                self._style(),
+                name,
             ),
         )
-        self._preview.cleanup()
         if self._on_create is not None:
             self._on_create()
 
@@ -695,5 +761,8 @@ class ArrowBuilderPage:
         if not path:
             return
         build_arrow_collection(
-            self._pairs, int(self._quality.value()), self._style(), name,
+            commit_pair_anchors(self._pairs),
+            int(self._quality.value()),
+            self._style(),
+            name,
         ).write(path)

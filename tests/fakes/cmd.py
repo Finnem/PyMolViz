@@ -185,11 +185,32 @@ class FakeCmd:
     def load_cgo(self, cgo: Sequence, name: str, state: int = 1, zoom: int = 0) -> None:
         self.objects[str(name)] = list(cgo)
 
+    def load_callback(self, obj, name: str, state: int = 1, finish: int = 1, discrete: int = 0, **_kwargs) -> None:
+        self.objects[str(name)] = obj
+
+    def refresh(self) -> None:
+        pass
+
     def load_object(self, loadable, cgo, name, zoom=0) -> None:
         self.load_cgo(cgo, name)
 
     def delete(self, name: str) -> None:
         self.objects.pop(str(name), None)
+        self.settings.pop(str(name), None)
+        self.disabled.discard(str(name))
+
+    def set_name(self, old: str, new: str) -> None:
+        old, new = str(old), str(new)
+        if old == new:
+            return
+        if old not in self.objects:
+            raise KeyError(old)
+        self.objects[new] = self.objects.pop(old)
+        if old in self.settings:
+            self.settings[new] = self.settings.pop(old)
+        if old in self.disabled:
+            self.disabled.discard(old)
+            self.disabled.add(new)
 
     def get_names(self, typ: str = "objects", enabled_only: int = 0, selection: str = "") -> List[str]:
         if typ == "objects":

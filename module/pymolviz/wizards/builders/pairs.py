@@ -47,6 +47,13 @@ def flatten_pair_points(pairs: Sequence[VisualPair]) -> List[VisualPoint]:
     return out
 
 
+def commit_pair_anchors(pairs: Sequence[VisualPair]) -> List[VisualPair]:
+    return [
+        VisualPair(pair.start.commit_anchor(), pair.end.commit_anchor())
+        for pair in pairs
+    ]
+
+
 def take_single_selection_point(
     cmd_,
     existing: Sequence[VisualPoint] = (),

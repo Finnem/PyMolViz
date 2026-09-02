@@ -97,3 +97,28 @@ def test_ephemeral_preview_not_persisted():
     coll = CGOCollection([sphere], name="_pmv_prev_test", obj_id="preview_deadbeef")
     pmv_session.add(coll)
     assert pmv_session.all_objects() == []
+
+
+def test_persist_collection_replaces_same_id(fake_cmd, monkeypatch):
+    monkeypatch.setattr("pymolviz.runtime.integration.install", lambda *_a, **_k: None)
+    from pymolviz.wizards.builders.preview import persist_collection
+
+    first = _hooked_sphere_collection(fake_cmd, obj_id="keep-me")
+    persist_collection(fake_cmd, first)
+    assert pmv_session.get("keep-me") is first
+    replacement = CGOCollection(
+        [
+            Sphere(
+                AtomPoint("prot", 10, chain="A", resi="1", name="CA", last_xyz=(2.0, 0.0, 0.0)),
+                0.5,
+                bypass_colormap=True,
+            )
+        ],
+        name="pmv_updated",
+        obj_id="other",
+    )
+    persist_collection(fake_cmd, replacement, obj_id="keep-me")
+    stored = pmv_session.get("keep-me")
+    assert stored is replacement
+    assert stored.id == "keep-me"
+    assert stored._name == "pmv_updated"

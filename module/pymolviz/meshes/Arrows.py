@@ -285,26 +285,37 @@ class Arrows(Lines):
                 cgo_colors = np.asarray(colors, dtype=float).reshape(-1, 3)
             else:
                 cgo_colors = self.colormap.get_color(colors)[:, :3]
-            if cgo_colors.shape[0] == n_pairs:
+            n_color = cgo_colors.shape[0]
+            if n_color == n_pairs:
                 per_pair_colors = cgo_colors
+            elif n_color == n_pairs * 2:
+                per_pair_colors = cgo_colors[::2]
+            elif n_color == 1:
+                per_pair_colors = np.repeat(cgo_colors, n_pairs, axis=0)
+            elif n_color >= n_pairs:
+                per_pair_colors = cgo_colors[:n_pairs]
             else:
-                per_pair_colors = cgo_colors.reshape(-1, 2, 3)[:, 0, :]
+                per_pair_colors = np.resize(cgo_colors, (n_pairs, 3))
             transparency = self.transparency
             try:
                 transparency[0]
             except (TypeError, IndexError):
                 transparency = np.full(n_pairs, float(self.transparency) if np.isscalar(self.transparency) else 0.0)
+            spans = []
             for i in range(n_pairs):
                 start = tuple(self.vertices[i * 2])
                 end = tuple(self.vertices[i * 2 + 1])
                 color = tuple(per_pair_colors[i])
                 alpha = 1.0 - float(transparency[i] if i < len(transparency) else 0.0)
+                chunk_start = len(merged)
                 merged.extend(
                     build_styled_arrow_cgo(
                         start, end, color, self.quality, self.line_style,
                         alpha=alpha, radius=self.shaft_radius,
                     )
                 )
+                spans.append((chunk_start, len(merged)))
+            self._pair_spans = spans
             return merged
 
         if self.render_as == "lines":

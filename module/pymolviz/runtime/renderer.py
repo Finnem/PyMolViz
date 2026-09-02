@@ -28,6 +28,10 @@ def _resolved_one(obj, resolve_cgo_tokens):
     return resolved
 
 
+def _child_serials(children):
+    return tuple(getattr(child, "_geom_serial", 0) for child in children)
+
+
 def resolved_cgo_tokens(obj, context=None):
     """Integer CGO tokens, reusing per-mesh caches when geometry was only shifted."""
     from ..util.cgo import resolve_cgo_tokens
@@ -37,7 +41,27 @@ def resolved_cgo_tokens(obj, context=None):
     children = _cgo_children(obj)
     if children is None:
         return _resolved_one(obj, resolve_cgo_tokens)
+    serials = _child_serials(children)
+    cached = getattr(obj, "_cached_merged_resolved", None)
+    spans = getattr(obj, "_child_spans", None)
+    stored = getattr(obj, "_child_serials", None)
+    if stored is not None:
+        stored = tuple(stored)
+    if (
+        cached is not None
+        and spans is not None
+        and stored == serials
+        and len(spans) == len(children)
+        and context is None
+    ):
+        return cached
     out = []
+    spans = []
     for child in children:
+        start = len(out)
         out.extend(_resolved_one(child, resolve_cgo_tokens))
+        spans.append((start, len(out)))
+    obj._cached_merged_resolved = out
+    obj._child_spans = spans
+    obj._child_serials = serials
     return out

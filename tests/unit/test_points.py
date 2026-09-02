@@ -90,6 +90,20 @@ def test_visual_point_anchor_toggle():
     assert reanchored.point_source.atom_id == 42
 
 
+def test_visual_point_anchor_intent_defers_source_swap():
+    ref = AtomRef("prot", 42, "A", "15", "CA")
+    src = AtomPoint("prot", 42, chain="A", resi="15", name="CA", last_xyz=(1.0, 2.0, 3.0))
+    pt = VisualPoint("a", "selection", 1.0, 2.0, 3.0, point_source=src, atom_ref=ref)
+    pending = pt.with_anchor_intent(False)
+    assert pending.wants_anchor() is False
+    assert pending.is_anchored() is True
+    assert pending.point_source is src
+    committed = pending.commit_anchor()
+    assert committed.is_anchored() is False
+    assert isinstance(committed.point_source, FixedPoint)
+    assert committed.wants_anchor() is False
+
+
 def test_visual_point_manual_edit_keeps_atom_ref():
     ref = AtomRef("prot", 7, "", "1", "N")
     pt = VisualPoint(

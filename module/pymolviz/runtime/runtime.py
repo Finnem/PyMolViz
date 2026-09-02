@@ -66,8 +66,8 @@ class PyMOLRuntime:
         alpha = 1.0 - max(0.0, min(1.0, _scalar_transparency(obj)))
         set_cgo_transparency(self.cmd, name, alpha)
 
-    def _load(self, obj, name, replace=False):
-        context = self._context()
+    def _load(self, obj, name, replace=False, rebuild=True):
+        context = self._context() if rebuild else None
         try:
             tokens = resolved_cgo_tokens(obj, context)
         except PointUnresolvedError:
@@ -79,9 +79,9 @@ class PyMOLRuntime:
             load_cgo_no_zoom(self.cmd, tokens, name, state)
         self._apply_transparency(obj, name)
 
-    def materialize(self, obj):
+    def materialize(self, obj, rebuild=True):
         name = binding_name(obj)
-        self._load(obj, name, replace=False)
+        self._load(obj, name, replace=False, rebuild=rebuild)
         binding = PyMOLBinding(obj.id, name, "cgo", style_hash=style_hash(obj))
         self.bindings.put(binding)
         return name

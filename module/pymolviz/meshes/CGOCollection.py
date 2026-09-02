@@ -50,7 +50,14 @@ class CGOCollection(Displayable, list):
                     )
             super().extend(item for item in other)
 
+    def invalidate_merged_cache(self) -> None:
+        """Drop concatenated CGO tokens. Child meshes keep their own caches."""
+        self._cached_merged_resolved = None
+        self._child_spans = None
+        self._child_serials = None
+
     def rebuild(self, context=None) -> None:
+        self.invalidate_merged_cache()
         for child in self:
             if hasattr(child, "rebuild"):
                 child.rebuild(context)

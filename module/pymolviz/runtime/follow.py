@@ -357,6 +357,8 @@ def _nudge_object(runtime, obj, load=True):
                     child.invalidate_cgo_cache()
             except Exception:
                 return False
+    if hasattr(obj, "invalidate_merged_cache"):
+        obj.invalidate_merged_cache()
     if not load:
         return True
     try:

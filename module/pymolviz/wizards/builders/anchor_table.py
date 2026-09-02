@@ -11,7 +11,7 @@ ANCHOR_START_COL = "Anch S"
 ANCHOR_END_COL = "Anch E"
 
 ANCHOR_TIP = (
-    "When checked, the CGO follows this atom if it moves. "
+    "When checked, the CGO follows this atom after Create or Update. "
     "When unchecked, the position stays fixed at the current xyz."
 )
 ANCHOR_DISABLED_TIP = "No atom reference — add from selection or snap to atom first."
@@ -78,7 +78,7 @@ def sync_anchor_cell(
     """Replace the anchor checkbox for one table cell."""
     table.removeCellWidget(row, col)
     cb = QtWidgets.QCheckBox()
-    cb.setChecked(pt.is_anchored())
+    cb.setChecked(pt.wants_anchor())
     cb.setEnabled(pt.can_anchor())
     cb.setToolTip(ANCHOR_TIP if pt.can_anchor() else ANCHOR_DISABLED_TIP)
     cb.toggled.connect(lambda checked, r=row: on_toggled(r, checked))
