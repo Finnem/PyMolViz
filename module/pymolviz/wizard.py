@@ -29,12 +29,9 @@ class PyMolVizWizard(Wizard):
     def __init__(self):
         Wizard.__init__(self)
         self.prompt = ["PyMOLViz"]
-        self._last_center_display = None
         self._closed = False
         self._syncing = False
-        self._sync_timer = None
         self._sphere_sync_posted = False
-        self._still_frames = 0
         self._init_runtime()
 
     def _teardown_click_filter(self):
@@ -46,7 +43,6 @@ class PyMolVizWizard(Wizard):
         """Attach menu callbacks, Qt hooks, and the camera cage."""
         if getattr(self, "_closed", False):
             return
-        self._stop_sync_timer()
         self._teardown_click_filter()
         if getattr(self, "camera_sphere", None) is not None:
             try:
@@ -68,7 +64,6 @@ class PyMolVizWizard(Wizard):
             ensure_follow_input_hook()
         except Exception:
             pass
-        self._stop_sync_timer()
 
     def _ensure_runtime(self):
         """Rebuild wizard hooks if session save dropped the camera cage."""
@@ -99,12 +94,9 @@ class PyMolVizWizard(Wizard):
         if getattr(self, "cmd", None) is None:
             self.cmd = cmd
         self.prompt = list(state.get("prompt") or ["PyMOLViz"])
-        self._last_center_display = None
         self._closed = False
         self._syncing = False
-        self._sync_timer = None
         self._sphere_sync_posted = False
-        self._still_frames = 0
         self._init_runtime()
         try:
             self.cmd.refresh_wizard()
@@ -113,7 +105,6 @@ class PyMolVizWizard(Wizard):
 
     def _suspend_for_session(self):
         """Drop transient Qt state before session pickling."""
-        self._stop_sync_timer()
         if getattr(self, "add_visual_window", None) is not None:
             try:
                 self.add_visual_window.close()
@@ -128,37 +119,6 @@ class PyMolVizWizard(Wizard):
                 pass
             self.camera_sphere = None
         restore_viewing_mouse(self.cmd)
-
-    def _start_sync_timer(self):
-        """Follow the camera without wizard event masks (those feedback)."""
-        self._stop_sync_timer()
-        if getattr(self, "_closed", False):
-            return
-        QtCore, _, _ = qt_modules()
-        if QtCore is None or not hasattr(QtCore, "QTimer"):
-            return
-        try:
-            timer = QtCore.QTimer()
-            timer.setInterval(100)
-            timer.timeout.connect(self._flush_sphere_sync)
-            timer.start()
-        except Exception:
-            return
-        self._sync_timer = timer
-
-    def _stop_sync_timer(self):
-        timer = getattr(self, "_sync_timer", None)
-        self._sync_timer = None
-        if timer is None:
-            return
-        try:
-            timer.stop()
-        except Exception:
-            pass
-        try:
-            timer.deleteLater()
-        except Exception:
-            pass
 
     def get_event_mask(self):
         # Keep the default pick/select bits so PyMOL still shows the panel.
@@ -191,17 +151,6 @@ class PyMolVizWizard(Wizard):
         self._sphere_sync_posted = False
         self._sync_sphere()
 
-    def _set_sync_interval(self, ms):
-        timer = getattr(self, "_sync_timer", None)
-        if timer is None:
-            return
-        try:
-            if int(timer.interval()) == int(ms):
-                return
-            timer.setInterval(int(ms))
-        except Exception:
-            pass
-
     def _sync_sphere(self):
         if getattr(self, "_closed", False) or getattr(self, "_syncing", False):
             return
@@ -224,13 +173,6 @@ class PyMolVizWizard(Wizard):
             sphere.follow_view(view)
             if getattr(sphere, "_hold", False):
                 self._request_sphere_sync(50)
-            pos = sphere.current_position()
-            if pos is not None:
-                self._last_center_display = (
-                    round(pos[0], 3),
-                    round(pos[1], 3),
-                    round(pos[2], 3),
-                )
         except Exception:
             pass
         finally:
@@ -302,7 +244,6 @@ class PyMolVizWizard(Wizard):
     def cleanup(self):
         self._closed = True
         self._syncing = False
-        self._stop_sync_timer()
         self._teardown_click_filter()
         if getattr(self, "add_visual_window", None) is not None:
             try:

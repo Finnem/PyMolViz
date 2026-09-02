@@ -16,16 +16,17 @@ def _session_save_purge_ephemeral(*_args, **_kwargs):
     """Drop wizard-only CGOs before PyMOL serializes the object list."""
     from pymol import cmd
 
-    from ..util.pymol_helpers import purge_preview_objects
+    from ..util.pymol_helpers import CAMERA_CENTER_NAME, purge_preview_objects
     from ..wizard import is_pymolviz_wizard
 
     purge_preview_objects(cmd)
     wizard = cmd.get_wizard()
     is_pmv = is_pymolviz_wizard(wizard)
     try:
-        cmd.delete("pmv_camera_center")
+        cmd.delete(CAMERA_CENTER_NAME)
     except Exception:
         pass
+    # Keep the live cage after the purge; session restore still exits the wizard.
     if is_pmv and hasattr(wizard, "_ensure_runtime") and not getattr(wizard, "_closed", False):
         wizard._ensure_runtime()
     return 1

@@ -62,8 +62,9 @@ def set_cgo_transparency(cmd_, name, alpha=1.0):
         pass
 
 
+CAMERA_CENTER_NAME = "pmv_camera_center"
 WIZARD_EPHEMERAL_NAMES = (
-    "pmv_camera_center",
+    CAMERA_CENTER_NAME,
     "_pmv_cent_tmp",
 )
 WIZARD_PREVIEW_PREFIXES = (

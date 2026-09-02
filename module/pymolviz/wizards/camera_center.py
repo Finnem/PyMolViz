@@ -3,7 +3,12 @@
 import time
 
 from ..util.cgo import wireframe_sphere_cgo
-from ..util.pymol_helpers import load_cgo_no_zoom, place_object, purge_objects, restore_view
+from ..util.pymol_helpers import (
+    CAMERA_CENTER_NAME,
+    load_cgo_no_zoom,
+    place_object,
+    purge_objects,
+)
 from ..util.view import click_ray_points, screen_center
 from .pick import pick_atom, qt_to_pymol_xy, widget_fb_scale
 
@@ -11,7 +16,7 @@ from .pick import pick_atom, qt_to_pymol_xy, widget_fb_scale
 class CameraCenterSphere:
     """Keeps a small wireframe sphere at the current screen / view center."""
 
-    def __init__(self, cmd_, name="pmv_camera_center", radius=0.35, color=(1.0, 0.85, 0.15)):
+    def __init__(self, cmd_, name=CAMERA_CENTER_NAME, radius=0.35, color=(1.0, 0.85, 0.15)):
         self.cmd = cmd_
         self.name = name
         self.radius = radius
@@ -28,16 +33,18 @@ class CameraCenterSphere:
         self._pending_center_sele = None
         self._pending_center_pos = None
         self._current_pos = None
+        # Drop leftover callback objects from older wizard builds.
         purge_objects(self.cmd, names=(self.name,), prefixes=("_pmv_cam_cb",))
-        saved_view = tuple(self.cmd.get_view())
+        self._create_cage()
+        self.follow_view(tuple(self.cmd.get_view()))
+
+    def _create_cage(self):
         cgo = wireframe_sphere_cgo((0.0, 0.0, 0.0), self.radius, self.color)
         load_cgo_no_zoom(self.cmd, cgo, self.name, 1)
         try:
             self.cmd.enable(self.name)
         except Exception:
             pass
-        restore_view(self.cmd, saved_view)
-        self.follow_view(saved_view)
 
     def ensure_object(self):
         """Recreate the CGO if it was removed (e.g. during session save)."""
@@ -51,15 +58,8 @@ class CameraCenterSphere:
             pass
         self.prev_view = None
         self._current_pos = None
-        saved_view = tuple(self.cmd.get_view())
-        cgo = wireframe_sphere_cgo((0.0, 0.0, 0.0), self.radius, self.color)
-        load_cgo_no_zoom(self.cmd, cgo, self.name, 1)
-        try:
-            self.cmd.enable(self.name)
-        except Exception:
-            pass
-        restore_view(self.cmd, saved_view)
-        self.follow_view(saved_view)
+        self._create_cage()
+        self.follow_view(tuple(self.cmd.get_view()))
 
     def request_snap(self, widget, x, y):
         """Queue a click snap. No cmd calls on the mouse path."""

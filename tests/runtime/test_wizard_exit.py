@@ -108,6 +108,7 @@ def test_exit_wizard_clears_non_pymolviz_wizards_too():
 
 
 def test_camera_place_skips_identical_position():
+    from pymolviz.util.pymol_helpers import CAMERA_CENTER_NAME
     from pymolviz.wizards.camera_center import CameraCenterSphere
 
     class _Cmd:
@@ -119,7 +120,7 @@ def test_camera_place_skips_identical_position():
 
     sphere = CameraCenterSphere.__new__(CameraCenterSphere)
     sphere.cmd = _Cmd()
-    sphere.name = "pmv_camera_center"
+    sphere.name = CAMERA_CENTER_NAME
     sphere._current_pos = None
     sphere._place((1.0, 2.0, 3.0))
     sphere._place((1.0, 2.0, 3.0))

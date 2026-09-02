@@ -109,6 +109,43 @@ def test_follow_view_does_not_fetch_coords():
     assert calls["n"] == 0
 
 
+def test_camera_center_loads_cgo_and_updates_ttt():
+    from pymolviz.util.pymol_helpers import CAMERA_CENTER_NAME
+    from pymolviz.util.view import screen_center, translation_ttt
+    from pymolviz.wizards.camera_center import CameraCenterSphere
+    from tests.fakes.cmd import FakeCmd
+
+    cmd = FakeCmd()
+    cmd._view = _view()
+    sphere = CameraCenterSphere(cmd)
+    assert CAMERA_CENTER_NAME in cmd.objects
+    assert cmd.objects[CAMERA_CENTER_NAME]
+    first = list(cmd.settings[CAMERA_CENTER_NAME]["_ttt"])
+    assert first == translation_ttt(screen_center(cmd._view))
+
+    view = list(cmd._view)
+    view[12] = 3.0
+    sphere.follow_view(view)
+    moved = cmd.settings[CAMERA_CENTER_NAME]["_ttt"]
+    assert moved == translation_ttt(screen_center(view))
+    assert moved != first
+
+
+def test_ensure_object_recreates_deleted_cgo():
+    from pymolviz.util.pymol_helpers import CAMERA_CENTER_NAME
+    from pymolviz.wizards.camera_center import CameraCenterSphere
+    from tests.fakes.cmd import FakeCmd
+
+    cmd = FakeCmd()
+    cmd._view = _view()
+    sphere = CameraCenterSphere(cmd)
+    cmd.delete(CAMERA_CENTER_NAME)
+    assert CAMERA_CENTER_NAME not in cmd.objects
+    sphere.ensure_object()
+    assert CAMERA_CENTER_NAME in cmd.objects
+    assert cmd.objects[CAMERA_CENTER_NAME]
+
+
 def test_pointer_over_viewer_true_without_qt_app():
     from pymolviz.wizards.pick import pointer_over_viewer
 
