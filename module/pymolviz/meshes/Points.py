@@ -69,6 +69,22 @@ class Points(Displayable):
         self.state = state
         self.transparency = transparency
 
+    def _cgo_vertex_rgb(self):
+        """Per-vertex RGB for CGO, honoring ``bypass_colormap``."""
+        n = int(np.asarray(self.vertices, dtype=float).reshape(-1, 3).shape[0])
+        if getattr(self, "bypass_colormap", False):
+            arr = np.asarray(self.color, dtype=float)
+            if arr.ndim <= 1:
+                colors = arr.reshape(-1)[:3].reshape(1, 3)
+            else:
+                colors = arr.reshape(arr.shape[0], -1)[:, :3]
+            if colors.shape[0] == 1:
+                return np.repeat(colors, n, axis=0) if n else colors
+            if colors.shape[0] != n:
+                return np.repeat(colors[:1], n, axis=0) if n else colors[:0]
+            return colors
+        return np.asarray(self.colormap.get_color(self.color)[:, :3], dtype=float)
+
     def invalidate_cgo_cache(self) -> None:
         self._cached_cgo = None
         self._cached_resolved = None

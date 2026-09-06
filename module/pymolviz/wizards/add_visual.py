@@ -4,6 +4,7 @@ from .builders.arrow_page import ArrowBuilderPage
 from .builders.box_page import BoxBuilderPage
 from .builders.preview import set_visual_enabled
 from .builders.sphere_page import SphereBuilderPage
+from .builders.surface_page import SurfaceBuilderPage
 from .catalog import editor_kind, object_rows
 from .pick import (
     bind_tool_window,
@@ -12,18 +13,55 @@ from .pick import (
     qt_modules,
 )
 from .pick import _qt_platform_name
+from .widgets.sticky_add import (
+    StickyAddOverlay,
+    list_needs_sticky_add,
+    sticky_add_overlay_rect,
+)
+
+
+def objects_need_sticky_add(n_objects, viewport_height, row_height, add_height=None):
+    return list_needs_sticky_add(n_objects, viewport_height, row_height, add_height=add_height)
+
+
+def add_object_overlay_rect(
+    table_width,
+    table_height,
+    viewport_x,
+    viewport_y,
+    viewport_height,
+    n_objects,
+    row_height,
+    add_height,
+    header_height=0,
+    h_scrollbar_height=0,
+    inset=6,
+):
+    return sticky_add_overlay_rect(
+        table_width,
+        table_height,
+        viewport_x,
+        viewport_y,
+        viewport_height,
+        n_objects,
+        row_height,
+        add_height,
+        header_height=header_height,
+        h_scrollbar_height=h_scrollbar_height,
+        inset=inset,
+    )
 
 MESH_TYPES = (
-    ("Sphere", "Solid or wireframe sphere"),
-    ("Box", "Axis-aligned or centered box"),
-    ("Surface", "Triangulated mesh surface"),
-    ("Lines", "Line / polyline segments"),
-    ("Arrows", "Directed arrow glyphs"),
+    ("Spheres", "Sphere", "Solid or wireframe spheres"),
+    ("Boxes", "Box", "Axis-aligned or centered boxes"),
+    ("Surface", "Surface", "Rolling-ball SAS or accessible ASA around points"),
+    ("Arrows", "Arrows", "Directed arrow glyphs"),
 )
 
 _OBJECT_COLUMNS = ("Name", "Type", "# Points", "COM")
 _PAGE_LIBRARY = 0
 _PAGE_TYPES = 1
+_ADD_ROW_ID = "__pmv_add_object__"
 
 
 class AddVisualWindow:
@@ -37,16 +75,20 @@ class AddVisualWindow:
         self._sphere_page = None
         self._box_page = None
         self._arrow_page = None
+        self._surface_page = None
         self._objects_table = None
+        self._add_object_overlay = None
+        self._object_count = 0
         self._editing_obj = None
         self._sphere_stack_index = None
         self._box_stack_index = None
         self._arrow_stack_index = None
+        self._surface_stack_index = None
 
     def show(self):
         QtCore, _, QtWidgets = qt_modules()
         if QtWidgets is None:
-            self.wizard.prompt = ["Add Visual requires the PyMOL Qt UI"]
+            self.wizard.prompt = ["Open Objects Menu requires the PyMOL Qt UI"]
             return
 
         self._discard_window()
@@ -55,7 +97,7 @@ class AddVisualWindow:
             self._open_window(QtCore, QtWidgets)
         except Exception as exc:
             self._reset_window()
-            self.wizard.prompt = ["Add Visual failed: %s" % exc]
+            self.wizard.prompt = ["Open Objects Menu failed: %s" % exc]
             try:
                 QtWidgets.QMessageBox.warning(
                     None,
@@ -105,6 +147,7 @@ class AddVisualWindow:
         app = QtWidgets.QApplication.instance()
         if app is not None:
             app.processEvents()
+        self._sync_add_object_row()
         if not window.isVisible():
             raise RuntimeError(
                 "Visuals window did not become visible "
@@ -117,11 +160,15 @@ class AddVisualWindow:
         self._sphere_page = None
         self._box_page = None
         self._arrow_page = None
+        self._surface_page = None
         self._objects_table = None
+        self._add_object_overlay = None
+        self._object_count = 0
         self._editing_obj = None
         self._sphere_stack_index = None
         self._box_stack_index = None
         self._arrow_stack_index = None
+        self._surface_stack_index = None
 
     def _ensure_sphere_page(self):
         if self._sphere_page is not None:
@@ -159,6 +206,18 @@ class AddVisualWindow:
         )
         self._arrow_stack_index = self._stack.addWidget(self._arrow_page.widget)
 
+    def _ensure_surface_page(self):
+        if self._surface_page is not None:
+            return
+        parent = self._window
+        self._surface_page = SurfaceBuilderPage(
+            self.wizard.cmd,
+            on_back=self._on_builder_back,
+            on_create=self._on_builder_saved,
+            parent=parent,
+        )
+        self._surface_stack_index = self._stack.addWidget(self._surface_page.widget)
+
     def _build_library_page(self, QtCore, QtWidgets):
         page = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(page)
@@ -172,6 +231,7 @@ class AddVisualWindow:
 
         group = QtWidgets.QGroupBox("Objects")
         group_layout = QtWidgets.QVBoxLayout(group)
+        group_layout.setSpacing(0)
         table = QtWidgets.QTableWidget(0, len(_OBJECT_COLUMNS))
         table.setHorizontalHeaderLabels(list(_OBJECT_COLUMNS))
         table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
@@ -183,19 +243,27 @@ class AddVisualWindow:
         header = table.horizontalHeader()
         header.setStretchLastSection(True)
         header.setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        table.cellClicked.connect(self._on_object_clicked)
         table.cellDoubleClicked.connect(self._on_object_activated)
         table.setToolTip("Double-click a row to adjust that CGO.")
-        group_layout.addWidget(table)
+        group_layout.addWidget(table, stretch=1)
         self._objects_table = table
-
-        add_btn = QtWidgets.QPushButton("Add")
-        add_btn.setToolTip("Create a new visual.")
-        add_btn.clicked.connect(lambda: self._goto(_PAGE_TYPES))
+        self._add_object_overlay = StickyAddOverlay(
+            group,
+            table,
+            text="+ Add Object",
+            tooltip="Create a new visual.",
+            on_click=lambda: self._goto(_PAGE_TYPES),
+            count=lambda: int(self._object_count),
+            row_height=lambda: self._row_height(),
+            add_height=lambda: self._add_button_height(),
+            context="AddVisualWindow",
+        )
+        self._add_object_overlay.attach()
 
         layout.addWidget(title)
         layout.addWidget(subtitle)
         layout.addWidget(group, stretch=1)
-        layout.addWidget(add_btn)
         return page
 
     def _build_type_page(self, QtWidgets):
@@ -207,7 +275,7 @@ class AddVisualWindow:
         back.setFlat(True)
         back.setToolTip("Return to the object list.")
         back.clicked.connect(lambda: self._goto(_PAGE_LIBRARY))
-        title = QtWidgets.QLabel("Add")
+        title = QtWidgets.QLabel("Add Object")
         title.setStyleSheet("font-size: 16px; font-weight: 600;")
         header.addWidget(back)
         header.addWidget(title)
@@ -220,10 +288,10 @@ class AddVisualWindow:
         layout.addWidget(subtitle)
         layout.addSpacing(8)
 
-        for name, hint in MESH_TYPES:
+        for name, kind, hint in MESH_TYPES:
             row = QtWidgets.QVBoxLayout()
             btn = QtWidgets.QPushButton(name)
-            btn.clicked.connect(lambda _checked=False, n=name: self._on_mesh_type(n))
+            btn.clicked.connect(lambda _checked=False, n=name, k=kind: self._on_mesh_type(n, k))
             label = QtWidgets.QLabel(hint)
             label.setStyleSheet("color: gray; margin-bottom: 4px;")
             row.addWidget(btn)
@@ -241,6 +309,8 @@ class AddVisualWindow:
 
         QtCore, _, QtWidgets = qt_modules()
         rows = object_rows(all_objects())
+        self._object_count = len(rows)
+        table.clearSpans()
         table.setRowCount(len(rows))
         for i, row in enumerate(rows):
             values = (row["name"], row["type"], str(row["n_points"]), row["com"])
@@ -249,6 +319,45 @@ class AddVisualWindow:
                 if col == 0:
                     item.setData(QtCore.Qt.UserRole, row["id"])
                 table.setItem(i, col, item)
+        self._sync_add_object_row()
+
+    def _row_height(self):
+        table = self._objects_table
+        if table is None:
+            return 0
+        if table.rowCount():
+            height = table.rowHeight(0)
+            if height > 0:
+                return height
+        return max(int(table.verticalHeader().defaultSectionSize()), 1)
+
+    def _row_marker(self, row):
+        table = self._objects_table
+        if table is None:
+            return None
+        item = table.item(row, 0)
+        if item is None:
+            return None
+        QtCore, _, _ = qt_modules()
+        return item.data(QtCore.Qt.UserRole)
+
+    def _add_button_height(self):
+        return max(self._row_height() + 8, 30)
+
+    def _sync_add_object_row(self):
+        overlay = self._add_object_overlay
+        table = self._objects_table
+        if overlay is None or table is None:
+            return
+        n_objects = int(self._object_count)
+        if table.rowCount() != n_objects:
+            table.clearSpans()
+            table.setRowCount(n_objects)
+        overlay.sync()
+
+    def _on_object_clicked(self, row, _column):
+        if self._row_marker(row) == _ADD_ROW_ID:
+            self._goto(_PAGE_TYPES)
 
     def _session_object(self, obj_id):
         from ..runtime.session import get as session_get
@@ -256,6 +365,10 @@ class AddVisualWindow:
         return session_get(obj_id)
 
     def _on_object_activated(self, row, _column):
+        marker = self._row_marker(row)
+        if marker == _ADD_ROW_ID:
+            self._goto(_PAGE_TYPES)
+            return
         table = self._objects_table
         if table is None:
             return
@@ -292,6 +405,10 @@ class AddVisualWindow:
                 self._ensure_arrow_page()
                 page = self._arrow_page
                 index = self._arrow_stack_index
+            elif kind == "Surface":
+                self._ensure_surface_page()
+                page = self._surface_page
+                index = self._surface_stack_index
             else:
                 return
         except Exception as exc:
@@ -300,7 +417,7 @@ class AddVisualWindow:
             if QtWidgets is not None:
                 QtWidgets.QMessageBox.warning(
                     self._window,
-                    "Add Visual",
+                    "PyMOLViz",
                     "Could not open %s builder:\n\n%s" % (kind, exc),
                 )
             return
@@ -339,15 +456,15 @@ class AddVisualWindow:
         if index == _PAGE_LIBRARY:
             self._refresh_objects_table()
 
-    def _on_mesh_type(self, name):
+    def _on_mesh_type(self, name, kind=None):
         self._mesh_choice = name
         self.wizard.prompt = ["Mesh: %s" % name]
         try:
             self.wizard.cmd.refresh_wizard()
         except Exception:
             pass
-        if name in ("Sphere", "Box", "Arrows"):
-            self._open_editor(name, obj=None)
+        if kind:
+            self._open_editor(kind, obj=None)
             return
         # Other mesh types remain stubs on the mesh list page.
 
@@ -363,6 +480,8 @@ class AddVisualWindow:
             self._box_page.cleanup_preview()
         if self._arrow_page is not None:
             self._arrow_page.cleanup_preview()
+        if self._surface_page is not None:
+            self._surface_page.cleanup_preview()
 
     def close(self):
         self._restore_editing_visual()

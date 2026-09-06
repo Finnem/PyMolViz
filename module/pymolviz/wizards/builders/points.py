@@ -28,6 +28,7 @@ class AtomRef:
     chain: str = ""
     resi: str = ""
     name: str = ""
+    elem: str = ""
 
 
 def atom_ref_from_point_source(source: Optional[PointSource]) -> Optional[AtomRef]:
@@ -38,17 +39,31 @@ def atom_ref_from_point_source(source: Optional[PointSource]) -> Optional[AtomRe
             source.chain or "",
             source.resi or "",
             source.name or "",
+            source.elem or "",
         )
     return None
 
 
-def _atom_ref(model, atom_id, chain, resi, atom_name) -> AtomRef:
+def atom_anchor_label(ref: Optional[AtomRef]) -> str:
+    """Compact residue label for UI, e.g. ``A/42/CA``."""
+    if ref is None:
+        return ""
+    parts = [
+        str(ref.chain or "").strip(),
+        str(ref.resi or "").strip(),
+        str(ref.name or "").strip(),
+    ]
+    return "/".join(part for part in parts if part)
+
+
+def _atom_ref(model, atom_id, chain, resi, atom_name, elem="") -> AtomRef:
     return AtomRef(
         str(model),
         int(atom_id),
         str(chain or ""),
         str(resi or ""),
         str(atom_name or ""),
+        str(elem or ""),
     )
 
 
@@ -64,6 +79,7 @@ class VisualPoint:
     point_source: Optional[PointSource] = None
     atom_ref: Optional[AtomRef] = None
     anchor_intent: Optional[bool] = None
+    radius: Optional[float] = None
 
     def __post_init__(self):
         if self.point_source is None:
@@ -117,6 +133,7 @@ class VisualPoint:
                 chain=ref.chain,
                 resi=ref.resi,
                 name=ref.name,
+                elem=ref.elem or "",
                 last_xyz=xyz,
             )
         else:
@@ -147,6 +164,7 @@ class VisualPoint:
             kwargs.get("point_source", self.point_source),
             kwargs.get("atom_ref", self.atom_ref),
             kwargs.get("anchor_intent", self.anchor_intent),
+            kwargs.get("radius", self.radius),
         )
 
     def with_xyz(self, xyz: Sequence[float]) -> "VisualPoint":
@@ -172,6 +190,10 @@ class VisualPoint:
             alpha=alpha,
         )
 
+    def with_radius(self, radius: Optional[float]) -> "VisualPoint":
+        value = None if radius is None else float(radius)
+        return self._replace(radius=value)
+
 
 def assign_distinct_colors(points: List[VisualPoint]) -> None:
     """Reassign distinct palette colors in place."""
@@ -179,7 +201,7 @@ def assign_distinct_colors(points: List[VisualPoint]) -> None:
         points[i] = pt.with_color(colors_for_new_points(len(points))[i])
 
 
-def apply_global_color(points: List[VisualPoint], color: RGB) -> None:
+def apply_global_color(points: List[VisualPoint], color: Sequence[float]) -> None:
     for i, pt in enumerate(points):
         points[i] = pt.with_color(color)
 
@@ -257,9 +279,10 @@ def _selection_expr(name: str) -> str:
 
 def _current_state(cmd_) -> int:
     try:
-        return int(cmd_.get_state())
+        state = int(cmd_.get_state())
     except Exception:
         return 1
+    return state if state > 0 else 1
 
 
 def _count_selection_atoms(cmd_, sele_expr: str, state: int = 0) -> int:
@@ -321,6 +344,29 @@ def _active_selection(cmd_, interactive_only: bool = False) -> Optional[str]:
     return None
 
 
+def _atom_row_as_dict(row):
+    if len(row) >= 10:
+        model, chain, elem, resn, resi, atom_id, atom_name, x, y, z = row[:10]
+    else:
+        model, chain, elem, resn, resi, atom_id, x, y, z = row[:9]
+        atom_name = elem
+    return {
+        "model": model,
+        "chain": chain or "",
+        "elem": elem or "",
+        "name": atom_name or elem or "",
+        "resn": resn or "",
+        "resi": resi or "",
+        "index": int(atom_id),
+        "x": float(x),
+        "y": float(y),
+        "z": float(z),
+    }
+
+
+SNAP_TO_ATOM_RADIUS = 2.0
+
+
 def nearest_atom_within(cmd_, pos: Sequence[float], radius: float = 1.0, sele: str = "visible"):
     """Return atom identity and coordinates if any atom in sele is within radius of pos."""
     x, y, z = float(pos[0]), float(pos[1]), float(pos[2])
@@ -332,30 +378,54 @@ def nearest_atom_within(cmd_, pos: Sequence[float], radius: float = 1.0, sele: s
     if not _iterate_atoms(cmd_, expr, atoms, state):
         return None
     for row in atoms:
-        if len(row) >= 10:
-            model, chain, elem, resn, resi, atom_id, atom_name, x, y, z = row[:10]
-        else:
-            model, chain, elem, resn, resi, atom_id, x, y, z = row[:9]
-            atom_name = elem
-        d2 = _dist2(pos, (x, y, z))
+        atom = _atom_row_as_dict(row)
+        d2 = _dist2(pos, (atom["x"], atom["y"], atom["z"]))
         if d2 <= best_d2:
             best_d2 = d2
-            best = {
-                "model": model,
-                "chain": chain or "",
-                "elem": elem or "",
-                "name": atom_name or elem or "",
-                "resn": resn or "",
-                "resi": resi or "",
-                "index": int(atom_id),
-                "x": float(x),
-                "y": float(y),
-                "z": float(z),
-            }
+            best = atom
     return best
 
 
-def _point_source_for_atom(hook_to_selection, model, atom_id, chain, resi, atom_name, xyz):
+def _atom_dicts(cmd_, sele: str):
+    rows = []
+    if not _iterate_atoms(cmd_, sele, rows, _current_state(cmd_)):
+        return []
+    return [_atom_row_as_dict(row) for row in rows]
+
+
+def nearest_atom_at_view_center(cmd_, radius=SNAP_TO_ATOM_RADIUS):
+    """Closest visible atom to the camera-center marker, or None if none within radius."""
+    try:
+        view = tuple(cmd_.get_view())
+    except Exception:
+        return None
+    pos = screen_center(view)
+    limit = float(radius) * float(radius)
+    x, y, z = float(pos[0]), float(pos[1]), float(pos[2])
+    pad = float(radius) + 0.05
+    near_box = (
+        "x > %f and x < %f and y > %f and y < %f and z > %f and z < %f"
+        % (x - pad, x + pad, y - pad, y + pad, z - pad, z + pad)
+    )
+    atoms = _atom_dicts(cmd_, near_box)
+    if not atoms:
+        for sele in ("visible", "visible and enabled", "all"):
+            atoms = _atom_dicts(cmd_, sele)
+            if atoms:
+                break
+    best = None
+    best_d2 = limit
+    for atom in atoms:
+        d2 = _dist2(pos, (atom["x"], atom["y"], atom["z"]))
+        if d2 <= best_d2:
+            best_d2 = d2
+            best = atom
+    return best
+
+
+def _point_source_for_atom(
+    hook_to_selection, model, atom_id, chain, resi, atom_name, xyz, elem="",
+):
     xyz = (float(xyz[0]), float(xyz[1]), float(xyz[2]))
     if hook_to_selection:
         return AtomPoint(
@@ -364,6 +434,7 @@ def _point_source_for_atom(hook_to_selection, model, atom_id, chain, resi, atom_
             chain=chain or "",
             resi=resi or "",
             name=atom_name or "",
+            elem=elem or "",
             last_xyz=xyz,
         )
     return FixedPoint(xyz)
@@ -380,7 +451,7 @@ def camera_center_point(
     source = "manual"
     name = manual_fallback_name("cam", existing)
     if snap_to_atom:
-        atom = nearest_atom_within(cmd_, pos, radius=1.0)
+        atom = nearest_atom_at_view_center(cmd_)
         if atom is not None:
             pos = (atom["x"], atom["y"], atom["z"])
             source = "selection"
@@ -400,6 +471,7 @@ def camera_center_point(
                 atom["resi"],
                 atom.get("name") or atom["elem"],
                 pos,
+                elem=atom.get("elem") or "",
             )
             ref = _atom_ref(
                 atom["model"],
@@ -407,6 +479,7 @@ def camera_center_point(
                 atom["chain"],
                 atom["resi"],
                 atom.get("name") or atom["elem"],
+                atom.get("elem") or "",
             )
             return VisualPoint(
                 name, source, pos[0], pos[1], pos[2],
@@ -451,15 +524,86 @@ def selection_points(
             n += 1
         used.add(name)
         xyz = (float(x), float(y), float(z))
-        ref = _atom_ref(model, atom_id, chain, resi, atom_name or elem or "")
+        ref = _atom_ref(
+            model, atom_id, chain, resi, atom_name or elem or "", elem or "",
+        )
         out.append(VisualPoint(
             name, "selection", xyz[0], xyz[1], xyz[2],
             point_source=_point_source_for_atom(
                 hook_to_selection, model, atom_id, chain, resi,
-                atom_name or elem or "", xyz,
+                atom_name or elem or "", xyz, elem=elem or "",
             ),
             atom_ref=ref,
         ))
+    return out
+
+
+def apply_location(dst: VisualPoint, src: VisualPoint) -> VisualPoint:
+    """Copy location and atom identity from src, keep dst color, alpha, and radius."""
+    return src.with_color(dst.rgba()).with_radius(dst.radius)
+
+
+def _unique_named(point: VisualPoint, used) -> VisualPoint:
+    name = point.name
+    if name not in used:
+        return point
+    base = name
+    n = 1
+    while True:
+        candidate = "%s_%d" % (base, n)
+        if candidate not in used:
+            return point.with_name(candidate)
+        n += 1
+
+
+def _valid_rows(points: Sequence[VisualPoint], rows: Sequence[int]) -> List[int]:
+    n = len(points)
+    return sorted({int(row) for row in rows if 0 <= int(row) < n})
+
+
+def update_points_from_camera(
+    cmd_,
+    points: Sequence[VisualPoint],
+    rows: Sequence[int],
+    snap_to_atom: bool = False,
+    hook_to_selection: bool = True,
+) -> List[VisualPoint]:
+    """Replace selected points with the current camera-center point."""
+    out = list(points)
+    for row in _valid_rows(out, rows):
+        existing = [pt for i, pt in enumerate(out) if i != row]
+        fresh = camera_center_point(
+            cmd_,
+            snap_to_atom,
+            existing,
+            hook_to_selection=hook_to_selection,
+        )
+        out[row] = apply_location(out[row], fresh)
+    return out
+
+
+def update_points_from_selection(
+    cmd_,
+    points: Sequence[VisualPoint],
+    rows: Sequence[int],
+    hook_to_selection: bool = True,
+) -> Optional[List[VisualPoint]]:
+    """Replace selected points from the current PyMOL selection.
+
+    One selected atom is applied to every chosen row. Several atoms are
+    zipped onto the chosen rows in order. Returns None if sele is empty.
+    """
+    out = list(points)
+    chosen = _valid_rows(out, rows)
+    if not chosen:
+        return out
+    atoms = selection_points(cmd_, existing=(), hook_to_selection=hook_to_selection)
+    if not atoms:
+        return None
+    srcs = atoms if len(atoms) > 1 else [atoms[0]] * len(chosen)
+    for row, src in zip(chosen, srcs):
+        used = {pt.name for i, pt in enumerate(out) if i != row}
+        out[row] = apply_location(out[row], _unique_named(src, used))
     return out
 
 

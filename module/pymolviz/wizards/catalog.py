@@ -15,7 +15,9 @@ FIELD_TYPES = frozenset({
 })
 
 _TYPE_LABELS = {
-    "CenteredBox": "Box",
+    "Sphere": "Spheres",
+    "CenteredBox": "Boxes",
+    "Surface": "Surface",
     "CGOCollection": "Collection",
     "PolylineTube": "Tube",
     "Rotation_Indicator": "Rotation",
@@ -24,6 +26,7 @@ _TYPE_LABELS = {
 _EDITOR_TYPES = {
     "Sphere": "Sphere",
     "CenteredBox": "Box",
+    "Surface": "Surface",
     "Arrows": "Arrows",
 }
 
@@ -81,6 +84,9 @@ def point_count(obj) -> int:
         return len(list(starts))
     if kind in ("Sphere", "CenteredBox"):
         return len(children)
+    if kind == "Surface":
+        sources = getattr(children[0], "point_sources", None) or ()
+        return len(list(sources))
     sources = list(iter_point_sources(obj))
     if sources:
         return len(sources)

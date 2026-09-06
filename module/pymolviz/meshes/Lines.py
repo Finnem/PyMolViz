@@ -135,11 +135,15 @@ class Lines(Points):
 
     def _create_CGO_list(self) -> str:
         cgo_list = []
+        verts = np.asarray(self.vertices, dtype=float).reshape(-1, 3)
+        if verts.shape[0] == 0:
+            return cgo_list
+        rgb = self._cgo_vertex_rgb()
         if self.render_as == "lines":
             cgo_list.extend(["LINEWIDTH", self.linewidth])
             cgo_list.extend(["BEGIN", "LINES"])
-            cgo_vertices = self.vertices
-            cgo_colors = self.colormap.get_color(self.color)[:, :3]
+            cgo_vertices = verts
+            cgo_colors = rgb
             triangles = np.hstack([
                 np.full(cgo_colors.shape[0], "COLOR")[:, None], cgo_colors,
                 np.full(cgo_vertices.shape[0], "VERTEX")[:, None], cgo_vertices,
@@ -147,8 +151,8 @@ class Lines(Points):
             cgo_list.extend(triangles)
             cgo_list.append("END")
         elif self.render_as == "cylinders":
-            cgo_vertices = self.vertices.reshape(-1, 6)
-            cgo_colors = self.colormap.get_color(self.color)[:, :3].reshape(-1, 6)
+            cgo_vertices = verts.reshape(-1, 6)
+            cgo_colors = rgb.reshape(-1, 6)
             transparency = 1 - self.transparency
             try:
                 transparency[0]

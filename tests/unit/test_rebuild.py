@@ -40,9 +40,47 @@ def test_sphere_cgo_token_shape():
     sphere = Sphere((0.0, 0.0, 0.0), 1.0, bypass_colormap=True)
     tokens = sphere._create_CGO_list()
     kinds = [t for t in tokens if isinstance(t, str)]
+    assert kinds[:2] == ["ENABLE", "LIGHTING"]
     assert "BEGIN" in kinds
     assert "TRIANGLES" in kinds
     assert "END" in kinds
+
+
+def test_mesh_cgo_smooth_lighting_layout():
+    sphere = Sphere(
+        (0.0, 0.0, 0.0), 1.0, color=(0.2, 0.6, 0.9),
+        bypass_colormap=True, frequency=2,
+    )
+    tokens = sphere._create_CGO_list()
+    assert tokens[:4] == ["ENABLE", "LIGHTING", "BEGIN", "TRIANGLES"]
+    assert tokens[4] == "COLOR"
+    assert tokens.count("COLOR") == 1
+    assert tokens.count("NORMAL") == tokens.count("VERTEX")
+    assert tokens.count("VERTEX") == 3 * len(sphere.faces)
+    for i, kind in enumerate(tokens):
+        if kind == "VERTEX":
+            assert tokens[i - 4] == "NORMAL"
+    n0 = np.array([float(tokens[9]), float(tokens[10]), float(tokens[11])])
+    n1 = np.array([float(tokens[17]), float(tokens[18]), float(tokens[19])])
+    n2 = np.array([float(tokens[25]), float(tokens[26]), float(tokens[27])])
+    assert float(np.dot(n0, n1)) < 0.999
+    assert float(np.dot(n1, n2)) < 0.999
+
+
+def test_sphere_wireframe_cgo_uses_unique_cones():
+    from pymolviz.meshes.Mesh import _unique_undirected_edges
+
+    sphere = Sphere(
+        (0.0, 0.0, 0.0), 1.0, color=(1.0, 0.0, 0.0),
+        bypass_colormap=True, wireframe=True, frequency=2,
+    )
+    tokens = sphere._create_CGO_list()
+    kinds = [t for t in tokens if isinstance(t, str)]
+    assert "CONE" in kinds
+    assert "TRIANGLES" not in kinds
+    n_unique = len(_unique_undirected_edges(sphere.faces))
+    assert kinds.count("CONE") == n_unique
+    assert n_unique < 3 * len(sphere.faces)
 
 
 def test_cylinder_construct_and_rebuild():
@@ -221,3 +259,132 @@ def test_collection_merged_tokens_track_child_shift():
     assert after is not cached
     xs1 = _vertex_xs(after)
     assert sum(xs1) / len(xs1) == pytest.approx(sum(xs0) / len(xs0) + 2.0, abs=0.05)
+
+
+def test_cylinder_and_cone_caps_add_disks():
+    from pymolviz.util.cgo import mesh_cone_cgo, mesh_cylinder_cgo
+
+    open_cyl = mesh_cylinder_cgo((0, 0, 0), (1, 0, 0), 0.1, (1, 0, 0), n_seg=6, caps=False)
+    capped_cyl = mesh_cylinder_cgo((0, 0, 0), (1, 0, 0), 0.1, (1, 0, 0), n_seg=6, caps=True)
+    assert capped_cyl.count("VERTEX") > open_cyl.count("VERTEX")
+    open_cone = mesh_cone_cgo((0, 0, 0), (1, 0, 0), 0.2, (1, 0, 0), n_seg=6, cap_base=False)
+    capped_cone = mesh_cone_cgo((0, 0, 0), (1, 0, 0), 0.2, (1, 0, 0), n_seg=6, cap_base=True)
+    assert capped_cone.count("VERTEX") > open_cone.count("VERTEX")
+
+
+def test_cone_slant_normals_and_axial_rings():
+    from pymolviz.util.cgo import mesh_cone_cgo
+
+    tokens = mesh_cone_cgo(
+        (0, 0, 0), (2, 0, 0), 1.0, (1, 0, 0), n_seg=8, n_rings=1, cap_base=False,
+    )
+    normals = []
+    i = 0
+    while i < len(tokens):
+        if tokens[i] == "NORMAL":
+            normals.append((float(tokens[i + 1]), float(tokens[i + 2]), float(tokens[i + 3])))
+            i += 4
+            continue
+        i += 1
+    assert normals
+    # Radial (cylinder-style) normals would have nx ~= 0 on an x-aligned cone.
+    assert max(n[0] for n in normals) > 0.2
+    fan = mesh_cone_cgo(
+        (0, 0, 0), (2, 0, 0), 1.0, (1, 0, 0), n_seg=8, n_rings=1, cap_base=False,
+    )
+    stacked = mesh_cone_cgo(
+        (0, 0, 0), (2, 0, 0), 1.0, (1, 0, 0), n_seg=8, n_rings=3, cap_base=False,
+    )
+    assert stacked.count("VERTEX") > fan.count("VERTEX")
+
+
+def test_dashed_arrow_keeps_head():
+    from pymolviz.meshes.Arrows import build_styled_arrow_cgo
+    from pymolviz.util.line_style import LineStyle
+
+    color = (1.0, 0.0, 0.0)
+    start, end = (0.0, 0.0, 0.0), (10.0, 0.0, 0.0)
+    dashed_none = build_styled_arrow_cgo(
+        start, end, color, 3, LineStyle(dash="Dashed", ends="None"),
+    )
+    dashed_arrow = build_styled_arrow_cgo(
+        start, end, color, 3, LineStyle(dash="Dashed", ends="Arrow"),
+    )
+    assert dashed_none.count("BEGIN") >= 2
+    assert dashed_arrow.count("VERTEX") > dashed_none.count("VERTEX")
+    squeezed_arrow = build_styled_arrow_cgo(
+        start, (2.0, 0.0, 0.0), color, 3,
+        LineStyle(dash="Dashed", margin=8.0, ends="Arrow"),
+        radius=0.045, head_length=0.36,
+    )
+    squeezed_none = build_styled_arrow_cgo(
+        start, (2.0, 0.0, 0.0), color, 3,
+        LineStyle(dash="Dashed", margin=8.0, ends="None"),
+        radius=0.045, head_length=0.36,
+    )
+    assert squeezed_arrow
+    assert squeezed_arrow.count("VERTEX") > squeezed_none.count("VERTEX")
+
+
+def test_independent_heads_cgo():
+    from pymolviz.meshes.Arrows import build_styled_arrow_cgo
+    from pymolviz.util.line_style import LineStyle
+
+    color = (1.0, 0.0, 0.0)
+    start, end = (0.0, 0.0, 0.0), (10.0, 0.0, 0.0)
+    none = build_styled_arrow_cgo(start, end, color, 3, LineStyle(ends="None"))
+    end_arrow = build_styled_arrow_cgo(start, end, color, 3, LineStyle(ends="Arrow"))
+    both_arrow = build_styled_arrow_cgo(
+        start, end, color, 3, LineStyle(start_head="Arrow", end_head="Arrow"),
+    )
+    start_circle = build_styled_arrow_cgo(
+        start, end, color, 3, LineStyle(start_head="Circles", end_head="None"),
+    )
+    mixed = build_styled_arrow_cgo(
+        start, end, color, 3, LineStyle(start_head="Circles", end_head="Arrow"),
+    )
+    assert end_arrow.count("VERTEX") > none.count("VERTEX")
+    assert both_arrow.count("VERTEX") > end_arrow.count("VERTEX")
+    assert start_circle.count("SPHERE") == 1
+    assert none.count("SPHERE") == 0
+    assert mixed.count("SPHERE") == 1
+    assert mixed.count("VERTEX") > start_circle.count("VERTEX")
+
+
+def test_surface_rebuild_and_cgo_tokens():
+    from pymolviz.meshes.Surface import Surface
+
+    mesh = Surface(
+        [(0.0, 0.0, 0.0)], algorithm="ASA", quality=1, bypass_colormap=True,
+    )
+    tokens = mesh._create_CGO_list()
+    kinds = [t for t in tokens if isinstance(t, str)]
+    assert "BEGIN" in kinds
+    assert "TRIANGLES" in kinds
+    assert "END" in kinds
+    before = np.array(mesh.vertices, copy=True)
+    mesh.point_sources = [FixedPoint((3.0, 0.0, 0.0))]
+    mesh.rebuild(None)
+    assert np.allclose(mesh.vertices, before + np.array([3.0, 0.0, 0.0]))
+
+
+def test_clip_gizmo_cgo_has_rectangle_and_eye():
+    from pymolviz.meshes.ClipGizmo import ClipGizmo
+
+    gizmo = ClipGizmo((0.0, 0.0, 0.0), (0.0, 0.0, 1.0), scale=5.0, draft=True)
+    tokens = gizmo._create_CGO_list()
+    kinds = [t for t in tokens if isinstance(t, str)]
+    assert kinds.count("BEGIN") >= 1
+    assert kinds.count("TRIANGLES") >= 1
+    assert kinds.count("CYLINDER") >= 4
+    assert kinds.count("SPHERE") >= 3
+    assert "ALPHA" in kinds
+    assert kinds.count("VERTEX") == 12
+    wide = ClipGizmo(
+        (0.0, 0.0, 0.0), (0.0, 0.0, 1.0),
+        points=[[12.0, 1.0, 0.0], [-12.0, -1.0, 0.0]],
+        draft=True,
+    )
+    wide_tokens = wide._create_CGO_list()
+    assert [t for t in wide_tokens if isinstance(t, str)].count("VERTEX") == 12
+

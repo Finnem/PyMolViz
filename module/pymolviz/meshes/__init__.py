@@ -6,6 +6,8 @@ from .Cylinder import Cylinder
 from .ConvexHull import ConvexHull
 from .CenteredBox import CenteredBox
 from .Plane import Plane
+from .ClipGizmo import ClipGizmo
+from .Surface import Surface
 from .Arrows import Arrows
 from .CGOCollection import CGOCollection
 from .CGOMolecule import CGOMolecule

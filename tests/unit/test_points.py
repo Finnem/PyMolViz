@@ -10,7 +10,12 @@ from pymolviz.wizards.builders.points import (
     AtomRef,
     VisualPoint,
     _point_source_for_atom,
+    apply_global_color,
+    camera_center_point,
+    nearest_atom_at_view_center,
     nearest_atom_within,
+    update_points_from_camera,
+    update_points_from_selection,
 )
 
 
@@ -72,6 +77,15 @@ def test_atom_point_remember_false_leaves_last_xyz(fake_cmd, resolve_context):
     assert pt.last_xyz == (4.0, 5.0, 6.0)
 
 
+def test_atom_point_lookup_vdw(fake_cmd, resolve_context):
+    from tests.fakes.cmd import FakeAtom
+
+    fake_cmd.add_atom(FakeAtom("prot", 1, 4.0, 5.0, 6.0, elem="O", vdw=1.52))
+    pt = AtomPoint("prot", 1, name="O", elem="O")
+    assert pt.lookup_vdw(resolve_context) == pytest.approx(1.52)
+    assert pt.last_vdw == pytest.approx(1.52)
+
+
 def test_visual_point_anchor_toggle():
     ref = AtomRef("prot", 42, "A", "15", "CA")
     src = AtomPoint("prot", 42, chain="A", resi="15", name="CA", last_xyz=(1.0, 2.0, 3.0))
@@ -88,6 +102,17 @@ def test_visual_point_anchor_toggle():
     assert reanchored.is_anchored() is True
     assert isinstance(reanchored.point_source, AtomPoint)
     assert reanchored.point_source.atom_id == 42
+    assert reanchored.point_source.elem == ""
+
+
+def test_visual_point_reanchor_keeps_elem():
+    ref = AtomRef("prot", 42, "A", "15", "CA", elem="C")
+    src = AtomPoint(
+        "prot", 42, chain="A", resi="15", name="CA", elem="C", last_xyz=(1.0, 2.0, 3.0),
+    )
+    pt = VisualPoint("a", "selection", 1.0, 2.0, 3.0, point_source=src, atom_ref=ref)
+    reanchored = pt.with_anchored(False).with_anchored(True)
+    assert reanchored.point_source.elem == "C"
 
 
 def test_visual_point_anchor_intent_defers_source_swap():
@@ -133,3 +158,110 @@ def test_nearest_atom_within_does_not_need_far_atoms():
     assert hit is not None
     assert hit["index"] == 1
     assert nearest_atom_within(cmd, (10.0, 0.0, 0.0), radius=1.0) is None
+
+
+def _look_at_origin_view():
+    return [
+        1.0, 0.0, 0.0,
+        0.0, 1.0, 0.0,
+        0.0, 0.0, 1.0,
+        0.0, 0.0, -50.0,
+        0.0, 0.0, 0.0,
+        2.0, 200.0, 0.0,
+    ]
+
+
+def test_nearest_atom_at_view_center_requires_two_angstroms():
+    from tests.fakes.cmd import FakeAtom, FakeCmd
+
+    cmd = FakeCmd()
+    cmd.set_view(_look_at_origin_view())
+    cmd.add_atom(FakeAtom("prot", 1, 0.0, 0.0, 1.5, name="CA"))
+    cmd.add_atom(FakeAtom("prot", 2, 80.0, 0.0, 0.0, name="CB"))
+    hit = nearest_atom_at_view_center(cmd)
+    assert hit is not None
+    assert hit["index"] == 1
+    assert hit["z"] == 1.5
+
+
+def test_nearest_atom_at_view_center_ignores_atoms_beyond_two_angstroms():
+    from tests.fakes.cmd import FakeAtom, FakeCmd
+
+    cmd = FakeCmd()
+    cmd.set_view(_look_at_origin_view())
+    cmd.add_atom(FakeAtom("prot", 1, 0.0, 0.0, 2.5, name="CA"))
+    assert nearest_atom_at_view_center(cmd) is None
+
+
+def test_camera_center_snap_uses_nearby_atom():
+    from pymolviz.points import AtomPoint
+    from tests.fakes.cmd import FakeAtom, FakeCmd
+
+    cmd = FakeCmd()
+    cmd.set_view(_look_at_origin_view())
+    cmd.add_atom(FakeAtom("prot", 1, 0.0, 0.0, 1.5, name="CA"))
+    snapped = camera_center_point(cmd, snap_to_atom=True)
+    assert snapped.source == "selection"
+    assert snapped.xyz() == (0.0, 0.0, 1.5)
+    assert isinstance(snapped.point_source, AtomPoint)
+    look_at = camera_center_point(cmd, snap_to_atom=False)
+    assert look_at.source == "manual"
+    assert look_at.xyz() == (0.0, 0.0, 0.0)
+
+
+def test_camera_center_snap_skips_when_atom_is_too_far():
+    from tests.fakes.cmd import FakeAtom, FakeCmd
+
+    cmd = FakeCmd()
+    cmd.set_view(_look_at_origin_view())
+    cmd.add_atom(FakeAtom("prot", 1, 0.0, 0.0, 2.5, name="CA"))
+    pt = camera_center_point(cmd, snap_to_atom=True)
+    assert pt.source == "manual"
+    assert pt.xyz() == (0.0, 0.0, 0.0)
+
+
+def test_update_points_from_camera_keeps_color():
+    from tests.fakes.cmd import FakeCmd
+
+    cmd = FakeCmd()
+    cmd.set_view(_look_at_origin_view())
+    pt = VisualPoint("old", "manual", 9.0, 8.0, 7.0, color=(1.0, 0.0, 0.0))
+    out = update_points_from_camera(cmd, [pt], [0], snap_to_atom=False)
+    assert out[0].xyz() == (0.0, 0.0, 0.0)
+    assert out[0].color == (1.0, 0.0, 0.0)
+    assert out[0].source == "manual"
+
+
+def test_update_points_from_selection_replaces_xyz():
+    from tests.fakes.cmd import FakeAtom, FakeCmd
+
+    cmd = FakeCmd()
+    cmd.add_atom(FakeAtom("prot", 1, 4.0, 5.0, 6.0, name="CA"))
+    cmd.select("sele", 'object "prot" and id 1')
+    pt = VisualPoint("old", "manual", 0.0, 0.0, 0.0, color=(0.0, 1.0, 0.0))
+    out = update_points_from_selection(cmd, [pt], [0])
+    assert out is not None
+    assert out[0].xyz() == (4.0, 5.0, 6.0)
+    assert out[0].color == (0.0, 1.0, 0.0)
+    assert out[0].source == "selection"
+
+
+def test_update_points_from_selection_empty_returns_none():
+    from tests.fakes.cmd import FakeCmd
+
+    cmd = FakeCmd()
+    cmd.select("sele", "none")
+    pt = VisualPoint("old", "manual", 1.0, 2.0, 3.0)
+    assert update_points_from_selection(cmd, [pt], [0]) is None
+
+
+def test_apply_global_color_sets_rgb_and_alpha():
+    pts = [
+        VisualPoint("a", "manual", 0.0, 0.0, 0.0, color=(1.0, 0.0, 0.0), alpha=1.0),
+        VisualPoint("b", "manual", 1.0, 0.0, 0.0, color=(0.0, 1.0, 0.0), alpha=1.0),
+    ]
+    apply_global_color(pts, (0.2, 0.3, 0.4, 0.5))
+    assert pts[0].color == pytest.approx((0.2, 0.3, 0.4))
+    assert pts[1].color == pytest.approx((0.2, 0.3, 0.4))
+    assert pts[0].alpha == pytest.approx(0.5)
+    assert pts[1].alpha == pytest.approx(0.5)

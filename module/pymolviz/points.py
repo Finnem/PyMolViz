@@ -71,18 +71,22 @@ class AtomPoint(PointSource):
         chain: str = "",
         resi: str = "",
         name: str = "",
+        elem: str = "",
         last_xyz: Optional[Sequence[float]] = None,
+        last_vdw: Optional[float] = None,
     ) -> None:
         self.object = str(object)
         self.atom_id = int(atom_id)
         self.chain = str(chain or "")
         self.resi = str(resi or "")
         self.name = str(name or "")
+        self.elem = str(elem or "")
         if last_xyz is not None:
             arr = np.asarray(last_xyz, dtype=float).reshape(3)
             self._last_xyz: Optional[XYZ] = (float(arr[0]), float(arr[1]), float(arr[2]))
         else:
             self._last_xyz = None
+        self._last_vdw: Optional[float] = None if last_vdw is None else float(last_vdw)
 
     def has_dynamic_source(self) -> bool:
         return True
@@ -91,20 +95,12 @@ class AtomPoint(PointSource):
     def last_xyz(self) -> Optional[XYZ]:
         return self._last_xyz
 
+    @property
+    def last_vdw(self) -> Optional[float]:
+        return self._last_vdw
+
     def _lookup_xyz(self, cmd, state) -> Optional[XYZ]:
-        exprs = [
-            'object "%s" and id %d' % (self.object, self.atom_id),
-            'object "%s" and index %d' % (self.object, self.atom_id),
-            "(%s)`%d" % (self.object, self.atom_id),
-        ]
-        fallback_parts = ['object "%s"' % self.object]
-        if self.chain:
-            fallback_parts.append('chain "%s"' % self.chain)
-        if self.resi not in (None, ""):
-            fallback_parts.append("resi %s" % self.resi)
-        if self.name:
-            fallback_parts.append('name "%s"' % self.name)
-        exprs.append(" and ".join(fallback_parts))
+        exprs = self._selection_exprs()
         atoms = []
         for expr in exprs:
             for iterate_expr in (
@@ -126,6 +122,52 @@ class AtomPoint(PointSource):
                 except Exception:
                     continue
         return None
+
+    def _selection_exprs(self):
+        exprs = [
+            'object "%s" and id %d' % (self.object, self.atom_id),
+            'object "%s" and index %d' % (self.object, self.atom_id),
+            "(%s)`%d" % (self.object, self.atom_id),
+        ]
+        fallback_parts = ['object "%s"' % self.object]
+        if self.chain:
+            fallback_parts.append('chain "%s"' % self.chain)
+        if self.resi not in (None, ""):
+            fallback_parts.append("resi %s" % self.resi)
+        if self.name:
+            fallback_parts.append('name "%s"' % self.name)
+        exprs.append(" and ".join(fallback_parts))
+        return exprs
+
+    def lookup_vdw(self, context, remember=True) -> Optional[float]:
+        if context is None or getattr(context, "cmd", None) is None:
+            return self._last_vdw
+        atoms = []
+        state = getattr(context, "state", 1) or 1
+        for expr in self._selection_exprs():
+            atoms.clear()
+            try:
+                if state:
+                    context.cmd.iterate_state(
+                        state, expr, "atoms.append(vdw)", space={"atoms": atoms},
+                    )
+                else:
+                    context.cmd.iterate(expr, "atoms.append(vdw)", space={"atoms": atoms})
+            except Exception:
+                continue
+            if not atoms:
+                continue
+            raw = atoms[0]
+            if isinstance(raw, (list, tuple)):
+                raw = raw[0]
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if remember:
+                self._last_vdw = value
+            return value
+        return self._last_vdw
 
     def resolve(self, context, remember=True) -> XYZ:
         if context is None:
@@ -155,8 +197,12 @@ class AtomPoint(PointSource):
             "resi": self.resi,
             "name": self.name,
         }
+        if self.elem:
+            data["elem"] = self.elem
         if self._last_xyz is not None:
             data["last_xyz"] = list(self._last_xyz)
+        if self._last_vdw is not None:
+            data["last_vdw"] = float(self._last_vdw)
         return data
 
 

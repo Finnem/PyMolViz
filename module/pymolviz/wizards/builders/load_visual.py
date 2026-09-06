@@ -6,8 +6,16 @@ from typing import List, Optional, Sequence, Tuple
 
 from ...points import AtomPoint, PointSource
 from ...serialization import persist_color
+from ...util.line_style import LineStyle, default_head_length
+from ...util.solvent_surface import (
+    DEFAULT_ATOM_RADIUS,
+    DEFAULT_PROBE_RADIUS,
+    DEFAULT_QUALITY,
+    DEFAULT_RADIUS_MODE,
+    DEFAULT_VDW_SCALE,
+)
 from ..catalog import editor_kind, mesh_children
-from .pairs import VisualPair
+from .pairs import DEFAULT_ARROW_WIDTH, VisualPair
 from .points import VisualPoint, atom_point_name, atom_ref_from_point_source, manual_fallback_name
 from .wireframe_quality import DEFAULT_WIREFRAME_QUALITY, WIREFRAME_QUALITY_PRESETS
 
@@ -19,6 +27,7 @@ def visual_point_from_source(
     color: Sequence[float],
     alpha: float,
     existing: Sequence[VisualPoint] = (),
+    radius=None,
 ) -> VisualPoint:
     xyz = _xyz(source)
     rgb = (float(color[0]), float(color[1]), float(color[2]))
@@ -46,6 +55,7 @@ def visual_point_from_source(
             alpha=float(alpha),
             point_source=source,
             atom_ref=atom_ref_from_point_source(source),
+            radius=None if radius is None else float(radius),
         )
     name = manual_fallback_name("pt", existing)
     return VisualPoint(
@@ -57,12 +67,25 @@ def visual_point_from_source(
         color=rgb,
         alpha=float(alpha),
         point_source=source,
+        radius=None if radius is None else float(radius),
     )
 
 
 def points_from_mesh(obj) -> List[VisualPoint]:
     points: List[VisualPoint] = []
-    for child in mesh_children(obj):
+    children = mesh_children(obj)
+    if children and type(children[0]).__name__ == "Surface":
+        surf = children[0]
+        color = _rgb(surf)
+        alpha = _alpha(surf)
+        for i, src in enumerate(getattr(surf, "point_sources", None) or ()):
+            custom = None
+            radii = getattr(surf, "point_radii", None) or ()
+            if i < len(radii) and radii[i] is not None:
+                custom = float(radii[i])
+            points.append(visual_point_from_source(src, color, alpha, points, radius=custom))
+        return points
+    for child in children:
         src = getattr(child, "position", None) or getattr(child, "center", None)
         if src is None:
             continue
@@ -85,7 +108,22 @@ def pairs_from_mesh(obj) -> List[VisualPair]:
             existing.append(start_pt)
             end_pt = visual_point_from_source(end, colors[i], alphas[i], existing)
             existing.append(end_pt)
-            pairs.append(VisualPair(start_pt, end_pt))
+            width = float(getattr(child, "shaft_radius", DEFAULT_ARROW_WIDTH) or DEFAULT_ARROW_WIDTH)
+            radii = getattr(child, "pair_radii", None) or ()
+            heads = getattr(child, "pair_heads", None) or ()
+            styles = getattr(child, "pair_styles", None) or ()
+            if i < len(radii):
+                width = float(radii[i])
+            if i < len(heads):
+                head = float(heads[i])
+            else:
+                head = default_head_length(width)
+            if i < len(styles) and styles[i] is not None:
+                style = styles[i].copy() if hasattr(styles[i], "copy") else styles[i]
+            else:
+                mesh_style = getattr(child, "line_style", None)
+                style = mesh_style.copy() if mesh_style is not None and hasattr(mesh_style, "copy") else (mesh_style or LineStyle())
+            pairs.append(VisualPair(start_pt, end_pt, width=width, head=head, style=style))
     return pairs
 
 
@@ -114,6 +152,23 @@ def arrow_options(obj) -> dict:
     return {
         "quality": int(getattr(child, "quality", 3) or 3),
         "line_style": style,
+    }
+
+
+def surface_options(obj) -> dict:
+    child = _first_child(obj)
+    return {
+        "radius": float(getattr(child, "atom_radius", DEFAULT_ATOM_RADIUS) or DEFAULT_ATOM_RADIUS),
+        "probe_radius": float(getattr(child, "probe_radius", DEFAULT_PROBE_RADIUS) or DEFAULT_PROBE_RADIUS),
+        "algorithm": str(getattr(child, "algorithm", "SAS") or "SAS"),
+        "quality": int(getattr(child, "quality", DEFAULT_QUALITY) or DEFAULT_QUALITY),
+        "wireframe": bool(getattr(child, "wireframe", False)),
+        "radius_mode": str(getattr(child, "radius_mode", DEFAULT_RADIUS_MODE) or DEFAULT_RADIUS_MODE),
+        "vdw_scale": float(getattr(child, "vdw_scale", DEFAULT_VDW_SCALE) or DEFAULT_VDW_SCALE),
+        "point_radii": getattr(child, "point_radii", None),
+        "clip_planes": list(getattr(child, "clip_planes", None) or []),
+        "color": _rgb(child),
+        "alpha": _alpha(child),
     }
 
 

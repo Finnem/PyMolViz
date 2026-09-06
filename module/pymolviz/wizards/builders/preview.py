@@ -10,8 +10,13 @@ import numpy as np
 from ...meshes.Arrows import Arrows
 from ...meshes.CenteredBox import CenteredBox
 from ...meshes.CGOCollection import CGOCollection
+from ...meshes.ClipGizmo import ClipGizmo
 from ...meshes.Sphere import Sphere
+from ...meshes.Surface import Surface
+from ...util.mesh_clip import clip_planes_match, normalize_clip_planes
 from ...util.pymol_helpers import purge_objects
+from ...util.solvent_surface import DEFAULT_RADIUS_MODE, DEFAULT_VDW_SCALE
+from .pairs import complete_pairs
 from .points import VisualPoint
 from .wireframe_quality import effective_wireframe_quality
 
@@ -19,6 +24,8 @@ PREVIEW_SPHERE_NAME = "_pmv_prev_spheres"
 PREVIEW_BOX_NAME = "_pmv_prev_boxes"
 PREVIEW_ARROW_NAME = "_pmv_prev_arrows"
 PREVIEW_ARROW_PENDING = "_pmv_prev_arr_pend"
+PREVIEW_SURFACE_NAME = "_pmv_prev_surface"
+PREVIEW_SURFACE_CLIP_NAME = "_pmv_prev_surface_clip"
 
 PREVIEW_SPHERE_PREFIX = "_pmv_sph_"
 PREVIEW_BOX_PREFIX = "_pmv_box_"
@@ -130,13 +137,15 @@ def _style_close(a, b) -> bool:
         return False
     return (
         getattr(a, "dash", None) == getattr(b, "dash", None)
+        and getattr(a, "start_head", None) == getattr(b, "start_head", None)
+        and getattr(a, "end_head", None) == getattr(b, "end_head", None)
         and getattr(a, "ends", None) == getattr(b, "ends", None)
         and abs(float(getattr(a, "dash_scale", 0.0)) - float(getattr(b, "dash_scale", 0.0))) < 1e-7
         and abs(float(getattr(a, "margin", 0.0)) - float(getattr(b, "margin", 0.0))) < 1e-7
     )
 
 
-def _arrow_can_reuse(mesh, quality: int, style, n_pairs: int) -> bool:
+def _arrow_can_reuse(mesh, quality: int, n_pairs: int) -> bool:
     if type(mesh).__name__ != "Arrows":
         return False
     if int(getattr(mesh, "quality", -1)) != int(quality):
@@ -146,7 +155,7 @@ def _arrow_can_reuse(mesh, quality: int, style, n_pairs: int) -> bool:
     verts = np.asarray(getattr(mesh, "vertices", []), dtype=float).reshape(-1, 3)
     if verts.shape[0] != n_pairs * 2:
         return False
-    return _style_close(getattr(mesh, "line_style", None), style)
+    return True
 
 
 def _invalidate_merged(collection) -> None:
@@ -158,6 +167,43 @@ def _invalidate_merged(collection) -> None:
     collection._cached_merged_resolved = None
     collection._child_spans = None
     collection._child_serials = None
+
+
+def _mix_highlight(rgb, amount=0.4):
+    return tuple(min(1.0, float(c) * (1.0 - amount) + amount) for c in rgb[:3])
+
+
+def _preview_pairs(pairs, highlight_id=None):
+    ready = complete_pairs(pairs)
+    if not highlight_id:
+        return ready
+    out = []
+    for pair in ready:
+        if pair.pair_id != highlight_id:
+            out.append(pair)
+            continue
+        brighter = pair.with_color(_mix_highlight(pair.color))
+        out.append(brighter.with_width(float(pair.width) * 1.35))
+    return out
+
+
+def _style_copy(style):
+    if style is None:
+        from ...util.line_style import LineStyle
+        return LineStyle()
+    copy = getattr(style, "copy", None)
+    if callable(copy):
+        return copy()
+    return style
+
+
+def _style_pair_mesh(mesh, pairs) -> None:
+    mesh.pair_radii = [float(pair.width) for pair in pairs]
+    mesh.pair_heads = [float(pair.head) for pair in pairs]
+    mesh.pair_styles = [_style_copy(getattr(pair, "style", None)) for pair in pairs]
+    if pairs:
+        mesh.shaft_radius = float(pairs[0].width)
+        mesh.line_style = _style_copy(getattr(pairs[0], "style", None))
 
 
 def _retarget_arrows(mesh, pairs) -> None:
@@ -174,6 +220,7 @@ def _retarget_arrows(mesh, pairs) -> None:
     mesh.vertices = np.array(verts, dtype=float)
     mesh.color = np.array(colors, dtype=float)
     mesh.transparency = trans
+    _style_pair_mesh(mesh, pairs)
     mesh.invalidate_cgo_cache()
     mesh._pair_spans = None
 
@@ -198,6 +245,15 @@ def _append_arrow_pair_arrays(mesh, pair) -> None:
     trans = [float(x) for x in np.atleast_1d(mesh.transparency)]
     trans.append(1.0 - float(pair.alpha))
     mesh.transparency = trans
+    radii = list(getattr(mesh, "pair_radii", None) or [])
+    heads = list(getattr(mesh, "pair_heads", None) or [])
+    radii.append(float(getattr(pair, "width", getattr(mesh, "shaft_radius", 0.045))))
+    heads.append(float(getattr(pair, "head", 0.36)))
+    mesh.pair_radii = radii
+    mesh.pair_heads = heads
+    styles = list(getattr(mesh, "pair_styles", None) or [])
+    styles.append(_style_copy(getattr(pair, "style", None)))
+    mesh.pair_styles = styles
 
 
 def _remove_arrow_pair_arrays(mesh, index: int) -> None:
@@ -221,6 +277,18 @@ def _remove_arrow_pair_arrays(mesh, index: int) -> None:
     if 0 <= index < len(trans):
         del trans[index]
     mesh.transparency = trans
+    radii = list(getattr(mesh, "pair_radii", None) or [])
+    heads = list(getattr(mesh, "pair_heads", None) or [])
+    if 0 <= index < len(radii):
+        del radii[index]
+    if 0 <= index < len(heads):
+        del heads[index]
+    mesh.pair_radii = radii
+    mesh.pair_heads = heads
+    styles = list(getattr(mesh, "pair_styles", None) or [])
+    if 0 <= index < len(styles):
+        del styles[index]
+    mesh.pair_styles = styles
 
 
 class RuntimeCollectionPreview:
@@ -377,21 +445,60 @@ def build_box_cgo_collection(
 
 
 def build_arrow_collection(pairs, quality: int, style, name: str) -> CGOCollection:
-    if not pairs:
+    ready = complete_pairs(pairs)
+    if not ready:
         return CGOCollection([], name=name)
     arrows = Arrows(
-        starts=[pair.start.point_source for pair in pairs],
-        ends=[pair.end.point_source for pair in pairs],
-        color=[pair.color for pair in pairs],
-        transparency=[1.0 - float(pair.alpha) for pair in pairs],
+        starts=[pair.start.point_source for pair in ready],
+        ends=[pair.end.point_source for pair in ready],
+        color=[pair.color for pair in ready],
+        transparency=[1.0 - float(pair.alpha) for pair in ready],
         quality=int(quality),
-        line_style=style,
+        line_style=style or getattr(ready[0], "style", None),
+        shaft_radius=float(ready[0].width),
         use_styled_cgo=True,
         bypass_colormap=True,
         name=name,
     )
+    _style_pair_mesh(arrows, ready)
     collection = CGOCollection([arrows], name=name)
-    collection.transparency = 1.0 - min(float(pair.alpha) for pair in pairs)
+    collection.transparency = 1.0 - min(float(pair.alpha) for pair in ready)
+    return collection
+
+
+def build_surface_collection(
+    points: Sequence[VisualPoint],
+    atom_radius: float,
+    probe_radius: float,
+    algorithm: str,
+    quality: int,
+    wireframe: bool,
+    name: str,
+    radius_mode: str = DEFAULT_RADIUS_MODE,
+    vdw_scale: float = DEFAULT_VDW_SCALE,
+    clip_planes=None,
+) -> CGOCollection:
+    if not points:
+        return CGOCollection([], name=name)
+    alpha = 1.0 - min(float(pt.alpha) for pt in points)
+    mesh = Surface(
+        [pt.point_source for pt in points],
+        atom_radius=float(atom_radius),
+        probe_radius=float(probe_radius),
+        algorithm=algorithm,
+        quality=int(quality),
+        color=points[0].color,
+        wireframe=bool(wireframe),
+        radius_mode=radius_mode,
+        vdw_scale=float(vdw_scale),
+        point_radii=[getattr(pt, "radius", None) for pt in points],
+        clip_planes=clip_planes,
+        bypass_colormap=True,
+        transparency=alpha,
+        name=name,
+    )
+    collection = CGOCollection([mesh], name=name)
+    collection.transparency = alpha
     return collection
 
 
@@ -530,6 +637,69 @@ def retarget_arrow_collection(collection: CGOCollection, pairs) -> bool:
     _retarget_arrows(mesh, pairs)
     if pairs:
         collection.transparency = 1.0 - min(float(pair.alpha) for pair in pairs)
+    _invalidate_merged(collection)
+    return True
+
+
+def retarget_surface_collection(
+    collection: CGOCollection,
+    points: Sequence[VisualPoint],
+    atom_radius: float,
+    probe_radius: float,
+    algorithm: str,
+    quality: int,
+    wireframe: bool,
+    radius_mode: str = DEFAULT_RADIUS_MODE,
+    vdw_scale: float = DEFAULT_VDW_SCALE,
+    clip_planes=None,
+) -> bool:
+    if len(collection) != 1:
+        return False
+    mesh = collection[0]
+    if type(mesh).__name__ != "Surface":
+        return False
+    if str(getattr(mesh, "algorithm", "")) != str(algorithm):
+        return False
+    if int(getattr(mesh, "quality", -1)) != int(quality):
+        return False
+    if abs(float(getattr(mesh, "atom_radius", -1.0)) - float(atom_radius)) > 1e-7:
+        return False
+    if abs(float(getattr(mesh, "probe_radius", -1.0)) - float(probe_radius)) > 1e-7:
+        return False
+    from ...util.solvent_surface import normalize_point_radii, normalize_radius_mode
+    if normalize_radius_mode(getattr(mesh, "radius_mode", DEFAULT_RADIUS_MODE)) != normalize_radius_mode(radius_mode):
+        return False
+    if abs(float(getattr(mesh, "vdw_scale", 1.0) or 1.0) - float(vdw_scale or 1.0)) > 1e-7:
+        return False
+    incoming = normalize_point_radii(
+        [getattr(pt, "radius", None) for pt in points], len(points),
+    )
+    stored = normalize_point_radii(getattr(mesh, "point_radii", None), len(points))
+    if incoming != stored:
+        return False
+    sources = list(getattr(mesh, "point_sources", None) or [])
+    if len(sources) != len(points):
+        return False
+    from ...points import resolve_xyz
+    for src, pt in zip(sources, points):
+        old = np.asarray(resolve_xyz(src, None), dtype=float).reshape(3)
+        new = np.asarray(pt.resolve(None), dtype=float).reshape(3)
+        if float(np.max(np.abs(old - new))) > 1e-5:
+            return False
+    mesh.point_sources = [pt.point_source for pt in points]
+    mesh.wireframe = bool(wireframe)
+    if points:
+        mesh.color = np.array(points[0].color, dtype=float)
+        collection.transparency = 1.0 - min(float(pt.alpha) for pt in points)
+        mesh.transparency = collection.transparency
+    incoming_clips = normalize_clip_planes(clip_planes)
+    if not clip_planes_match(getattr(mesh, "clip_planes", None), incoming_clips):
+        if hasattr(mesh, "set_clip_planes"):
+            mesh.set_clip_planes(incoming_clips)
+        else:
+            mesh.clip_planes = incoming_clips
+    if hasattr(mesh, "invalidate_cgo_cache"):
+        mesh.invalidate_cgo_cache()
     _invalidate_merged(collection)
     return True
 
@@ -725,17 +895,18 @@ class ArrowPreview:
     def adopt(self, source):
         self._preview.adopt(_clone_collection(source, PREVIEW_ARROW_NAME))
 
-    def update(self, pairs, quality: int, style, pending=None):
-        if pairs:
+    def update(self, pairs, quality: int, style, pending=None, highlight_id=None):
+        ready = _preview_pairs(pairs, highlight_id)
+        if ready:
             existing = list(self._preview._obj) if self._preview._obj is not None else []
             mesh = existing[0] if existing else None
-            if mesh is not None and _arrow_can_reuse(mesh, quality, style, len(pairs)):
-                _retarget_arrows(mesh, pairs)
-                alpha = 1.0 - min(float(pair.alpha) for pair in pairs)
+            if mesh is not None and _arrow_can_reuse(mesh, quality, len(ready)):
+                _retarget_arrows(mesh, ready)
+                alpha = 1.0 - min(float(pair.alpha) for pair in ready)
                 self._preview.set_children([mesh], transparency=alpha)
             else:
                 self._preview.update_collection(
-                    build_arrow_collection(pairs, quality, style, PREVIEW_ARROW_NAME)
+                    build_arrow_collection(ready, quality, style, PREVIEW_ARROW_NAME)
                 )
         else:
             self._preview.cleanup()
@@ -751,8 +922,6 @@ class ArrowPreview:
         if type(mesh).__name__ != "Arrows":
             return False
         if int(getattr(mesh, "quality", -1)) != int(quality):
-            return False
-        if not _style_close(getattr(mesh, "line_style", None), style):
             return False
         for pair in new_pairs:
             _append_arrow_pair_arrays(mesh, pair)
@@ -817,4 +986,88 @@ class ArrowPreview:
         purge_objects(
             self.cmd,
             prefixes=(PREVIEW_ARROW_PREFIX, PREVIEW_ARROW_MARKER_PREFIX, PREVIEW_ARROW_PENDING),
+        )
+
+
+class SurfacePreview:
+    def __init__(self, cmd_):
+        self._preview = RuntimeCollectionPreview(cmd_, PREVIEW_SURFACE_NAME)
+        self._clip_preview = RuntimeCollectionPreview(cmd_, PREVIEW_SURFACE_CLIP_NAME)
+
+    @property
+    def collection(self):
+        return self._preview._obj
+
+    def take(self):
+        return self._preview.take()
+
+    def adopt(self, source):
+        self._preview.adopt(_clone_collection(source, PREVIEW_SURFACE_NAME))
+
+    def span_points(self):
+        coll = self._preview._obj
+        if coll is None or len(coll) == 0:
+            return None
+        mesh = coll[0]
+        src = getattr(mesh, "_source_vertices", None)
+        if src is not None:
+            arr = np.asarray(src, dtype=float).reshape(-1, 3)
+            if arr.size:
+                return arr
+        verts = getattr(mesh, "vertices", None)
+        if verts is None:
+            return None
+        arr = np.asarray(verts, dtype=float).reshape(-1, 3)
+        return arr if arr.size else None
+
+    def set_gizmos(self, planes, selected_index=None, span_points=None):
+        planes = list(planes or [])
+        if not planes:
+            self._clip_preview.cleanup()
+            return
+        if span_points is None:
+            span_points = self.span_points()
+        children = []
+        for i, plane in enumerate(planes):
+            origin = plane.get("origin", (0.0, 0.0, 0.0))
+            normal = plane.get("normal", (0.0, 0.0, 1.0))
+            scale = float(plane.get("scale", 5.0) or 5.0)
+            children.append(
+                ClipGizmo(
+                    origin, normal, scale,
+                    points=span_points,
+                    selected=(selected_index is not None and i == int(selected_index)),
+                    draft=not bool(plane.get("committed", True)),
+                    bypass_colormap=True,
+                )
+            )
+        collection = CGOCollection(children, name=PREVIEW_SURFACE_CLIP_NAME)
+        self._clip_preview.update_collection(collection)
+
+    def update(self, points, atom_radius, probe_radius, algorithm, quality, wireframe,
+               radius_mode=DEFAULT_RADIUS_MODE, vdw_scale=DEFAULT_VDW_SCALE,
+               clip_planes=None, gizmo_planes=None, gizmo_selected=None):
+        if not points:
+            self.cleanup()
+            return
+        existing = self._preview._obj
+        if existing is not None and retarget_surface_collection(
+            existing, points, atom_radius, probe_radius, algorithm, quality, wireframe,
+            radius_mode=radius_mode, vdw_scale=vdw_scale, clip_planes=clip_planes,
+        ):
+            self._preview.push_tokens()
+        else:
+            collection = build_surface_collection(
+                points, atom_radius, probe_radius, algorithm, quality, wireframe, PREVIEW_SURFACE_NAME,
+                radius_mode=radius_mode, vdw_scale=vdw_scale, clip_planes=clip_planes,
+            )
+            self._preview.update_collection(collection)
+        self.set_gizmos(gizmo_planes, selected_index=gizmo_selected)
+
+    def cleanup(self):
+        self._preview.cleanup()
+        self._clip_preview.cleanup()
+        purge_objects(
+            self._preview.cmd,
+            prefixes=(PREVIEW_SURFACE_NAME, PREVIEW_SURFACE_CLIP_NAME),
         )

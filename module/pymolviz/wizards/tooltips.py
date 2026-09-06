@@ -17,13 +17,28 @@ LOGGER = logging.getLogger("pymolviz.wizards")
 HOOK_TO_SELECTION_TIP = (
     "Default for new points: when on, selection and snap-to-atom points "
     "start anchored to that atom (follow if it moves). "
-    "Toggle per point in the Anchor column."
+    "Toggle per point in the builder."
 )
 ANCHOR_TIP = (
     "When checked, the CGO follows this atom if it moves. "
     "When unchecked, the position stays fixed at the current xyz."
 )
-SNAP_TO_ATOM_TIP = "Snap camera-center point to the nearest atom within 1 Å."
+SNAP_TO_ATOM_TIP = (
+    "If a visible atom is within 2 Å of the camera-center marker, use that atom."
+)
+UPDATE_TO_CAMERA_TIP = (
+    "Move the selected table row(s) to the current camera/screen center "
+    "(uses Snap to atom and Anchor new points)."
+)
+UPDATE_TO_SELECTION_TIP = (
+    "Move the selected table row(s) onto the current PyMOL selection. "
+    "One selected atom updates every chosen row; several atoms are applied "
+    "to the chosen rows in order."
+)
+EMPTY_PYMOL_SELECTION_MSG = (
+    "No atoms in the current PyMOL selection.\n"
+    "Pick atoms first (they go into sele), then try again."
+)
 
 _SETTING_CLASS_NAMES = frozenset({
     "QCheckBox",

@@ -20,6 +20,7 @@ if str(MODULE_ROOT) not in sys.path:
 _CGO_TOKEN_NAMES = (
     "POINTS", "SPHERE", "COLOR", "VERTEX", "NORMAL", "CYLINDER", "CONE",
     "BEGIN", "END", "LINEWIDTH", "LINES", "TRIANGLES", "ALPHA",
+    "ENABLE", "DISABLE", "LIGHTING",
 )
 
 

@@ -16,12 +16,28 @@ def test_numeric_string_becomes_float():
     assert out[2] == pytest.approx(1.0)
 
 
-def test_known_token_string():
+def test_resolve_enable_lighting():
     from pymol import cgo
 
-    out = resolve_cgo_tokens(["BEGIN", "TRIANGLES"])
-    assert out[0] == cgo.BEGIN
-    assert out[1] == cgo.TRIANGLES
+    out = resolve_cgo_tokens(["ENABLE", "LIGHTING", "BEGIN", "TRIANGLES"])
+    assert out[0] == cgo.ENABLE
+    assert out[1] == cgo.LIGHTING
+    assert out[2] == cgo.BEGIN
+    assert out[3] == cgo.TRIANGLES
+
+
+def test_offset_cgo_vertices_skips_enable_lighting():
+    content = [
+        "ENABLE", "LIGHTING",
+        "BEGIN", "TRIANGLES",
+        "COLOR", 1.0, 0.0, 0.0,
+        "NORMAL", 0.0, 1.0, 0.0,
+        "VERTEX", 1.0, 2.0, 3.0,
+        "END",
+    ]
+    offset_cgo_vertices(content, (1.0, -2.0, 0.5))
+    assert content[:4] == ["ENABLE", "LIGHTING", "BEGIN", "TRIANGLES"]
+    assert content[13:16] == [pytest.approx(2.0), pytest.approx(0.0), pytest.approx(3.5)]
 
 
 def test_float_passthrough():

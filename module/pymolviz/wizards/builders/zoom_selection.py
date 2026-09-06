@@ -11,9 +11,8 @@ TMP_PREFIX = "_pmv_zoom_tmp"
 TMP_SELE = "_pmv_zoom_sel"
 
 ZOOM_TO_SELECTION_TIP = (
-    "When on, selecting table rows or double-clicking a row zooms the camera "
-    "to frame those points. Turning it on also zooms the current selection "
-    "immediately."
+    "When on, selecting a point or arrow zooms the camera to frame it. "
+    "Turning it on also zooms the current selection immediately."
 )
 
 
@@ -87,9 +86,34 @@ def points_from_pair_rows(pairs, rows: Sequence[int]) -> List[VisualPoint]:
     out = []
     for row in rows:
         if 0 <= row < len(pairs):
-            out.append(pairs[row].start)
-            out.append(pairs[row].end)
+            pair = pairs[row]
+            out.append(pair.start)
+            if pair.end is not None:
+                out.append(pair.end)
     return out
+
+
+def focus_visual_point(cmd_, pt: VisualPoint, animate: int = 0) -> None:
+    """Select and zoom an atom endpoint, or frame a free point."""
+    ref = pt.atom_ref
+    if ref is not None:
+        expr = 'object "%s" and id %d' % (ref.model, ref.atom_id)
+        try:
+            cmd_.select("sele", expr)
+        except Exception:
+            pass
+        try:
+            cmd_.zoom(expr, animate=animate, buffer=2)
+        except TypeError:
+            try:
+                cmd_.zoom(expr, buffer=2)
+            except TypeError:
+                try:
+                    cmd_.zoom(expr)
+                except Exception:
+                    pass
+        return
+    zoom_to_visual_points(cmd_, [pt], animate=animate)
 
 
 def _selected_rows(table) -> List[int]:

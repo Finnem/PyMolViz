@@ -51,7 +51,7 @@ class PyMolVizWizard(Wizard):
                 pass
             self.camera_sphere = None
         self.menu_items = [
-            ("Add Visual", self.on_add_visual),
+            ("Open Objects Menu", self.on_add_visual),
             ("Item B", self.on_item_b),
             ("Item C", self.on_item_c),
         ]
@@ -202,11 +202,11 @@ class PyMolVizWizard(Wizard):
             pass
 
     def on_add_visual(self):
-        self.prompt = ["Add Visual"]
+        self.prompt = ["Open Objects Menu"]
         try:
             self.add_visual_window.show()
         except Exception as exc:
-            self.prompt = ["Add Visual failed: %s" % exc]
+            self.prompt = ["Open Objects Menu failed: %s" % exc]
 
     def on_item_b(self):
         self.prompt = ["Selected Item B"]

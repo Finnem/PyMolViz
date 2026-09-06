@@ -1,4 +1,4 @@
-"""Box mesh builder page inside Add Visual."""
+"""Box mesh builder page inside the objects menu."""
 
 from __future__ import annotations
 
@@ -6,8 +6,11 @@ from typing import Callable, List, Optional, Tuple
 
 from ..pick import DeferredCallback, qt_modules, qt_widget_alive
 from ..tooltips import (
+    EMPTY_PYMOL_SELECTION_MSG,
     HOOK_TO_SELECTION_TIP,
     SNAP_TO_ATOM_TIP,
+    UPDATE_TO_CAMERA_TIP,
+    UPDATE_TO_SELECTION_TIP,
     apply_required_tooltips,
     warn_missing_setting_tooltips,
 )
@@ -31,6 +34,8 @@ from .points import (
     commit_point_anchors,
     export_points_to_selection,
     selection_points,
+    update_points_from_camera,
+    update_points_from_selection,
 )
 from .preview import (
     BoxPreview,
@@ -38,7 +43,9 @@ from .preview import (
     persist_live_preview,
     retarget_point_collection,
 )
+from .object_names import unused_object_name
 from .zoom_selection import ZOOM_TO_SELECTION_TIP, points_from_rows, wire_zoom_to_selection
+from ..widgets.sticky_add import StickyAddOverlay
 
 COLS = point_columns()
 
@@ -72,7 +79,9 @@ class BoxBuilderPage:
         self._create_btn = None
         self._table_filter = None
         self._editing_id = None
+        self._loaded_name = None
         self._suspend_preview = False
+        self._sticky_add = None
         self._build(parent)
 
     @property
@@ -85,9 +94,10 @@ class BoxBuilderPage:
 
     def reset_for_create(self):
         self._editing_id = None
+        self._loaded_name = None
         self._points = []
         if self._object_name is not None:
-            self._object_name.setText("pmv_boxes")
+            self._object_name.setText(unused_object_name("pmv_boxes", self.cmd))
         if self._create_btn is not None:
             self._create_btn.setText("Create CGO")
         for widget, value in (
@@ -108,6 +118,7 @@ class BoxBuilderPage:
         from ..catalog import display_name
 
         self._editing_id = str(obj.id)
+        self._loaded_name = display_name(obj) or "pmv_boxes"
         self._points = points_from_mesh(obj)
         opts = box_options(obj)
         extent = opts["extent"]
@@ -144,7 +155,7 @@ class BoxBuilderPage:
         back = QtWidgets.QPushButton("← Back")
         back.setFlat(True)
         back.clicked.connect(self._go_back)
-        title = QtWidgets.QLabel("Box")
+        title = QtWidgets.QLabel("Boxes")
         title.setStyleSheet("font-size: 16px; font-weight: 600;")
         header.addWidget(back)
         header.addWidget(title)
@@ -168,27 +179,20 @@ class BoxBuilderPage:
 
         pts_box = QtWidgets.QGroupBox("Points")
         pts_layout = QtWidgets.QVBoxLayout(pts_box)
-        btn_row = QtWidgets.QHBoxLayout()
         self._snap_atom = QtWidgets.QCheckBox("Snap to atom")
+        self._snap_atom.setChecked(True)
         self._hook_selection = QtWidgets.QCheckBox("Anchor new points")
         self._hook_selection.setChecked(True)
         self._zoom_selection = QtWidgets.QCheckBox("Zoom to selection")
-        add_cam = QtWidgets.QPushButton("Add camera center")
-        add_cam.clicked.connect(self._add_camera_center)
-        add_sel = QtWidgets.QPushButton("Add selection")
-        add_sel.clicked.connect(self._add_selection)
-        export_sel = QtWidgets.QPushButton("Export points to selection")
+        export_sel = QtWidgets.QPushButton("Export to selection")
         export_sel.clicked.connect(self._export_selection)
-        btn_row.addWidget(add_cam)
-        btn_row.addWidget(add_sel)
-        btn_row.addWidget(export_sel)
         flags = QtWidgets.QHBoxLayout()
         flags.addWidget(self._snap_atom)
         flags.addWidget(self._hook_selection)
         flags.addWidget(self._zoom_selection)
         flags.addStretch(1)
+        flags.addWidget(export_sel)
         pts_layout.addLayout(flags)
-        pts_layout.addLayout(btn_row)
 
         self._table = QtWidgets.QTableWidget(0, len(COLS))
         self._table.setHorizontalHeaderLabels(list(COLS))
@@ -226,13 +230,26 @@ class BoxBuilderPage:
         self._table.installEventFilter(self._table_filter)
         self._table.viewport().installEventFilter(self._table_filter)
         pts_layout.addWidget(self._table)
+        self._sticky_add = StickyAddOverlay(
+            pts_box,
+            self._table,
+            text="+ Add point",
+            tooltip=(
+                "Add selected atoms, or the camera-center marker if nothing is selected. "
+                "With Snap to atom, uses a visible atom within 2 Å of that marker."
+            ),
+            on_click=self._add_point,
+            count=lambda: len(self._points),
+            context="BoxBuilderPage",
+        )
+        self._sticky_add.attach()
 
         root.addWidget(pts_box, stretch=1)
 
         actions = QtWidgets.QHBoxLayout()
         self._object_name = QtWidgets.QLineEdit()
         self._object_name.setPlaceholderText("Object name")
-        self._object_name.setText("pmv_boxes")
+        self._object_name.setText(unused_object_name("pmv_boxes", self.cmd))
         self._create_btn = QtWidgets.QPushButton("Create CGO")
         self._create_btn.clicked.connect(self._create_cgo)
         export_btn = QtWidgets.QPushButton("Export CGO")
@@ -252,12 +269,6 @@ class BoxBuilderPage:
                 (self._snap_atom, SNAP_TO_ATOM_TIP),
                 (self._hook_selection, HOOK_TO_SELECTION_TIP),
                 (self._zoom_selection, ZOOM_TO_SELECTION_TIP),
-                (
-                    add_cam,
-                    "Add a point at the current camera/screen center. "
-                    "With Snap to atom, uses the nearest atom within 1 Å.",
-                ),
-                (add_sel, "Add one point per atom in the current PyMOL selection (sele)."),
                 (
                     export_sel,
                     "Create a PyMOL selection covering the table points as pseudoatoms.",
@@ -322,6 +333,14 @@ class BoxBuilderPage:
         color_act = menu.addAction("Color selection…")
         color_act.setEnabled(bool(rows))
         color_act.triggered.connect(self._pick_box_color)
+        cam_act = menu.addAction("Update to camera center")
+        cam_act.setToolTip(UPDATE_TO_CAMERA_TIP)
+        cam_act.setEnabled(bool(rows))
+        cam_act.triggered.connect(self._update_selected_to_camera)
+        sel_act = menu.addAction("Update to selection")
+        sel_act.setToolTip(UPDATE_TO_SELECTION_TIP)
+        sel_act.setEnabled(bool(rows))
+        sel_act.triggered.connect(self._update_selected_to_selection)
         del_act = menu.addAction("Delete selected")
         del_act.setEnabled(bool(rows))
         del_act.triggered.connect(self._delete_selected)
@@ -416,6 +435,8 @@ class BoxBuilderPage:
         finally:
             self._table.blockSignals(False)
             unblock_table_selection_signals(self._table, sel_blocked)
+        if getattr(self, "_sticky_add", None) is not None:
+            self._sticky_add.sync()
         if preview:
             self._schedule_preview()
 
@@ -448,6 +469,54 @@ class BoxBuilderPage:
             return
         self._schedule_preview()
 
+    def _warn_empty_pymol_selection(self, title):
+        _, _, QtWidgets = qt_modules()
+        if QtWidgets is not None:
+            QtWidgets.QMessageBox.information(
+                self._page, title, EMPTY_PYMOL_SELECTION_MSG,
+            )
+
+    def _update_selected_to_camera(self):
+        rows = self._selected_rows()
+        if not rows:
+            return
+        self._points = update_points_from_camera(
+            self.cmd,
+            self._points,
+            rows,
+            self._snap_atom.isChecked(),
+            hook_to_selection=self._hook_selection.isChecked(),
+        )
+        self._sync_table()
+
+    def _update_selected_to_selection(self):
+        rows = self._selected_rows()
+        if not rows:
+            return
+        updated = update_points_from_selection(
+            self.cmd,
+            self._points,
+            rows,
+            hook_to_selection=self._hook_selection.isChecked(),
+        )
+        if updated is None:
+            self._warn_empty_pymol_selection("Update to selection")
+            return
+        self._points = updated
+        self._sync_table()
+
+    def _add_point(self):
+        new_pts = selection_points(
+            self.cmd, self._points,
+            hook_to_selection=self._hook_selection.isChecked(),
+        )
+        if new_pts:
+            new_pts = self._stamp_new_points(new_pts)
+            self._points.extend(new_pts)
+            self._add_preview_points(new_pts)
+            return
+        self._add_camera_center()
+
     def _add_camera_center(self):
         pt = camera_center_point(
             self.cmd,
@@ -470,8 +539,7 @@ class BoxBuilderPage:
                 QtWidgets.QMessageBox.information(
                     self._page,
                     "Add selection",
-                    "No atoms in the current PyMOL selection.\n"
-                    "Pick atoms first (they go into sele), then try again.",
+                    EMPTY_PYMOL_SELECTION_MSG,
                 )
             return
         new_pts = self._stamp_new_points(new_pts)
@@ -508,7 +576,8 @@ class BoxBuilderPage:
     def _create_cgo(self):
         if not self._points:
             return
-        name = self._object_name.text().strip() or "pmv_boxes"
+        typed = self._object_name.text().strip() or "pmv_boxes"
+        name = unused_object_name(typed, self.cmd, keep=self._loaded_name)
         persist_live_preview(
             self.cmd,
             self._preview,

@@ -65,7 +65,7 @@ def test_wizard_event_mask_is_silent():
 
 def test_done_button_calls_wizard_do_done():
     wizard = PyMolVizWizard.__new__(PyMolVizWizard)
-    wizard.menu_items = [("Add Visual", None)]
+    wizard.menu_items = [("Open Objects Menu", None)]
     panel = PyMolVizWizard.get_panel(wizard)
     done = panel[-1]
     assert done[1] == "Done"

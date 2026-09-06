@@ -9,6 +9,7 @@ from .geometries import icosphere, point_on_sphere
 _CGO_TOKEN_NAMES = (
     "POINTS", "SPHERE", "COLOR", "VERTEX", "NORMAL", "CYLINDER", "CONE",
     "BEGIN", "END", "LINEWIDTH", "LINES", "TRIANGLES", "ALPHA",
+    "ENABLE", "DISABLE", "LIGHTING",
 )
 
 
@@ -92,6 +93,8 @@ _CGO_SKIP_AFTER = {
     "NORMAL": 3,
     "ALPHA": 1,
     "LINEWIDTH": 1,
+    "ENABLE": 1,
+    "DISABLE": 1,
     "END": 0,
 }
 
@@ -117,6 +120,8 @@ def offset_cgo_vertices(content, delta):
         "CONE": getattr(cgo, "CONE", None),
         "ALPHA": getattr(cgo, "ALPHA", None),
         "LINEWIDTH": getattr(cgo, "LINEWIDTH", None),
+        "ENABLE": getattr(cgo, "ENABLE", None),
+        "DISABLE": getattr(cgo, "DISABLE", None),
     }
     i = 0
     n = len(content)
@@ -357,18 +362,35 @@ def _perp_frame(direction):
     return (px, py, pz), (bx, by, bz)
 
 
-def _ring_points(center, axis, radius, n_seg, perp, bitan):
-    cx, cy, cz = center
-    points = []
+def _normalize3(v):
+    x, y, z = float(v[0]), float(v[1]), float(v[2])
+    length = math.sqrt(x * x + y * y + z * z)
+    if length < 1e-8:
+        return (0.0, 0.0, 1.0)
+    inv = 1.0 / length
+    return (x * inv, y * inv, z * inv)
+
+
+def _azimuth_dirs(n_seg, perp, bitan):
+    dirs = []
+    n_seg = max(int(n_seg), 3)
     for i in range(n_seg):
         ang = 2.0 * math.pi * i / n_seg
         ca, sa = math.cos(ang), math.sin(ang)
-        points.append((
-            cx + radius * (perp[0] * ca + bitan[0] * sa),
-            cy + radius * (perp[1] * ca + bitan[1] * sa),
-            cz + radius * (perp[2] * ca + bitan[2] * sa),
+        dirs.append((
+            perp[0] * ca + bitan[0] * sa,
+            perp[1] * ca + bitan[1] * sa,
+            perp[2] * ca + bitan[2] * sa,
         ))
-    return points
+    return dirs
+
+
+def _ring_points(center, axis, radius, n_seg, perp, bitan):
+    cx, cy, cz = center
+    return [
+        (cx + radius * d[0], cy + radius * d[1], cz + radius * d[2])
+        for d in _azimuth_dirs(n_seg, perp, bitan)
+    ]
 
 
 def _emit_triangle(obj, n0, p0, n1, p1, n2, p2):
@@ -389,8 +411,8 @@ def lines_cgo(segments, color, width=2.0, alpha=1.0):
     return obj
 
 
-def mesh_cylinder_cgo(p0, p1, radius, color, n_seg=8, alpha=1.0):
-    """Open cylinder as triangles along p0→p1."""
+def mesh_cylinder_cgo(p0, p1, radius, color, n_seg=8, alpha=1.0, caps=True):
+    """Cylinder as triangles along p0→p1. ``caps`` closes both ends with disks."""
     axis = (p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2])
     length = math.sqrt(axis[0] ** 2 + axis[1] ** 2 + axis[2] ** 2)
     if length < 1e-8 or radius <= 0.0:
@@ -408,35 +430,71 @@ def mesh_cylinder_cgo(p0, p1, radius, color, n_seg=8, alpha=1.0):
         n_j = ((a[j][0] - p0[0]) / radius, (a[j][1] - p0[1]) / radius, (a[j][2] - p0[2]) / radius)
         _emit_triangle(obj, n_i, a[i], n_j, a[j], n_j, b[j])
         _emit_triangle(obj, n_i, a[i], n_j, b[j], n_i, b[i])
+    if caps:
+        n_back = (-nrm[0], -nrm[1], -nrm[2])
+        for i in range(n_seg):
+            j = (i + 1) % n_seg
+            _emit_triangle(obj, n_back, p0, n_back, a[j], n_back, a[i])
+            _emit_triangle(obj, nrm, p1, nrm, b[i], nrm, b[j])
     obj.append("END")
     return obj
 
 
-def mesh_cone_cgo(base, tip, radius, color, n_seg=8, alpha=1.0):
-    """Cone from base ring to tip."""
+def mesh_cone_cgo(base, tip, radius, color, n_seg=8, alpha=1.0, cap_base=True, n_rings=None):
+    """Cone from base ring to tip with slant normals.
+
+    ``n_rings`` is the number of circumference rings before the tip (1 = a
+    triangle fan). Default scales with ``n_seg`` so long heads shade smoothly.
+    ``cap_base`` closes the open back of the cone.
+    """
     axis = (tip[0] - base[0], tip[1] - base[1], tip[2] - base[2])
     length = math.sqrt(axis[0] ** 2 + axis[1] ** 2 + axis[2] ** 2)
     if length < 1e-8 or radius <= 0.0:
         return []
+    n_seg = max(int(n_seg), 3)
+    if n_rings is None:
+        n_rings = max(1, min(4, n_seg // 4))
+    else:
+        n_rings = max(1, int(n_rings))
+    inv = 1.0 / length
+    nrm = (axis[0] * inv, axis[1] * inv, axis[2] * inv)
     perp, bitan = _perp_frame(axis)
-    ring = _ring_points(base, axis, radius, n_seg, perp, bitan)
+    radials = _azimuth_dirs(n_seg, perp, bitan)
+    slope = radius / length
+    normals = [
+        _normalize3((d[0] + slope * nrm[0], d[1] + slope * nrm[1], d[2] + slope * nrm[2]))
+        for d in radials
+    ]
+    rings = []
+    for k in range(n_rings):
+        t = float(k) / float(n_rings)
+        rr = radius * (1.0 - t)
+        cx = base[0] + (tip[0] - base[0]) * t
+        cy = base[1] + (tip[1] - base[1]) * t
+        cz = base[2] + (tip[2] - base[2]) * t
+        rings.append([
+            (cx + rr * d[0], cy + rr * d[1], cz + rr * d[2])
+            for d in radials
+        ])
     obj = ["BEGIN", "TRIANGLES"]
     obj.extend(_color_alpha_prefix(color, alpha))
-    inv_r = 1.0 / radius
+    n_back = (-nrm[0], -nrm[1], -nrm[2])
+    for k in range(len(rings) - 1):
+        a, b = rings[k], rings[k + 1]
+        for i in range(n_seg):
+            j = (i + 1) % n_seg
+            _emit_triangle(obj, normals[i], a[i], normals[j], a[j], normals[j], b[j])
+            _emit_triangle(obj, normals[i], a[i], normals[j], b[j], normals[i], b[i])
+    last = rings[-1]
     for i in range(n_seg):
         j = (i + 1) % n_seg
-        n_i = ((ring[i][0] - base[0]) * inv_r, (ring[i][1] - base[1]) * inv_r, (ring[i][2] - base[2]) * inv_r)
-        n_j = ((ring[j][0] - base[0]) * inv_r, (ring[j][1] - base[1]) * inv_r, (ring[j][2] - base[2]) * inv_r)
-        _emit_triangle(obj, n_i, ring[i], n_j, ring[j], nrm_approx(n_i, n_j, axis), tip)
+        n_tip = _normalize3((
+            normals[i][0] + normals[j][0],
+            normals[i][1] + normals[j][1],
+            normals[i][2] + normals[j][2],
+        ))
+        _emit_triangle(obj, normals[i], last[i], normals[j], last[j], n_tip, tip)
+        if cap_base:
+            _emit_triangle(obj, n_back, base, n_back, rings[0][j], n_back, rings[0][i])
     obj.append("END")
     return obj
-
-
-def nrm_approx(n_i, n_j, axis):
-    sx = n_i[0] + n_j[0] + axis[0]
-    sy = n_i[1] + n_j[1] + axis[1]
-    sz = n_i[2] + n_j[2] + axis[2]
-    length = math.sqrt(sx * sx + sy * sy + sz * sz)
-    if length < 1e-8:
-        return n_i
-    return (sx / length, sy / length, sz / length)

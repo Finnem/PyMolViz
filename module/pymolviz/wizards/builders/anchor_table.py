@@ -22,10 +22,20 @@ POINT_SOURCE_COL = 2
 POINT_X_COL = 3
 POINT_Y_COL = 4
 POINT_Z_COL = 5
+SURFACE_RADIUS_COL = 6
+
+SURFACE_RADIUS_TIP = (
+    "Leave blank to inherit the global Atom radius or VDW scale. "
+    "Type a value in Ångströms to override this point."
+)
 
 
 def point_columns():
     return (ANCHOR_COL,) + POINT_DATA_COLS
+
+
+def surface_point_columns():
+    return point_columns() + ("R (Å)",)
 
 
 def arrow_columns():

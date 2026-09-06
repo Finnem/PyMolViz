@@ -7,14 +7,16 @@ from ..util.cgo import lines_cgo, mesh_cone_cgo, mesh_cylinder_cgo, native_spher
 from ..util.line_style import (
     ARROW_QUALITY_SEGMENTS,
     LineStyle,
+    absolute_head_length,
     apply_margin,
     dash_on_segments,
+    default_head_length,
 )
 from ..util.math import get_perp
 
 DEFAULT_SHAFT_RADIUS = 0.045
-HEAD_LENGTH = 0.28
 HEAD_WIDTH = 2.4
+HEAD_LENGTH = default_head_length(DEFAULT_SHAFT_RADIUS)
 
 
 def _direction(p0, p1):
@@ -36,12 +38,17 @@ def _offset(point, direction, distance):
 
 
 def _arrow_heads(style: LineStyle):
-    ends = style.ends
-    return ends in ("Arrow", "Double arrow"), ends == "Double arrow", ends == "Circles"
+    start = getattr(style, "start_head", None)
+    end = getattr(style, "end_head", None)
+    if start is None and end is None:
+        from ..util.line_style import split_ends
+
+        start, end = split_ends(getattr(style, "ends", "Arrow"))
+    return end == "Arrow", start == "Arrow", start == "Circles", end == "Circles"
 
 
-def _line_arrowhead(tip, direction, color, alpha):
-    size = 0.18
+def _line_arrowhead(tip, direction, color, alpha, size=0.18):
+    size = max(float(size), 0.02)
     from ..util.cgo import _perp_frame
 
     perp, bitan = _perp_frame(direction)
@@ -67,44 +74,72 @@ def build_styled_arrow_cgo(
     style: LineStyle,
     alpha: float = 1.0,
     radius: float = DEFAULT_SHAFT_RADIUS,
+    head_length: float = None,
 ) -> list:
-    p0, p1 = apply_margin(start, end, style.margin)
+    head_end, head_start, circle_start, circle_end = _arrow_heads(style)
+    n_heads = int(head_end) + int(head_start)
+    wanted_head = (
+        default_head_length(radius) if head_length is None else max(float(head_length), 0.0)
+    )
+    p0, p1 = apply_margin(
+        start,
+        end,
+        style.margin,
+        head_length=wanted_head if n_heads else 0.0,
+        double_head=bool(head_start and head_end),
+    )
     direction, length = _direction(p0, p1)
     if length < 1e-8:
         return []
-    head_end, head_start, circles = _arrow_heads(style)
-    head_len = min(length * HEAD_LENGTH, length * 0.45) if (head_end or head_start) else 0.0
+    head_len = (
+        absolute_head_length(radius, length, wanted_head, n_heads=n_heads)
+        if n_heads
+        else 0.0
+    )
     shaft0 = _offset(p0, direction, head_len if head_start else 0.0)
     shaft1 = _offset(p1, direction, -head_len if head_end else 0.0)
-    if _direction(shaft0, shaft1)[1] < 1e-8:
-        shaft0, shaft1 = p0, p1
-        head_len = 0.0
-        head_end = head_start = False
+    shaft_len = _direction(shaft0, shaft1)[1]
 
     quality = max(0, min(5, int(quality)))
     obj = []
     if quality == 0:
-        segs = dash_on_segments(shaft0, shaft1, style.pattern(), style.dash_scale)
-        obj.extend(lines_cgo(segs, color, width=2.4, alpha=alpha))
+        if shaft_len >= 1e-8:
+            segs = dash_on_segments(shaft0, shaft1, style.pattern(), style.dash_scale)
+            obj.extend(lines_cgo(segs, color, width=2.4, alpha=alpha))
         if head_end:
-            obj.extend(_line_arrowhead(p1, direction, color, alpha))
+            obj.extend(_line_arrowhead(p1, direction, color, alpha, size=max(head_len, 0.02)))
         if head_start:
-            obj.extend(_line_arrowhead(p0, (-direction[0], -direction[1], -direction[2]), color, alpha))
-        if circles:
-            obj.extend(native_spheres_cgo([p0, p1], radius * 1.6, color, alpha=alpha))
+            obj.extend(_line_arrowhead(
+                p0, (-direction[0], -direction[1], -direction[2]), color, alpha, size=max(head_len, 0.02),
+            ))
+        circle_pts = []
+        if circle_start:
+            circle_pts.append(p0)
+        if circle_end:
+            circle_pts.append(p1)
+        if circle_pts:
+            obj.extend(native_spheres_cgo(circle_pts, radius * 1.6, color, alpha=alpha))
         return obj
 
     n_seg = ARROW_QUALITY_SEGMENTS[quality]
-    segs = dash_on_segments(shaft0, shaft1, style.pattern(), style.dash_scale)
-    for a, b in segs:
-        obj.extend(mesh_cylinder_cgo(a, b, radius, color, n_seg=n_seg, alpha=alpha))
+    if shaft_len >= 1e-8:
+        segs = dash_on_segments(shaft0, shaft1, style.pattern(), style.dash_scale)
+        for a, b in segs:
+            obj.extend(mesh_cylinder_cgo(a, b, radius, color, n_seg=n_seg, alpha=alpha, caps=True))
     head_r = radius * HEAD_WIDTH
-    if head_end:
-        obj.extend(mesh_cone_cgo(shaft1, p1, head_r, color, n_seg=n_seg, alpha=alpha))
-    if head_start:
-        obj.extend(mesh_cone_cgo(shaft0, p0, head_r, color, n_seg=n_seg, alpha=alpha))
-    if circles:
-        obj.extend(native_spheres_cgo([p0, p1], radius * 1.8, color, alpha=alpha))
+    # Wider cone needs more azimuth samples so facets match the thinner shaft.
+    cone_seg = max(n_seg, int(round(n_seg * HEAD_WIDTH)))
+    if head_end and head_len > 1e-8:
+        obj.extend(mesh_cone_cgo(shaft1, p1, head_r, color, n_seg=cone_seg, alpha=alpha, cap_base=True))
+    if head_start and head_len > 1e-8:
+        obj.extend(mesh_cone_cgo(shaft0, p0, head_r, color, n_seg=cone_seg, alpha=alpha, cap_base=True))
+    circle_pts = []
+    if circle_start:
+        circle_pts.append(p0)
+    if circle_end:
+        circle_pts.append(p1)
+    if circle_pts:
+        obj.extend(native_spheres_cgo(circle_pts, radius * 1.8, color, alpha=alpha))
     return obj
 
 
@@ -142,6 +177,9 @@ class Arrows(Lines):
         self.head_width = head_width
         self.quality = int(quality)
         self.shaft_radius = float(shaft_radius)
+        self.pair_radii = None
+        self.pair_heads = None
+        self.pair_styles = None
         self.use_styled_cgo = bool(use_styled_cgo)
         if line_style is not None:
             self.line_style = line_style
@@ -302,16 +340,22 @@ class Arrows(Lines):
             except (TypeError, IndexError):
                 transparency = np.full(n_pairs, float(self.transparency) if np.isscalar(self.transparency) else 0.0)
             spans = []
+            radii = list(self.pair_radii or [])
+            heads = list(self.pair_heads or [])
+            styles = list(getattr(self, "pair_styles", None) or [])
             for i in range(n_pairs):
                 start = tuple(self.vertices[i * 2])
                 end = tuple(self.vertices[i * 2 + 1])
                 color = tuple(per_pair_colors[i])
                 alpha = 1.0 - float(transparency[i] if i < len(transparency) else 0.0)
+                radius = float(radii[i]) if i < len(radii) else self.shaft_radius
+                style = styles[i] if i < len(styles) else self.line_style
+                head = float(heads[i]) if i < len(heads) else default_head_length(radius)
                 chunk_start = len(merged)
                 merged.extend(
                     build_styled_arrow_cgo(
-                        start, end, color, self.quality, self.line_style,
-                        alpha=alpha, radius=self.shaft_radius,
+                        start, end, color, self.quality, style,
+                        alpha=alpha, radius=radius, head_length=head,
                     )
                 )
                 spans.append((chunk_start, len(merged)))

@@ -10,6 +10,7 @@ RGB = Tuple[float, float, float]
 RGBA = Tuple[float, float, float, float]
 
 DEFAULT_SPHERE_COLOR: RGB = (1.0, 0.85, 0.15)
+DEFAULT_SURFACE_COLOR: RGB = (0.20, 0.60, 0.90)
 DEFAULT_SPHERE_ALPHA = 1.0
 RECENT_COLOR_LIMIT = 100
 QT_CUSTOM_COLOR_SLOTS = 16

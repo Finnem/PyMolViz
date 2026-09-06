@@ -30,7 +30,7 @@ def test_object_row_sphere_collection():
     row = object_row(coll)
     assert row["id"] == "coll_sph"
     assert row["name"] == "pmv_spheres"
-    assert row["type"] == "Sphere"
+    assert row["type"] == "Spheres"
     assert row["n_points"] == 1
     assert row["com"] == "1.00, 2.00, 3.00"
     assert row["editor"] == "Sphere"
@@ -56,6 +56,30 @@ def test_type_label_box_and_point_count():
     )
     coll = CGOCollection([box, box], name="pmv_boxes", obj_id="coll_box")
     # second box is the same instance; point_count uses len(children)
-    assert type_label(coll) == "Box"
+    assert type_label(coll) == "Boxes"
     assert point_count(coll) == 2
     assert editor_kind(coll) == "Box"
+
+
+def test_object_row_surface_collection():
+    from pymolviz.meshes.Surface import Surface
+
+    surface = Surface(
+        [
+            AtomPoint("prot", 1, last_xyz=(1.0, 2.0, 3.0)),
+            AtomPoint("prot", 2, last_xyz=(3.0, 2.0, 3.0)),
+        ],
+        algorithm="ASA",
+        quality=1,
+        bypass_colormap=True,
+        obj_id="surf1",
+    )
+    coll = CGOCollection([surface], name="pmv_surface", obj_id="coll_surf")
+    row = object_row(coll)
+    assert row["id"] == "coll_surf"
+    assert row["name"] == "pmv_surface"
+    assert row["type"] == "Surface"
+    assert row["n_points"] == 2
+    assert row["com"] == "2.00, 2.00, 3.00"
+    assert row["editor"] == "Surface"
+

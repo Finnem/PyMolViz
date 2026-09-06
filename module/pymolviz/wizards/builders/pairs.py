@@ -2,18 +2,49 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple
+import uuid
+from dataclasses import dataclass, field, replace
+from typing import Dict, List, Optional, Sequence, Tuple
 
-from .points import VisualPoint, selection_points
+from ...points import PointUnresolvedError
+from ...util.line_style import LineStyle, default_head_length
+from .points import VisualPoint, atom_anchor_label, selection_points
 
 RGB = Tuple[float, float, float]
+
+DEFAULT_ARROW_WIDTH = 0.045
+DEFAULT_ARROW_HEAD = default_head_length(DEFAULT_ARROW_WIDTH)
+
+STATUS_OK = "ok"
+STATUS_PICKING = "picking"
+STATUS_MISSING = "missing"
+
+STATUS_GLYPH = {
+    STATUS_OK: "✓",
+    STATUS_PICKING: "●",
+    STATUS_MISSING: "!",
+}
+
+PENDING_START = "[pick start…]"
+PENDING_END = "[pick end…]"
+
+
+def new_pair_id() -> str:
+    return "arrow-" + uuid.uuid4().hex[:8]
 
 
 @dataclass
 class VisualPair:
     start: VisualPoint
-    end: VisualPoint
+    end: Optional[VisualPoint] = None
+    pair_id: str = field(default_factory=new_pair_id)
+    title: str = ""
+    width: float = DEFAULT_ARROW_WIDTH
+    head: float = DEFAULT_ARROW_HEAD
+    style: LineStyle = field(default_factory=LineStyle)
+
+    def is_complete(self) -> bool:
+        return self.end is not None
 
     @property
     def color(self) -> RGB:
@@ -27,31 +58,70 @@ class VisualPair:
         return self.start.rgba()
 
     def label(self) -> str:
-        return "%s → %s" % (self.start.name, self.end.name)
+        return pair_row_text(self)
 
     def with_color(self, color: Sequence[float]) -> "VisualPair":
-        return VisualPair(self.start.with_color(color), self.end.with_color(color))
+        start = self.start.with_color(color)
+        end = self.end.with_color(color) if self.end is not None else None
+        return replace(self, start=start, end=end)
 
     def with_start(self, start: VisualPoint) -> "VisualPair":
-        return VisualPair(start, self.end)
+        return replace(self, start=start)
 
-    def with_end(self, end: VisualPoint) -> "VisualPair":
-        return VisualPair(self.start, end)
+    def with_end(self, end: Optional[VisualPoint]) -> "VisualPair":
+        return replace(self, end=end)
+
+    def with_title(self, title: str) -> "VisualPair":
+        return replace(self, title=str(title))
+
+    def with_width(self, width: float) -> "VisualPair":
+        width = float(width)
+        return replace(self, width=width, head=default_head_length(width))
+
+    def with_head(self, head: float) -> "VisualPair":
+        return replace(self, head=float(head))
+
+    def with_style(self, style: LineStyle) -> "VisualPair":
+        copied = style.copy() if style is not None else LineStyle()
+        return replace(self, style=copied)
+
+    def swapped(self) -> "VisualPair":
+        if self.end is None:
+            return self
+        return replace(self, start=self.end, end=self.start)
+
+
+def complete_pairs(pairs: Sequence[VisualPair]) -> List[VisualPair]:
+    return [pair for pair in pairs if pair.is_complete()]
+
+
+def pair_index(pairs: Sequence[VisualPair], pair_id: str) -> int:
+    for index, pair in enumerate(pairs):
+        if pair.pair_id == pair_id:
+            return index
+    return -1
 
 
 def flatten_pair_points(pairs: Sequence[VisualPair]) -> List[VisualPoint]:
     out = []
     for pair in pairs:
         out.append(pair.start)
-        out.append(pair.end)
+        if pair.end is not None:
+            out.append(pair.end)
     return out
 
 
 def commit_pair_anchors(pairs: Sequence[VisualPair]) -> List[VisualPair]:
-    return [
-        VisualPair(pair.start.commit_anchor(), pair.end.commit_anchor())
-        for pair in pairs
-    ]
+    out = []
+    for pair in pairs:
+        if not pair.is_complete():
+            continue
+        out.append(replace(
+            pair,
+            start=pair.start.commit_anchor(),
+            end=pair.end.commit_anchor(),
+        ))
+    return out
 
 
 def take_single_selection_point(
@@ -61,13 +131,118 @@ def take_single_selection_point(
     hook_to_selection: bool = True,
 ) -> Tuple[Optional[VisualPoint], str]:
     """Return (point, status) where status is empty / one / multiple."""
+    start, end, status = take_selection_endpoints(
+        cmd_,
+        existing,
+        interactive_only=interactive_only,
+        hook_to_selection=hook_to_selection,
+    )
+    if status == "pair":
+        return None, "multiple"
+    if status == "one":
+        return start, "one"
+    return None, status
+
+
+def take_selection_endpoints(
+    cmd_,
+    existing: Sequence[VisualPoint] = (),
+    interactive_only: bool = False,
+    hook_to_selection: bool = True,
+) -> Tuple[Optional[VisualPoint], Optional[VisualPoint], str]:
+    """Return (start, end, status) for 0 / 1 / 2 selected atoms.
+
+    Status is ``empty``, ``one``, ``pair``, or ``multiple`` (>2 atoms).
+    """
     pts = selection_points(
         cmd_, existing,
         interactive_only=interactive_only,
         hook_to_selection=hook_to_selection,
     )
     if not pts:
-        return None, "empty"
-    if len(pts) > 1:
-        return None, "multiple"
-    return pts[0], "one"
+        return None, None, "empty"
+    if len(pts) == 1:
+        return pts[0], None, "one"
+    if len(pts) == 2:
+        return pts[0], pts[1], "pair"
+    return None, None, "multiple"
+
+
+def free_point_display_names(pairs: Sequence[VisualPair]) -> Dict[int, str]:
+    """Assign ``Point 1``, ``Point 2``, … to endpoints that are not atom anchors."""
+    names: Dict[int, str] = {}
+    n = 0
+    for pair in pairs:
+        for pt in (pair.start, pair.end):
+            if pt is None or pt.can_anchor():
+                continue
+            ident = id(pt)
+            if ident in names:
+                continue
+            n += 1
+            names[ident] = "Point %d" % n
+    return names
+
+
+def endpoint_label(
+    pt: Optional[VisualPoint],
+    *,
+    pending: str = PENDING_END,
+    free_names: Optional[Dict[int, str]] = None,
+) -> str:
+    if pt is None:
+        return pending
+    if pt.can_anchor():
+        label = atom_anchor_label(pt.atom_ref)
+        if label:
+            return label
+    if free_names is not None:
+        named = free_names.get(id(pt))
+        if named:
+            return named
+    return pt.name or "Point"
+
+
+def endpoint_xyz_text(pt: Optional[VisualPoint]) -> str:
+    if pt is None:
+        return ""
+    return "%.1f, %.1f, %.1f" % (float(pt.x), float(pt.y), float(pt.z))
+
+
+def pair_row_text(
+    pair: VisualPair,
+    free_names: Optional[Dict[int, str]] = None,
+) -> str:
+    title = (pair.title or "").strip()
+    if title:
+        return title
+    start = endpoint_label(pair.start, pending=PENDING_START, free_names=free_names)
+    end = endpoint_label(pair.end, pending=PENDING_END, free_names=free_names)
+    return "%s  →  %s" % (start, end)
+
+
+def endpoint_is_missing(pt: Optional[VisualPoint], context=None) -> bool:
+    if pt is None or context is None:
+        return False
+    src = pt.point_source
+    if src is None or not src.has_dynamic_source():
+        return False
+    try:
+        src.resolve(context)
+        return False
+    except PointUnresolvedError:
+        return True
+    except Exception:
+        return False
+
+
+def pair_status(pair: VisualPair, context=None) -> str:
+    if not pair.is_complete():
+        return STATUS_PICKING
+    if endpoint_is_missing(pair.start, context) or endpoint_is_missing(pair.end, context):
+        return STATUS_MISSING
+    return STATUS_OK
+
+
+def pair_status_glyph(status: str) -> str:
+    return STATUS_GLYPH.get(status, "●")

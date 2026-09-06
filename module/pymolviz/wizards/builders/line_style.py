@@ -7,6 +7,7 @@ from typing import Callable
 from ...util.line_style import (
     ARROW_QUALITY_SEGMENTS,
     DASH_PRESETS,
+    HEAD_STYLES,
     END_STYLES,
     LineStyle,
     apply_margin,
@@ -17,6 +18,7 @@ from ..tooltips import apply_required_tooltips
 
 __all__ = [
     "DASH_PRESETS",
+    "HEAD_STYLES",
     "END_STYLES",
     "ARROW_QUALITY_SEGMENTS",
     "LineStyle",
@@ -75,15 +77,24 @@ class LineStylePreview:
 
         painter.setPen(QtGui.QPen(QtGui.QColor(40, 40, 40), 1.6))
         painter.setBrush(QtGui.QColor(40, 40, 40))
-        ends = self._style.ends
-        if ends in ("Arrow", "Double arrow"):
-            self._draw_arrow(painter, b, y, 1)
-        if ends == "Double arrow":
-            self._draw_arrow(painter, a, y, -1)
-        if ends == "Circles":
-            painter.drawEllipse(QtCore.QPointF(a, y), 4, 4)
-            painter.drawEllipse(QtCore.QPointF(b, y), 4, 4)
+        self._draw_cap(painter, self._style.start_head, a, y, -1)
+        self._draw_cap(painter, self._style.end_head, b, y, 1)
         painter.end()
+
+    def _draw_cap(self, painter, kind, x, y, direction):
+        QtCore, QtGui, _ = qt_modules()
+        if kind == "Circles":
+            painter.drawEllipse(QtCore.QPointF(x, y), 4, 4)
+            return
+        if kind == "Arrow":
+            self._draw_arrow(painter, x, y, direction)
+            return
+        ghost = QtGui.QColor(40, 40, 40, 110)
+        painter.setPen(QtGui.QPen(ghost, 1.2))
+        painter.setBrush(QtCore.Qt.NoBrush)
+        self._draw_arrow(painter, x, y, direction)
+        painter.setPen(QtGui.QPen(QtGui.QColor(40, 40, 40), 1.6))
+        painter.setBrush(QtGui.QColor(40, 40, 40))
 
     def _draw_arrow(self, painter, x, y, direction):
         QtCore, QtGui, _ = qt_modules()
@@ -116,19 +127,23 @@ class LineOptionsWidget:
         self._margin.setSingleStep(0.1)
         self._margin.setValue(0.0)
         self._margin.setSuffix(" Å")
-        self._ends = QtWidgets.QComboBox()
-        for name in END_STYLES:
-            self._ends.addItem(name)
-        self._ends.setCurrentText("Arrow")
+        self._start_head = QtWidgets.QComboBox()
+        self._end_head = QtWidgets.QComboBox()
+        for name in HEAD_STYLES:
+            self._start_head.addItem(name)
+            self._end_head.addItem(name)
+        self._start_head.setCurrentText("None")
+        self._end_head.setCurrentText("Arrow")
         self._preview = LineStylePreview(box)
-        for widget in (self._dash, self._ends):
+        for widget in (self._dash, self._start_head, self._end_head):
             widget.currentIndexChanged.connect(self._emit)
         for widget in (self._scale, self._margin):
             widget.valueChanged.connect(self._emit)
         layout.addRow("Dash", self._dash)
         layout.addRow("Dash scale", self._scale)
         layout.addRow("Margin", self._margin)
-        layout.addRow("Ends", self._ends)
+        layout.addRow("Start cap", self._start_head)
+        layout.addRow("End cap", self._end_head)
         layout.addRow("Preview", self._preview.widget)
         self._box = box
         self._preview.set_style(self.style())
@@ -137,7 +152,8 @@ class LineOptionsWidget:
                 (self._dash, "Line pattern: solid or a dashed preset."),
                 (self._scale, "Stretch the dash pattern along the line (Ångström-scaled)."),
                 (self._margin, "Shorten both ends by this many Ångströms before drawing."),
-                (self._ends, "End caps: none, arrow, double arrow, or circles."),
+                (self._start_head, "Start cap: none, arrow, or circle."),
+                (self._end_head, "End cap: none, arrow, or circle."),
                 (self._preview.widget, "Sketch of the current dash, margin, and end style."),
             ],
             context="LineOptionsWidget",
@@ -152,7 +168,8 @@ class LineOptionsWidget:
             dash=self._dash.currentText(),
             dash_scale=float(self._scale.value()),
             margin=float(self._margin.value()),
-            ends=self._ends.currentText(),
+            start_head=self._start_head.currentText(),
+            end_head=self._end_head.currentText(),
         )
 
     def set_style(self, style: LineStyle):
@@ -161,7 +178,8 @@ class LineOptionsWidget:
         self._dash.blockSignals(True)
         self._scale.blockSignals(True)
         self._margin.blockSignals(True)
-        self._ends.blockSignals(True)
+        self._start_head.blockSignals(True)
+        self._end_head.blockSignals(True)
         try:
             dash = getattr(style, "dash", None)
             if dash:
@@ -170,16 +188,22 @@ class LineOptionsWidget:
                     self._dash.setCurrentIndex(index)
             self._scale.setValue(float(getattr(style, "dash_scale", 1.0)))
             self._margin.setValue(float(getattr(style, "margin", 0.0)))
-            ends = getattr(style, "ends", None)
-            if ends:
-                index = self._ends.findText(str(ends))
+            start = getattr(style, "start_head", None)
+            if start:
+                index = self._start_head.findText(str(start))
                 if index >= 0:
-                    self._ends.setCurrentIndex(index)
+                    self._start_head.setCurrentIndex(index)
+            end = getattr(style, "end_head", None)
+            if end:
+                index = self._end_head.findText(str(end))
+                if index >= 0:
+                    self._end_head.setCurrentIndex(index)
         finally:
             self._dash.blockSignals(False)
             self._scale.blockSignals(False)
             self._margin.blockSignals(False)
-            self._ends.blockSignals(False)
+            self._start_head.blockSignals(False)
+            self._end_head.blockSignals(False)
         self._preview.set_style(self.style())
 
     def _emit(self, *_args):

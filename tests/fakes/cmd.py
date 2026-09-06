@@ -21,11 +21,16 @@ class FakeAtom:
     elem: str = "C"
     index: int = 0
 
+    vdw: Optional[float] = None
+
     def __post_init__(self):
         if not self.index:
             self.index = self.atom_id
         if not self.name and self.elem:
             self.name = self.elem
+        if self.vdw is None:
+            table = {"H": 1.20, "C": 1.70, "N": 1.55, "O": 1.52, "S": 1.80, "P": 1.80}
+            self.vdw = float(table.get(str(self.elem or "C").upper()[:1], 1.70))
 
 
 class FakeCmd:
@@ -62,6 +67,9 @@ class FakeCmd:
         self.iterate(sele_expr, expr, space)
 
     def _append_atom(self, expr: str, atom: FakeAtom, atoms_out: list) -> None:
+        if "vdw" in expr:
+            atoms_out.append(float(atom.vdw) if atom.vdw is not None else 1.7)
+            return
         if "model" in expr and "resn" in expr:
             atoms_out.append([
                 atom.model,
@@ -96,6 +104,9 @@ class FakeCmd:
         if expr in ("(pk1)",):
             pk = self.selections.get("pk1", [])
             return list(pk[:1])
+        lowered = expr.lower().strip("() ")
+        if lowered in ("all", "visible", "enabled", "visible and enabled"):
+            return list(self.atoms)
         within = re.search(
             r"within\s+([0-9.eE+-]+)\s+of\s+\[\s*([0-9.eE+-]+)\s*,\s*([0-9.eE+-]+)\s*,\s*([0-9.eE+-]+)\s*\]",
             expr,

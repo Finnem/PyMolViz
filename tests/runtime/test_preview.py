@@ -16,8 +16,11 @@ from pymolviz.wizards.builders.pairs import VisualPair
 from pymolviz.wizards.builders.points import VisualPoint
 from pymolviz.wizards.builders.preview import (
     PREVIEW_SPHERE_NAME,
+    PREVIEW_SURFACE_CLIP_NAME,
+    PREVIEW_SURFACE_NAME,
     ArrowPreview,
     SpherePreview,
+    SurfacePreview,
     persist_live_preview,
     retarget_point_collection,
 )
@@ -268,3 +271,114 @@ def test_arrow_preview_remove_pair_keeps_other_geometry(preview_runtime):
     assert preview.collection[0] is mesh
     assert mesh.vertices.reshape(-1, 2, 3).shape[0] == 2
     assert np.allclose(mesh.vertices[0:2], kept)
+
+
+def test_arrow_preview_skips_incomplete_pair(preview_runtime):
+    style = LineStyle()
+    complete = _pair((0.0, 0.0, 0.0), (1.0, 0.0, 0.0))
+    pending = VisualPair(_point("s", (0.0, 2.0, 0.0)), None)
+    preview = ArrowPreview(preview_runtime)
+    preview.update([complete, pending], 3, style)
+    mesh = preview.collection[0]
+    assert mesh.vertices.reshape(-1, 2, 3).shape[0] == 1
+    preview.update([complete, pending], 3, style, highlight_id=complete.pair_id)
+    assert preview.collection[0].vertices.reshape(-1, 2, 3).shape[0] == 1
+
+
+def test_surface_preview_adopt_does_not_remesh(preview_runtime, monkeypatch):
+    from pymolviz.meshes.Surface import Surface
+
+    n = {"init": 0}
+    orig = Surface.__init__
+
+    def wrapped(self, *args, **kwargs):
+        n["init"] += 1
+        return orig(self, *args, **kwargs)
+
+    monkeypatch.setattr(Surface, "__init__", wrapped)
+    mesh = Surface([(0.0, 0.0, 0.0)], quality=1, algorithm="ASA", bypass_colormap=True)
+    mesh._create_CGO_list()
+    built = n["init"]
+    preview = SurfacePreview(preview_runtime)
+    preview.adopt(CGOCollection([mesh], name="src"))
+    assert n["init"] == built
+    assert preview.collection is not None
+    assert preview.collection[0] is not mesh
+    assert preview.collection[0].faces is mesh.faces
+
+
+def test_surface_preview_update_remeshes(preview_runtime, monkeypatch):
+    from pymolviz.meshes.Surface import Surface
+
+    n = {"init": 0}
+    orig = Surface.__init__
+
+    def wrapped(self, *args, **kwargs):
+        n["init"] += 1
+        return orig(self, *args, **kwargs)
+
+    monkeypatch.setattr(Surface, "__init__", wrapped)
+    mesh = Surface([(0.0, 0.0, 0.0)], quality=1, algorithm="ASA", bypass_colormap=True)
+    preview = SurfacePreview(preview_runtime)
+    preview.adopt(CGOCollection([mesh], name="src"))
+    built = n["init"]
+    preview.update([_point("a", (0.0, 0.0, 0.0))], 1.5, 1.4, "ASA", 1, False)
+    assert n["init"] > built
+    assert PREVIEW_SURFACE_NAME in preview_runtime.objects
+
+
+def test_surface_preview_reuses_mesh_for_wireframe_and_color(preview_runtime, monkeypatch):
+    from pymolviz.meshes.Surface import Surface
+    from pymolviz.util.solvent_surface import DEFAULT_ATOM_RADIUS, DEFAULT_PROBE_RADIUS
+
+    n = {"init": 0}
+    orig = Surface.__init__
+
+    def wrapped(self, *args, **kwargs):
+        n["init"] += 1
+        return orig(self, *args, **kwargs)
+
+    monkeypatch.setattr(Surface, "__init__", wrapped)
+    preview = SurfacePreview(preview_runtime)
+    pt = _point("a", (0.0, 0.0, 0.0), color=(1.0, 0.0, 0.0))
+    preview.update([pt], DEFAULT_ATOM_RADIUS, DEFAULT_PROBE_RADIUS, "SAS", 1, False)
+    built = n["init"]
+    mesh = preview.collection[0]
+    preview.update([pt], DEFAULT_ATOM_RADIUS, DEFAULT_PROBE_RADIUS, "SAS", 1, True)
+    assert n["init"] == built
+    assert preview.collection[0] is mesh
+    assert mesh.wireframe is True
+    kinds = [t for t in mesh._create_CGO_list() if isinstance(t, str)]
+    assert "CONE" in kinds
+    assert "TRIANGLES" not in kinds
+    recolored = _point("a", (0.0, 0.0, 0.0), color=(0.0, 1.0, 0.0))
+    preview.update([recolored], DEFAULT_ATOM_RADIUS, DEFAULT_PROBE_RADIUS, "SAS", 1, True)
+    assert n["init"] == built
+    assert np.allclose(
+        np.asarray(preview.collection[0].color, dtype=float).reshape(-1)[:3],
+        (0.0, 1.0, 0.0),
+    )
+
+
+def test_surface_preview_gizmos_are_separate_from_mesh(preview_runtime):
+    from pymolviz.util.solvent_surface import DEFAULT_ATOM_RADIUS, DEFAULT_PROBE_RADIUS
+
+    preview = SurfacePreview(preview_runtime)
+    pt = _point("a", (0.0, 0.0, 0.0))
+    planes = [{
+        "origin": [0.0, 0.0, 0.0],
+        "normal": [0.0, 0.0, 1.0],
+        "scale": 5.0,
+        "committed": False,
+    }]
+    preview.update(
+        [pt], DEFAULT_ATOM_RADIUS, DEFAULT_PROBE_RADIUS, "ASA", 1, False,
+        gizmo_planes=planes, gizmo_selected=0,
+    )
+    assert len(preview.collection) == 1
+    assert type(preview.collection[0]).__name__ == "Surface"
+    assert PREVIEW_SURFACE_NAME in preview_runtime.objects
+    assert PREVIEW_SURFACE_CLIP_NAME in preview_runtime.objects
+    preview.cleanup()
+    assert PREVIEW_SURFACE_CLIP_NAME not in preview_runtime.objects
+

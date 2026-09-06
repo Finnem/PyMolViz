@@ -113,7 +113,9 @@ def point_source_from_dict(data: dict) -> PointSource:
             chain=data.get("chain", ""),
             resi=data.get("resi", ""),
             name=data.get("name", ""),
+            elem=data.get("elem", ""),
             last_xyz=data.get("last_xyz"),
+            last_vdw=data.get("last_vdw"),
         )
     if typ == "PseudoAtomPoint":
         return PseudoAtomPoint(
@@ -155,15 +157,26 @@ def _line_style_dict(obj) -> dict:
             "dash": "Solid",
             "dash_scale": 1.0,
             "margin": 0.0,
+            "start_head": "None",
+            "end_head": "Arrow",
             "ends": "Arrow",
         }
     if hasattr(style, "to_dict"):
         return style.to_dict()
+    start_head = getattr(style, "start_head", None)
+    end_head = getattr(style, "end_head", None)
+    ends = getattr(style, "ends", "Arrow")
+    if start_head is None and end_head is None:
+        from .util.line_style import split_ends
+
+        start_head, end_head = split_ends(ends)
     return {
         "dash": getattr(style, "dash", "Solid"),
         "dash_scale": float(getattr(style, "dash_scale", 1.0)),
         "margin": float(getattr(style, "margin", 0.0)),
-        "ends": getattr(style, "ends", "Arrow"),
+        "start_head": start_head or "None",
+        "end_head": end_head or "Arrow",
+        "ends": ends,
     }
 
 
@@ -295,6 +308,18 @@ def _dump_arrows(obj) -> dict:
         "use_styled_cgo": bool(getattr(obj, "use_styled_cgo", False)),
         "line_style": _line_style_dict(obj),
     })
+    radii = getattr(obj, "pair_radii", None)
+    if radii:
+        data["pair_radii"] = [float(x) for x in radii]
+    heads = getattr(obj, "pair_heads", None)
+    if heads:
+        data["pair_heads"] = [float(x) for x in heads]
+    styles = getattr(obj, "pair_styles", None)
+    if styles:
+        data["pair_styles"] = [
+            style.to_dict() if hasattr(style, "to_dict") else dict(style)
+            for style in styles
+        ]
     mask = getattr(obj, "arrow_mask", None)
     if mask is not None:
         data["arrow_mask"] = [bool(v) for v in np.asarray(mask).reshape(-1)]
@@ -305,7 +330,7 @@ def _load_arrows(cls, data: dict):
     from .util.line_style import LineStyle
 
     style = LineStyle.from_dict(data.get("line_style") or {})
-    return cls(
+    obj = cls(
         starts=_sources_from_dict(data["starts"]),
         ends=_sources_from_dict(data["ends"]),
         color=data.get("color"),
@@ -324,6 +349,17 @@ def _load_arrows(cls, data: dict):
         arrow_mask=data.get("arrow_mask"),
         bypass_colormap=True,
     )
+    if data.get("pair_radii"):
+        obj.pair_radii = [float(x) for x in data["pair_radii"]]
+    if data.get("pair_heads"):
+        obj.pair_heads = [float(x) for x in data["pair_heads"]]
+    raw_styles = data.get("pair_styles") or []
+    if raw_styles:
+        obj.pair_styles = [
+            LineStyle.from_dict(item) if isinstance(item, dict) else item
+            for item in raw_styles
+        ]
+    return obj
 
 
 def _dump_points(obj) -> dict:
@@ -418,6 +454,55 @@ def _dump_hull(obj) -> dict:
 def _load_hull(cls, data: dict):
     return cls(
         _sources_from_dict(data["points"]),
+        color=data.get("color"),
+        name=data.get("name"),
+        obj_id=data.get("id"),
+        state=data.get("state", 1),
+        transparency=data.get("transparency", 0),
+        bypass_colormap=True,
+    )
+
+
+def _dump_surface(obj) -> dict:
+    data = _common_mesh_fields(obj)
+    n = len(getattr(obj, "point_sources", None) or ())
+    from .util.solvent_surface import (
+        DEFAULT_ATOM_RADIUS,
+        DEFAULT_RADIUS_MODE,
+        DEFAULT_VDW_SCALE,
+        normalize_point_radii,
+        normalize_radius_mode,
+    )
+    data.update({
+        "points": _sources_to_dict(obj.point_sources),
+        "atom_radius": float(getattr(obj, "atom_radius", DEFAULT_ATOM_RADIUS)),
+        "probe_radius": float(getattr(obj, "probe_radius", 1.4)),
+        "algorithm": str(getattr(obj, "algorithm", "SAS")),
+        "quality": int(getattr(obj, "quality", 3)),
+        "wireframe": bool(getattr(obj, "wireframe", False)),
+        "radius_mode": normalize_radius_mode(getattr(obj, "radius_mode", DEFAULT_RADIUS_MODE)),
+        "vdw_scale": float(getattr(obj, "vdw_scale", DEFAULT_VDW_SCALE) or DEFAULT_VDW_SCALE),
+        "point_radii": normalize_point_radii(getattr(obj, "point_radii", None), n),
+    })
+    from .util.mesh_clip import normalize_clip_planes
+    planes = normalize_clip_planes(getattr(obj, "clip_planes", None))
+    if planes:
+        data["clip_planes"] = planes
+    return data
+
+
+def _load_surface(cls, data: dict):
+    return cls(
+        _sources_from_dict(data["points"]),
+        atom_radius=data.get("atom_radius", 1.5),
+        probe_radius=data.get("probe_radius", 1.4),
+        algorithm=data.get("algorithm", "SAS"),
+        quality=data.get("quality", 3),
+        wireframe=data.get("wireframe", False),
+        radius_mode=data.get("radius_mode", "uniform"),
+        vdw_scale=data.get("vdw_scale", 1.0),
+        point_radii=data.get("point_radii"),
+        clip_planes=data.get("clip_planes"),
         color=data.get("color"),
         name=data.get("name"),
         obj_id=data.get("id"),
@@ -542,6 +627,7 @@ def _ensure_displayable_types() -> Dict[str, type]:
     from .meshes.Plane import Plane
     from .meshes.Points import Points
     from .meshes.Sphere import Sphere
+    from .meshes.Surface import Surface
     from .meshes.derived.PolylineTube import PolylineTube
     from .meshes.derived.Rotation_Indicator import Rotation_Indicator
     from .volumetric.IsoMesh import IsoMesh
@@ -551,6 +637,7 @@ def _ensure_displayable_types() -> Dict[str, type]:
 
     _DISPLAYABLE_TYPES = {
         "Sphere": Sphere,
+        "Surface": Surface,
         "Cylinder": Cylinder,
         "CenteredBox": CenteredBox,
         "Lines": Lines,
@@ -572,6 +659,7 @@ def _ensure_displayable_types() -> Dict[str, type]:
 
 _DUMPERS: Dict[str, Callable] = {
     "Sphere": _dump_sphere,
+    "Surface": _dump_surface,
     "Cylinder": _dump_cylinder,
     "CenteredBox": _dump_box,
     "Lines": _dump_lines,
@@ -591,6 +679,7 @@ _DUMPERS: Dict[str, Callable] = {
 
 _LOADERS: Dict[str, Callable] = {
     "Sphere": _load_sphere,
+    "Surface": _load_surface,
     "Cylinder": _load_cylinder,
     "CenteredBox": _load_box,
     "Lines": _load_lines,

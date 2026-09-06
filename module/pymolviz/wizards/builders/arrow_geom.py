@@ -13,14 +13,24 @@ from .runtime_helper import build_arrow_collection
 DEFAULT_SHAFT_RADIUS = 0.045
 
 
-def arrow_cgo(start, end, color, quality, style, alpha=1.0, radius=DEFAULT_SHAFT_RADIUS):
-    return build_styled_arrow_cgo(start, end, color, quality, style, alpha=alpha, radius=radius)
+def arrow_cgo(start, end, color, quality, style, alpha=1.0, radius=DEFAULT_SHAFT_RADIUS, head_length=None):
+    kwargs = dict(alpha=alpha, radius=radius)
+    if head_length is not None:
+        kwargs["head_length"] = head_length
+    return build_styled_arrow_cgo(start, end, color, quality, style, **kwargs)
 
 
 def build_arrow_cgo_list(pairs: Sequence[VisualPair], quality: int, style: LineStyle) -> list:
     merged = []
     for pair in pairs:
-        merged.extend(arrow_cgo(pair.start.xyz(), pair.end.xyz(), pair.color, quality, style, pair.alpha))
+        if pair.end is None:
+            continue
+        pair_style = getattr(pair, "style", None) or style
+        merged.extend(arrow_cgo(
+            pair.start.xyz(), pair.end.xyz(), pair.color, quality, pair_style, pair.alpha,
+            radius=float(pair.width),
+            head_length=float(pair.head),
+        ))
     return merged
 
 

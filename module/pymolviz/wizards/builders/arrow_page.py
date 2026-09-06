@@ -1,9 +1,15 @@
-"""Arrow mesh builder: directed pairs with dash / margin / end options."""
+"""Arrow mesh builder: a compact pair editor with two-step picking."""
 
 from __future__ import annotations
 
 from typing import Callable, List, Optional
 
+from ...util.line_style import (
+    ARROW_QUALITY_SEGMENTS,
+    LineStyle,
+    MAX_ARROW_MARGIN,
+    max_margin_for_length,
+)
 from ..pick import DeferredCallback, qt_modules, qt_widget_alive
 from ..tooltips import (
     HOOK_TO_SELECTION_TIP,
@@ -11,40 +17,28 @@ from ..tooltips import (
     apply_required_tooltips,
     warn_missing_setting_tooltips,
 )
-from .anchor_table import (
-    ARROW_END_NAME_COL,
-    ARROW_END_SRC_COL,
-    ARROW_START_NAME_COL,
-    ARROW_START_SRC_COL,
-    ARROW_X0_COL,
-    ARROW_X1_COL,
-    ARROW_Y0_COL,
-    ARROW_Y1_COL,
-    ARROW_Z0_COL,
-    ARROW_Z1_COL,
-    arrow_anchor_col_indices,
-    arrow_columns,
-    block_table_selection_signals,
-    sync_anchor_cell,
-    unblock_table_selection_signals,
+from .arrow_list import ArrowPairEditor
+from .arrow_type import ArrowTypeControl
+from .colors import colors_for_new_points, pick_rgb
+from .object_names import unused_object_name
+from .pairs import (
+    VisualPair,
+    commit_pair_anchors,
+    complete_pairs,
+    endpoint_label,
+    pair_index,
+    take_selection_endpoints,
+    take_single_selection_point,
 )
-from .colors import colors_for_new_points, pick_rgb, readable_text_color
-from .line_style import ARROW_QUALITY_SEGMENTS, LineOptionsWidget
-from .pairs import VisualPair, commit_pair_anchors, flatten_pair_points, take_single_selection_point
-from .points import (
-    VisualPoint,
-    camera_center_point,
-    export_points_to_selection,
-)
+from .points import VisualPoint, camera_center_point
 from .preview import (
     ArrowPreview,
     build_arrow_collection,
     persist_live_preview,
     retarget_arrow_collection,
 )
-from .zoom_selection import ZOOM_TO_SELECTION_TIP, points_from_pair_rows, wire_zoom_to_selection
+from .zoom_selection import ZOOM_TO_SELECTION_TIP, focus_visual_point, zoom_to_visual_points
 
-COLS = arrow_columns()
 QUALITY_HINTS = {
     0: "2D lines",
     1: "cylinder / cone · 6 sides",
@@ -70,27 +64,28 @@ class ArrowBuilderPage:
         self._on_create = on_create
         self._pairs: List[VisualPair] = []
         self._preview = ArrowPreview(cmd_)
-        self._phase = None
-        self._pending_first = None
+        self._pick_role = None
+        self._pick_pair_id = None
+        self._selected_id = None
         self._ignore_xyz = None
         self._poll_timer = None
         self._deferred = DeferredCallback()
         self._page = None
-        self._table = None
+        self._list = None
         self._quality = None
         self._quality_hint = None
-        self._line_options = None
         self._snap_atom = None
         self._hook_selection = None
         self._zoom_selection = None
         self._status = None
-        self._select_pair_btn = None
-        self._abort_btn = None
-        self._add_cam_btn = None
         self._object_name = None
         self._create_btn = None
-        self._table_filter = None
+        self._key_filter = None
         self._editing_id = None
+        self._loaded_name = None
+        self._line_style = LineStyle()
+        self._margin = 0.0
+        self._style_control = None
         self._suspend_preview = False
         self._build(parent)
 
@@ -101,24 +96,29 @@ class ArrowBuilderPage:
     def cleanup_preview(self):
         self._deferred.cancel()
         self._stop_poll_timer()
-        self._phase = None
-        self._pending_first = None
+        self._pick_role = None
+        self._pick_pair_id = None
         self._ignore_xyz = None
         self._preview.cleanup()
 
     def reset_for_create(self):
         self._editing_id = None
+        self._loaded_name = None
         self._pairs = []
-        self._phase = None
-        self._pending_first = None
+        self._selected_id = None
+        self._clear_pick()
         if self._object_name is not None:
-            self._object_name.setText("pmv_arrows")
+            self._object_name.setText(unused_object_name("pmv_arrows", self.cmd))
         if self._create_btn is not None:
             self._create_btn.setText("Create CGO")
         if self._quality is not None:
             self._quality.setValue(3)
-        if self._table is not None:
-            self._sync_table()
+        self._line_style = LineStyle()
+        self._margin = 0.0
+        if self._style_control is not None:
+            self._style_control.set_max_margin(MAX_ARROW_MARGIN)
+            self._style_control.set_style(self._line_style)
+        self._sync_list(preview=False)
         self._preview.cleanup()
 
     def load_object(self, obj):
@@ -126,9 +126,12 @@ class ArrowBuilderPage:
         from ..catalog import display_name
 
         self._editing_id = str(obj.id)
+        self._loaded_name = display_name(obj) or "pmv_arrows"
         self._pairs = pairs_from_mesh(obj)
+        self._selected_id = self._pairs[0].pair_id if self._pairs else None
         opts = arrow_options(obj)
         self._deferred.cancel()
+        self._clear_pick()
         self._suspend_preview = True
         try:
             if self._object_name is not None:
@@ -137,18 +140,22 @@ class ArrowBuilderPage:
                 self._create_btn.setText("Update CGO")
             if self._quality is not None:
                 self._quality.setValue(int(opts["quality"]))
-            if self._line_options is not None:
-                self._line_options.set_style(opts.get("line_style"))
-            if self._table is not None:
-                self._sync_table()
+            if opts.get("line_style") is not None:
+                self._line_style = opts["line_style"].copy() if hasattr(opts["line_style"], "copy") else opts["line_style"]
+                self._margin = float(getattr(self._line_style, "margin", 0.0) or 0.0)
+                if self._style_control is not None:
+                    self._style_control.set_style(self._line_style)
+            self._sync_list(preview=False)
         finally:
             self._suspend_preview = False
         self._preview.adopt(obj)
 
     def _existing_points(self) -> List[VisualPoint]:
-        pts = flatten_pair_points(self._pairs)
-        if self._pending_first is not None:
-            pts.append(self._pending_first)
+        pts = []
+        for pair in self._pairs:
+            pts.append(pair.start)
+            if pair.end is not None:
+                pts.append(pair.end)
         return pts
 
     def _build(self, parent):
@@ -170,101 +177,54 @@ class ArrowBuilderPage:
         header.addStretch(1)
         root.addLayout(header)
 
-        opts = QtWidgets.QGroupBox("Options")
-        opts_layout = QtWidgets.QFormLayout(opts)
-        self._quality = QtWidgets.QSpinBox()
-        self._quality.setRange(0, 5)
-        self._quality.setValue(3)
-        self._quality.setToolTip("0 = 2D lines; 1–5 = cylinder / cone meshes with more vertices")
-        self._quality.valueChanged.connect(self._on_quality_changed)
-        self._quality_hint = QtWidgets.QLabel(QUALITY_HINTS[3])
-        self._quality_hint.setStyleSheet("color: gray;")
-        quality_row = QtWidgets.QHBoxLayout()
-        quality_row.addWidget(self._quality)
-        quality_row.addWidget(self._quality_hint, stretch=1)
-        opts_layout.addRow("Quality", quality_row)
-        root.addWidget(opts)
-
-        self._line_options = LineOptionsWidget(page, on_change=self._schedule_preview)
-        root.addWidget(self._line_options.widget)
-
-        pts_box = QtWidgets.QGroupBox("Pairs")
-        pts_layout = QtWidgets.QVBoxLayout(pts_box)
+        flags = QtWidgets.QHBoxLayout()
         self._snap_atom = QtWidgets.QCheckBox("Snap to atom")
+        self._snap_atom.setChecked(True)
         self._hook_selection = QtWidgets.QCheckBox("Anchor new points")
         self._hook_selection.setChecked(True)
         self._zoom_selection = QtWidgets.QCheckBox("Zoom to selection")
-        btn_row = QtWidgets.QHBoxLayout()
-        self._select_pair_btn = QtWidgets.QPushButton("Select Pair")
-        self._select_pair_btn.clicked.connect(self._on_select_pair)
-        mcs_btn = QtWidgets.QPushButton("Pair MCS")
-        mcs_btn.clicked.connect(self._on_pair_mcs)
-        self._add_cam_btn = QtWidgets.QPushButton("Add camera")
-        self._add_cam_btn.clicked.connect(self._on_add_camera)
-        self._abort_btn = QtWidgets.QPushButton("Abort")
-        self._abort_btn.clicked.connect(lambda: self._abort_pair(silent=False))
-        self._abort_btn.setVisible(False)
-        export_sel = QtWidgets.QPushButton("Export points to selection")
-        export_sel.clicked.connect(self._export_selection)
-        btn_row.addWidget(self._select_pair_btn)
-        btn_row.addWidget(mcs_btn)
-        btn_row.addWidget(self._add_cam_btn)
-        btn_row.addWidget(self._abort_btn)
-        btn_row.addWidget(export_sel)
-        self._status = QtWidgets.QLabel("Add a pair with Select Pair or Add camera.")
-        self._status.setWordWrap(True)
-        self._status.setStyleSheet("color: gray;")
-        flags = QtWidgets.QHBoxLayout()
         flags.addWidget(self._snap_atom)
         flags.addWidget(self._hook_selection)
         flags.addWidget(self._zoom_selection)
         flags.addStretch(1)
-        pts_layout.addLayout(flags)
-        pts_layout.addLayout(btn_row)
-        pts_layout.addWidget(self._status)
+        root.addLayout(flags)
 
-        self._table = QtWidgets.QTableWidget(0, len(COLS))
-        self._table.setHorizontalHeaderLabels(list(COLS))
-        self._table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-        self._table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
-        self._table.horizontalHeader().setStretchLastSection(False)
-        self._table.cellChanged.connect(self._on_cell_changed)
-        self._table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
-        self._table.customContextMenuRequested.connect(self._show_pairs_context_menu)
-        wire_zoom_to_selection(
-            self._table,
-            self._zoom_selection,
-            self.cmd,
-            lambda rows: points_from_pair_rows(self._pairs, rows),
+        quality_row = QtWidgets.QHBoxLayout()
+        quality_row.addWidget(QtWidgets.QLabel("Quality"))
+        self._quality = QtWidgets.QSpinBox()
+        self._quality.setRange(0, 5)
+        self._quality.setValue(3)
+        self._quality.valueChanged.connect(self._on_quality_changed)
+        self._quality_hint = QtWidgets.QLabel(QUALITY_HINTS[3])
+        self._quality_hint.setStyleSheet("color: gray;")
+        quality_row.addWidget(self._quality)
+        quality_row.addWidget(self._quality_hint, stretch=1)
+        root.addLayout(quality_row)
+
+        style_row = QtWidgets.QHBoxLayout()
+        style_row.addWidget(QtWidgets.QLabel("Style"))
+        self._style_control = ArrowTypeControl(
+            page,
+            style=self._line_style,
+            max_margin=MAX_ARROW_MARGIN,
+            on_change=self.set_line_style,
         )
+        self._style_control.widget.setMinimumWidth(160)
+        style_row.addWidget(self._style_control.widget, stretch=1)
+        root.addLayout(style_row)
 
-        class _TableKeyFilter(QtCore.QObject):
-            def __init__(self, owner):
-                QtCore.QObject.__init__(self)
-                self._owner = owner
+        self._list = ArrowPairEditor(page, self)
+        root.addWidget(self._list.widget, stretch=1)
 
-            def eventFilter(self, obj, event):
-                if event.type() != QtCore.QEvent.KeyPress:
-                    return False
-                if event.key() not in (QtCore.Qt.Key_Delete, QtCore.Qt.Key_Backspace):
-                    return False
-                table = self._owner._table
-                _, _, QtWidgets = qt_modules()
-                if QtWidgets is not None and table.state() == QtWidgets.QAbstractItemView.EditingState:
-                    return False
-                self._owner._delete_selected()
-                return True
-
-        self._table_filter = _TableKeyFilter(self)
-        self._table.installEventFilter(self._table_filter)
-        self._table.viewport().installEventFilter(self._table_filter)
-        pts_layout.addWidget(self._table)
-        root.addWidget(pts_box, stretch=1)
+        self._status = QtWidgets.QLabel("Add an arrow, or select two atoms first.")
+        self._status.setWordWrap(True)
+        self._status.setStyleSheet("color: gray;")
+        root.addWidget(self._status)
 
         actions = QtWidgets.QHBoxLayout()
         self._object_name = QtWidgets.QLineEdit()
         self._object_name.setPlaceholderText("Object name")
-        self._object_name.setText("pmv_arrows")
+        self._object_name.setText(unused_object_name("pmv_arrows", self.cmd))
         self._create_btn = QtWidgets.QPushButton("Create CGO")
         self._create_btn.clicked.connect(self._create_cgo)
         export_btn = QtWidgets.QPushButton("Export CGO")
@@ -285,21 +245,6 @@ class ArrowBuilderPage:
                 (self._snap_atom, SNAP_TO_ATOM_TIP),
                 (self._hook_selection, HOOK_TO_SELECTION_TIP),
                 (self._zoom_selection, ZOOM_TO_SELECTION_TIP),
-                (
-                    self._select_pair_btn,
-                    "Pick start and end from the current PyMOL selection (one atom at a time).",
-                ),
-                (mcs_btn, "Maximum common substructure pairing (not implemented)."),
-                (
-                    self._add_cam_btn,
-                    "Use the camera/screen center as the next pair endpoint. "
-                    "With Snap to atom, uses the nearest atom within 1 Å.",
-                ),
-                (self._abort_btn, "Cancel the in-progress pair and keep existing rows."),
-                (
-                    export_sel,
-                    "Create a PyMOL selection covering the pair endpoints as pseudoatoms.",
-                ),
                 (self._object_name, "Name of the PyMOL CGO object created or exported."),
                 (self._create_btn, "Commit the arrows to the session as a named CGO object."),
                 (export_btn, "Write a Python script that rebuilds this CGO."),
@@ -310,13 +255,39 @@ class ArrowBuilderPage:
         self._poll_timer = QtCore.QTimer(page)
         self._poll_timer.setInterval(250)
         self._poll_timer.timeout.connect(self._poll_selection)
+
+        class _KeyFilter(QtCore.QObject):
+            def __init__(self, owner):
+                QtCore.QObject.__init__(self)
+                self._owner = owner
+
+            def eventFilter(self, obj, event):
+                if event.type() != QtCore.QEvent.KeyPress:
+                    return False
+                focus = QtWidgets.QApplication.focusWidget()
+                typing = isinstance(
+                    focus, (QtWidgets.QLineEdit, QtWidgets.QAbstractSpinBox)
+                )
+                if event.key() == QtCore.Qt.Key_Escape:
+                    self._owner._abort_pick()
+                    return True
+                if event.key() in (QtCore.Qt.Key_Delete, QtCore.Qt.Key_Backspace):
+                    if typing:
+                        return False
+                    self._owner._delete_selected()
+                    return True
+                return False
+
+        self._key_filter = _KeyFilter(self)
+        page.installEventFilter(self._key_filter)
         self._page = page
         warn_missing_setting_tooltips(page, context="ArrowBuilderPage")
 
     def _go_back(self):
         self._deferred.cancel()
         self._stop_poll_timer()
-        self._abort_pair(silent=True)
+        self._abort_pick(silent=True)
+        self._deferred.cancel()
         self._preview.cleanup()
         self._on_back()
 
@@ -327,124 +298,113 @@ class ArrowBuilderPage:
             "0 = 2D lines; 1–5 = cylinder / cone (%d sides)."
             % ARROW_QUALITY_SEGMENTS.get(quality, 0)
             if quality
-            else "2D CGO lines. Dash / margin / ends still apply."
+            else "2D CGO lines."
         )
         self._schedule_preview()
 
     def _style(self):
-        return self._line_options.style()
+        style = self._line_style.copy()
+        style.margin = float(self._margin)
+        return style
 
-    def _not_implemented(self, title, text):
-        _, _, QtWidgets = qt_modules()
-        if QtWidgets is not None:
-            QtWidgets.QMessageBox.information(self._page, title, text)
-        else:
-            raise NotImplementedError(text)
+    def set_line_style(self, style: LineStyle):
+        if style is None:
+            return
+        self._line_style = style.copy()
+        self._margin = float(self._line_style.margin)
+        self._schedule_preview()
 
-    _MULTIPLE_ATOMS_MSG = (
-        "Multiple atoms selected — pick one atom at a time, "
-        "then Use selection or keep picking."
-    )
+    def _fit_max_margin(self) -> float:
+        cap = MAX_ARROW_MARGIN
+        found = 0
+        n_heads = self._line_style.n_arrow_heads() if hasattr(self._line_style, "n_arrow_heads") else 1
+        double = n_heads >= 2
+        use_head = n_heads > 0
+        for pair in complete_pairs(self._pairs):
+            try:
+                start = pair.start.xyz()
+                end = pair.end.xyz()
+            except Exception:
+                continue
+            dx = start[0] - end[0]
+            dy = start[1] - end[1]
+            dz = start[2] - end[2]
+            length = (dx * dx + dy * dy + dz * dz) ** 0.5
+            head = float(pair.head) if use_head else 0.0
+            cap = min(cap, max_margin_for_length(length, head, double))
+            found += 1
+        return cap if found else MAX_ARROW_MARGIN
 
-    def _reject_multiple_atoms(self, *, dialog=False):
-        """Clear a multi-atom sele and nudge the user without spamming dialogs."""
-        self._clear_pymol_selection()
+    def _refresh_margin_limit(self):
+        cap = self._fit_max_margin()
+        if self._margin > cap:
+            self._margin = cap
+            self._line_style = self._line_style.updated(margin=self._margin)
+        if self._style_control is not None:
+            self._style_control.set_max_margin(cap)
+            self._style_control.set_margin(self._margin)
+
+    def _pairs_for_draw(self):
+        style = self._style()
+        return [pair.with_style(style.copy()) for pair in self._pairs]
+
+    def _resolve_context(self):
+        try:
+            from ...runtime.context import ResolveContext
+
+            return ResolveContext(self.cmd)
+        except Exception:
+            return None
+
+    def _set_status(self, text):
         if qt_widget_alive(self._status):
             try:
-                self._status.setText(self._MULTIPLE_ATOMS_MSG)
+                self._status.setText(text)
             except RuntimeError:
                 pass
-        if dialog:
-            self._not_implemented(
-                "Not Implemented",
-                "Selecting multiple atoms as a pair is not implemented yet.",
-            )
-
-    def _on_pair_mcs(self):
-        self._not_implemented("Pair MCS", "Pair MCS is not implemented yet.")
 
     def _same_as_ignored(self, point: VisualPoint) -> bool:
-        if self._ignore_xyz is None:
+        if self._ignore_xyz is None or point is None:
             return False
         dx = point.x - self._ignore_xyz[0]
         dy = point.y - self._ignore_xyz[1]
         dz = point.z - self._ignore_xyz[2]
         return (dx * dx + dy * dy + dz * dz) < 1e-6
 
-    def _set_phase(self, phase, first=None, hint=None, schedule_preview=True):
-        self._phase = phase
-        self._pending_first = first
-        if phase is None:
-            self._ignore_xyz = None
-        if qt_widget_alive(self._page):
-            waiting = phase in ("first", "second")
-            try:
-                self._abort_btn.setVisible(waiting)
-                self._select_pair_btn.setText("Select Pair" if not waiting else "Use selection")
-                if hint is not None:
-                    self._status.setText(hint)
-            except RuntimeError:
-                pass
-        waiting = phase in ("first", "second")
-        if waiting:
-            self._start_poll_timer()
-        else:
+    def _clear_pick(self):
+        self._pick_role = None
+        self._pick_pair_id = None
+        self._ignore_xyz = None
+        self._stop_poll_timer()
+
+    def _set_pick(self, role, pair_id, hint):
+        self._pick_role = role
+        self._pick_pair_id = pair_id
+        if hint is not None:
+            self._set_status(hint)
+        if role is None:
             self._stop_poll_timer()
-        if schedule_preview:
-            self._schedule_preview()
+        else:
+            self._start_poll_timer()
 
-    def _abort_pair(self, silent=False):
-        self._set_phase(
-            None,
-            None,
-            None if silent else "Pair selection aborted.",
-            schedule_preview=not silent,
-        )
-        if not silent and qt_widget_alive(self._status):
-            try:
-                self._status.setText("Add a pair with Select Pair or Add camera.")
-            except RuntimeError:
-                pass
-
-    def _selection_point(self, interactive_only=False):
-        return take_single_selection_point(
-            self.cmd,
-            self._existing_points(),
-            interactive_only=interactive_only,
-            hook_to_selection=self._hook_selection.isChecked(),
-        )
-
-    def _on_select_pair(self):
-        if self._phase in ("first", "second"):
-            self._use_current_selection()
+    def _abort_pick(self, silent=False):
+        if self._pick_role is None:
             return
-        point, status = self._selection_point()
-        if status == "multiple":
-            self._reject_multiple_atoms(dialog=True)
+        pid = self._pick_pair_id
+        if pid:
+            idx = pair_index(self._pairs, pid)
+            if idx >= 0 and not self._pairs[idx].is_complete():
+                del self._pairs[idx]
+                if self._selected_id == pid:
+                    self._selected_id = None
+        self._clear_pick()
+        if silent:
             return
-        if status == "one":
-            self._accept_first(point)
-            return
-        self._set_phase(
-            "first",
-            None,
-            "Select the first point: pick one atom, click Use selection, or Add camera. Abort to cancel.",
-        )
-
-    def _use_current_selection(self):
-        if self._phase not in ("first", "second"):
-            return
-        point, status = self._selection_point()
-        if status == "multiple":
-            self._reject_multiple_atoms(dialog=True)
-            return
-        if status == "empty":
-            self._status.setText("Nothing selected. Pick one atom or use Add camera.")
-            return
-        if self._same_as_ignored(point):
-            self._status.setText("That is still the first point. Pick a different atom or Add camera.")
-            return
-        self._accept_point(point)
+        if self._pairs:
+            self._set_status("Pick cancelled.")
+        else:
+            self._set_status("Add an arrow, or select two atoms first.")
+        self._sync_list()
 
     def _start_poll_timer(self):
         if not qt_widget_alive(self._poll_timer):
@@ -462,18 +422,8 @@ class ArrowBuilderPage:
         except RuntimeError:
             pass
 
-    def _poll_selection(self):
-        if self._phase not in ("first", "second"):
-            return
-        if not qt_widget_alive(self._page):
-            self._stop_poll_timer()
-            return
-        point, status = self._selection_point(interactive_only=True)
-        if status == "multiple":
-            self._reject_multiple_atoms(dialog=False)
-            return
-        if status == "one" and not self._same_as_ignored(point):
-            self._accept_point(point)
+    def _hook(self) -> bool:
+        return bool(self._hook_selection.isChecked())
 
     def _clear_pymol_selection(self):
         try:
@@ -485,112 +435,289 @@ class ArrowBuilderPage:
         except Exception:
             pass
 
-    def _accept_point(self, point: VisualPoint):
-        if self._phase == "first":
-            self._accept_first(point)
-        elif self._phase == "second":
-            self._accept_second(point)
-
-    def _accept_first(self, point: VisualPoint):
-        self._clear_pymol_selection()
-        self._ignore_xyz = point.xyz()
-        self._set_phase(
-            "second",
-            point,
-            "First point: %s. Select the second point, Add camera, or Abort." % point.name,
-        )
-
-    def _stamp_pair(self, start: VisualPoint, end: VisualPoint) -> VisualPair:
-        palette = colors_for_new_points(1, start_index=len(self._pairs))
+    def _stamp_pair(self, start: VisualPoint, end: Optional[VisualPoint] = None) -> VisualPair:
+        palette = colors_for_new_points(1, start_index=len(complete_pairs(self._pairs)))
         color = palette[0]
-        return VisualPair(start.with_color(color), end.with_color(color))
+        start = start.with_color(color)
+        if end is not None:
+            end = end.with_color(color)
+        return VisualPair(start, end, style=self._line_style.copy())
 
-    def _accept_second(self, point: VisualPoint):
-        first = self._pending_first
-        if first is None:
-            self._accept_first(point)
+    def add_arrow(self):
+        if self._pick_role is not None:
+            self._abort_pick()
             return
-        self._clear_pymol_selection()
-        self._pairs.append(self._stamp_pair(first, point))
-        pair = self._pairs[-1]
-        added = self._preview.add_pairs(
-            [pair], int(self._quality.value()), self._style(),
-            current_pairs=self._pairs[:-1],
+        start, end, status = take_selection_endpoints(
+            self.cmd,
+            self._existing_points(),
+            hook_to_selection=self._hook(),
         )
-        self._set_phase(None, None, "Pair added: %s → %s" % (first.name, point.name))
-        self._sync_table(preview=not added)
+        if status == "pair":
+            pair = self._stamp_pair(start, end)
+            self._pairs.append(pair)
+            self._selected_id = pair.pair_id
+            self._clear_pymol_selection()
+            self._set_status("Arrow added.")
+            self._sync_list()
+            return
+        if status == "one":
+            self._begin_incomplete(start)
+            return
+        if status == "multiple":
+            self._set_status("Select two atoms to create an arrow, or pick them one at a time.")
+        self._set_pick("start", None, "Pick start")
+        self._sync_list()
 
-    def _on_add_camera(self):
+    def _begin_incomplete(self, start: VisualPoint):
+        pair = self._stamp_pair(start, None)
+        self._pairs.append(pair)
+        self._selected_id = pair.pair_id
+        self._clear_pymol_selection()
+        self._ignore_xyz = start.xyz()
+        self._set_pick("end", pair.pair_id, "%s  →  [pick end…]" % endpoint_label(pair.start))
+        self._sync_list()
+
+    def camera_pick(self):
         pt = camera_center_point(
             self.cmd,
             self._snap_atom.isChecked(),
             self._existing_points(),
-            hook_to_selection=self._hook_selection.isChecked(),
+            hook_to_selection=self._hook(),
         )
-        if self._phase is None:
-            self._accept_first(pt)
+        if self._pick_role is None:
             return
         self._accept_point(pt)
 
-    def _selected_rows(self) -> List[int]:
-        return sorted({i.row() for i in self._table.selectedIndexes()})
-
-    def _pick_pair_color(self):
-        rows = self._selected_rows()
-        if not rows:
+    def _poll_selection(self):
+        if self._pick_role is None:
             return
-        initial = self._pairs[rows[0]].rgba()
-        original = {row: self._pairs[row].rgba() for row in rows}
+        if not qt_widget_alive(self._page):
+            self._stop_poll_timer()
+            return
+        if self._pick_role == "start" and self._pick_pair_id is None:
+            start, end, status = take_selection_endpoints(
+                self.cmd,
+                self._existing_points(),
+                interactive_only=True,
+                hook_to_selection=self._hook(),
+            )
+            if status == "pair" and start is not None and end is not None:
+                if not self._same_as_ignored(start):
+                    self._finish_new_pair(start, end)
+                return
+            if status == "one" and start is not None and not self._same_as_ignored(start):
+                self._accept_point(start)
+            return
+        point, status = take_single_selection_point(
+            self.cmd,
+            self._existing_points(),
+            interactive_only=True,
+            hook_to_selection=self._hook(),
+        )
+        if status == "one" and not self._same_as_ignored(point):
+            self._accept_point(point)
+
+    def _finish_new_pair(self, start: VisualPoint, end: VisualPoint):
+        pair = self._stamp_pair(start, end)
+        self._pairs.append(pair)
+        self._selected_id = pair.pair_id
+        self._clear_pymol_selection()
+        self._clear_pick()
+        self._set_status("Arrow added.")
+        self._sync_list()
+
+    def _accept_point(self, point: VisualPoint):
+        if self._pick_role is None:
+            return
+        if self._pick_role == "start" and self._pick_pair_id is None:
+            self._begin_incomplete(point)
+            return
+        idx = pair_index(self._pairs, self._pick_pair_id)
+        if idx < 0:
+            self._clear_pick()
+            self._sync_list()
+            return
+        pair = self._pairs[idx]
+        colored = point.with_color(pair.color)
+        if self._pick_role == "start":
+            self._pairs[idx] = pair.with_start(colored)
+        else:
+            self._pairs[idx] = pair.with_end(colored)
+        self._clear_pymol_selection()
+        self._clear_pick()
+        self._set_status("Arrow updated.")
+        self._sync_list()
+
+    def select_arrow(self, pair_id, zoom=True):
+        self._selected_id = pair_id
+        self._sync_list()
+        if not zoom or not self._zoom_selection.isChecked():
+            return
+        idx = pair_index(self._pairs, pair_id)
+        if idx < 0:
+            return
+        pair = self._pairs[idx]
+        pts = [pair.start]
+        if pair.end is not None:
+            pts.append(pair.end)
+        zoom_to_visual_points(self.cmd, pts)
+
+    def delete_arrow(self, pair_id):
+        idx = pair_index(self._pairs, pair_id)
+        if idx < 0:
+            return
+        if self._pick_pair_id == pair_id:
+            self._clear_pick()
+        del self._pairs[idx]
+        if self._selected_id == pair_id:
+            if self._pairs:
+                self._selected_id = self._pairs[min(idx, len(self._pairs) - 1)].pair_id
+            else:
+                self._selected_id = None
+        self._sync_list()
+
+    def _delete_selected(self):
+        if self._selected_id is None:
+            return
+        self.delete_arrow(self._selected_id)
+
+    def pick_endpoint(self, pair_id, role):
+        idx = pair_index(self._pairs, pair_id)
+        if idx < 0:
+            return
+        pair = self._pairs[idx]
+        current = pair.start if role == "start" else pair.end
+        self._selected_id = pair_id
+        self._clear_pymol_selection()
+        self._ignore_xyz = current.xyz() if current is not None else None
+        if role == "start":
+            hint = "Replace start endpoint…"
+        elif current is None:
+            hint = "Pick end"
+        else:
+            hint = "Replace end endpoint…"
+        self._set_pick(role, pair_id, hint)
+        self._sync_list()
+
+    def focus_endpoint(self, pair_id, role):
+        idx = pair_index(self._pairs, pair_id)
+        if idx < 0:
+            return
+        pair = self._pairs[idx]
+        pt = pair.start if role == "start" else pair.end
+        self.select_arrow(pair_id, zoom=False)
+        if pt is not None:
+            focus_visual_point(self.cmd, pt)
+
+    def camera_endpoint(self, pair_id, role):
+        idx = pair_index(self._pairs, pair_id)
+        if idx < 0:
+            return
+        pair = self._pairs[idx]
+        pt = camera_center_point(
+            self.cmd,
+            self._snap_atom.isChecked(),
+            self._existing_points(),
+            hook_to_selection=self._hook(),
+        ).with_color(pair.color)
+        if role == "start":
+            self._pairs[idx] = pair.with_start(pt)
+        else:
+            self._pairs[idx] = pair.with_end(pt)
+        if self._pick_pair_id == pair_id and self._pick_role == role:
+            self._clear_pick()
+        self._selected_id = pair_id
+        self._sync_list()
+
+    def swap_arrow(self, pair_id):
+        idx = pair_index(self._pairs, pair_id)
+        if idx < 0:
+            return
+        self._pairs[idx] = self._pairs[idx].swapped()
+        self._selected_id = pair_id
+        self._sync_list()
+
+    def edit_color(self, pair_id):
+        idx = pair_index(self._pairs, pair_id)
+        if idx < 0:
+            return
+        original = self._pairs[idx].rgba()
 
         def on_preview(rgba):
-            for row in rows:
-                if 0 <= row < len(self._pairs):
-                    self._pairs[row] = self._pairs[row].with_color(rgba)
-            self._refresh_preview()
-            for row in rows:
-                item = self._table.item(row, ARROW_START_NAME_COL)
-                if item is not None:
-                    self._style_name_cell(item, self._pairs[row])
+            i = pair_index(self._pairs, pair_id)
+            if i >= 0:
+                self._pairs[i] = self._pairs[i].with_color(rgba)
+                self._schedule_preview()
 
         def on_done(rgba):
+            i = pair_index(self._pairs, pair_id)
+            if i < 0:
+                return
             if rgba is None:
-                for row, color in original.items():
-                    self._pairs[row] = self._pairs[row].with_color(color)
-            self._sync_table()
+                self._pairs[i] = self._pairs[i].with_color(original)
+            else:
+                self._pairs[i] = self._pairs[i].with_color(rgba)
+            self._sync_list()
 
-        pick_rgb(self._page, initial, on_change=on_preview, on_done=on_done)
+        pick_rgb(self._page, original, on_change=on_preview, on_done=on_done)
 
-    def _show_pairs_context_menu(self, pos):
-        _, _, QtWidgets = qt_modules()
-        index = self._table.indexAt(pos)
-        if not index.isValid():
+    def set_arrow_width(self, pair_id, value):
+        idx = pair_index(self._pairs, pair_id)
+        if idx < 0:
             return
-        row = index.row()
-        if row not in self._selected_rows():
-            self._table.selectRow(row)
-        rows = self._selected_rows()
-        menu = QtWidgets.QMenu(self._table)
-        color_act = menu.addAction("Color selection…")
-        color_act.setEnabled(bool(rows))
-        color_act.triggered.connect(self._pick_pair_color)
-        del_act = menu.addAction("Delete selected")
-        del_act.setEnabled(bool(rows))
-        del_act.triggered.connect(self._delete_selected)
-        menu.exec_(self._table.viewport().mapToGlobal(pos))
+        self._pairs[idx] = self._pairs[idx].with_width(value)
+        self._schedule_preview()
 
-    def _style_name_cell(self, item, pair):
-        _, QtGui, _ = qt_modules()
-        text_rgb = readable_text_color(pair.color)
-        item.setBackground(QtGui.QColor(
-            int(pair.color[0] * 255), int(pair.color[1] * 255), int(pair.color[2] * 255),
-        ))
-        item.setForeground(QtGui.QColor(
-            int(text_rgb[0] * 255), int(text_rgb[1] * 255), int(text_rgb[2] * 255),
-        ))
+    def set_arrow_head(self, pair_id, value):
+        idx = pair_index(self._pairs, pair_id)
+        if idx < 0:
+            return
+        self._pairs[idx] = self._pairs[idx].with_head(value)
+        self._schedule_preview()
+
+    def set_arrow_title(self, pair_id, text):
+        idx = pair_index(self._pairs, pair_id)
+        if idx < 0:
+            return
+        self._pairs[idx] = self._pairs[idx].with_title(text)
+
+    def set_endpoint_anchor(self, pair_id, role, checked):
+        idx = pair_index(self._pairs, pair_id)
+        if idx < 0:
+            return
+        pair = self._pairs[idx]
+        if role == "start":
+            if pair.start.can_anchor():
+                self._pairs[idx] = pair.with_start(pair.start.with_anchor_intent(checked))
+            return
+        if pair.end is not None and pair.end.can_anchor():
+            self._pairs[idx] = pair.with_end(pair.end.with_anchor_intent(checked))
+
+    def _pending_point(self):
+        if self._pick_role != "end" or not self._pick_pair_id:
+            return None
+        idx = pair_index(self._pairs, self._pick_pair_id)
+        if idx < 0 or self._pairs[idx].is_complete():
+            return None
+        return self._pairs[idx].start
+
+    def _sync_list(self, preview=True):
+        self._refresh_margin_limit()
+        if self._list is not None:
+            self._list.rebuild(
+                self._pairs,
+                self._selected_id,
+                self._pick_pair_id,
+                self._pick_role,
+                context=self._resolve_context(),
+            )
+        if preview:
+            self._schedule_preview()
 
     def _schedule_preview(self):
         if self._suspend_preview:
             return
+        self._refresh_margin_limit()
         self._deferred.schedule(self._refresh_preview, page=self._page)
 
     def _refresh_preview(self):
@@ -598,150 +725,37 @@ class ArrowBuilderPage:
             return
         try:
             self._preview.update(
-                self._pairs,
+                self._pairs_for_draw(),
                 self._quality.value(),
                 self._style(),
-                pending=self._pending_first,
+                pending=self._pending_point(),
+                highlight_id=self._selected_id,
             )
         except RuntimeError:
             pass
 
-    def _anchor_cols(self):
-        return arrow_anchor_col_indices(COLS)
-
-    def _on_start_anchor_toggled(self, row: int, checked: bool):
-        if row < 0 or row >= len(self._pairs):
-            return
-        pair = self._pairs[row]
-        start = pair.start
-        if not start.can_anchor():
-            return
-        self._pairs[row] = pair.with_start(start.with_anchor_intent(checked))
-
-    def _on_end_anchor_toggled(self, row: int, checked: bool):
-        if row < 0 or row >= len(self._pairs):
-            return
-        pair = self._pairs[row]
-        end = pair.end
-        if not end.can_anchor():
-            return
-        self._pairs[row] = pair.with_end(end.with_anchor_intent(checked))
-
-    def _sync_table(self, preview=True):
-        QtCore, QtGui, QtWidgets = qt_modules()
-        start_col, end_col = self._anchor_cols()
-        sel_blocked = block_table_selection_signals(self._table)
-        self._table.blockSignals(True)
-        try:
-            self._table.setRowCount(len(self._pairs))
-            for row, pair in enumerate(self._pairs):
-                sync_anchor_cell(
-                    self._table, row, start_col, pair.start,
-                    self._on_start_anchor_toggled, QtWidgets, QtCore,
-                )
-                sync_anchor_cell(
-                    self._table, row, end_col, pair.end,
-                    self._on_end_anchor_toggled, QtWidgets, QtCore,
-                )
-                values = (
-                    (ARROW_START_NAME_COL, pair.start.name),
-                    (ARROW_START_SRC_COL, pair.start.source),
-                    (ARROW_END_NAME_COL, pair.end.name),
-                    (ARROW_END_SRC_COL, pair.end.source),
-                    (ARROW_X0_COL, "%.3f" % pair.start.x),
-                    (ARROW_Y0_COL, "%.3f" % pair.start.y),
-                    (ARROW_Z0_COL, "%.3f" % pair.start.z),
-                    (ARROW_X1_COL, "%.3f" % pair.end.x),
-                    (ARROW_Y1_COL, "%.3f" % pair.end.y),
-                    (ARROW_Z1_COL, "%.3f" % pair.end.z),
-                )
-                for col, text in values:
-                    item = self._table.item(row, col)
-                    if item is None:
-                        item = QtWidgets.QTableWidgetItem()
-                        self._table.setItem(row, col, item)
-                    item.setText(text)
-                    if col in (ARROW_START_NAME_COL, ARROW_END_NAME_COL):
-                        self._style_name_cell(item, pair)
-                    else:
-                        item.setBackground(QtGui.QBrush())
-                        item.setForeground(QtGui.QBrush())
-        finally:
-            self._table.blockSignals(False)
-            unblock_table_selection_signals(self._table, sel_blocked)
-        if preview:
-            self._schedule_preview()
-
-    def _on_cell_changed(self, row, col):
-        if row < 0 or row >= len(self._pairs):
-            return
-        item = self._table.item(row, col)
-        if item is None:
-            return
-        text = item.text()
-        pair = self._pairs[row]
-        start, end = pair.start, pair.end
-        start_col, end_col = self._anchor_cols()
-        if col in (start_col, end_col):
-            return
-        try:
-            if col == ARROW_START_NAME_COL:
-                start = start.with_name(text)
-            elif col == ARROW_START_SRC_COL:
-                start = start.with_source(text)
-            elif col == ARROW_END_NAME_COL:
-                end = end.with_name(text)
-            elif col == ARROW_END_SRC_COL:
-                end = end.with_source(text)
-            elif col == ARROW_X0_COL:
-                start = start.with_xyz((float(text), start.y, start.z))
-            elif col == ARROW_Y0_COL:
-                start = start.with_xyz((start.x, float(text), start.z))
-            elif col == ARROW_Z0_COL:
-                start = start.with_xyz((start.x, start.y, float(text)))
-            elif col == ARROW_X1_COL:
-                end = end.with_xyz((float(text), end.y, end.z))
-            elif col == ARROW_Y1_COL:
-                end = end.with_xyz((end.x, float(text), end.z))
-            elif col == ARROW_Z1_COL:
-                end = end.with_xyz((end.x, end.y, float(text)))
-            else:
-                return
-            self._pairs[row] = VisualPair(start, end)
-        except ValueError:
-            self._sync_table()
-            return
-        self._schedule_preview()
-
-    def _delete_selected(self):
-        rows = sorted(self._selected_rows(), reverse=True)
-        if not rows:
-            return
-        self._preview.remove_rows(
-            rows, int(self._quality.value()), self._style(), self._pairs,
-        )
-        for row in rows:
-            if 0 <= row < len(self._pairs):
-                del self._pairs[row]
-        self._sync_table(preview=False)
-
-    def _export_selection(self):
-        export_points_to_selection(self.cmd, flatten_pair_points(self._pairs))
-
     def _create_cgo(self):
-        if not self._pairs:
+        ready = commit_pair_anchors(self._pairs_for_draw())
+        if not ready:
             return
-        name = self._object_name.text().strip() or "pmv_arrows"
+        typed = self._object_name.text().strip() or "pmv_arrows"
+        name = unused_object_name(typed, self.cmd, keep=self._loaded_name)
+        self._deferred.cancel()
+        self._preview.update(
+            ready,
+            int(self._quality.value()),
+            self._style(),
+            pending=None,
+            highlight_id=None,
+        )
         persist_live_preview(
             self.cmd,
             self._preview,
             name,
             obj_id=self._editing_id,
-            retarget=lambda coll: retarget_arrow_collection(
-                coll, commit_pair_anchors(self._pairs),
-            ),
+            retarget=lambda coll: retarget_arrow_collection(coll, ready),
             fallback=lambda: build_arrow_collection(
-                commit_pair_anchors(self._pairs),
+                ready,
                 int(self._quality.value()),
                 self._style(),
                 name,
@@ -751,7 +765,8 @@ class ArrowBuilderPage:
             self._on_create()
 
     def _export_cgo(self):
-        if not self._pairs:
+        ready = commit_pair_anchors(self._pairs_for_draw())
+        if not ready:
             return
         _, _, QtWidgets = qt_modules()
         name = self._object_name.text().strip() or "pmv_arrows"
@@ -761,7 +776,7 @@ class ArrowBuilderPage:
         if not path:
             return
         build_arrow_collection(
-            commit_pair_anchors(self._pairs),
+            ready,
             int(self._quality.value()),
             self._style(),
             name,
