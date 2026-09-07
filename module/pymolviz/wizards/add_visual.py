@@ -54,7 +54,7 @@ def add_object_overlay_rect(
 MESH_TYPES = (
     ("Spheres", "Sphere", "Solid or wireframe spheres"),
     ("Boxes", "Box", "Axis-aligned or centered boxes"),
-    ("Surface", "Surface", "Rolling-ball SAS or accessible ASA around points"),
+    ("Surface", "Surface", "Connolly SAS, marching-cubes SES, PyMOL Gaussian, or accessible ASA"),
     ("Arrows", "Arrows", "Directed arrow glyphs"),
 )
 

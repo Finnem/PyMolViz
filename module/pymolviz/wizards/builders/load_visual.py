@@ -8,6 +8,7 @@ from ...points import AtomPoint, PointSource
 from ...serialization import persist_color
 from ...util.line_style import LineStyle, default_head_length
 from ...util.solvent_surface import (
+    DEFAULT_ALGORITHM,
     DEFAULT_ATOM_RADIUS,
     DEFAULT_PROBE_RADIUS,
     DEFAULT_QUALITY,
@@ -160,7 +161,7 @@ def surface_options(obj) -> dict:
     return {
         "radius": float(getattr(child, "atom_radius", DEFAULT_ATOM_RADIUS) or DEFAULT_ATOM_RADIUS),
         "probe_radius": float(getattr(child, "probe_radius", DEFAULT_PROBE_RADIUS) or DEFAULT_PROBE_RADIUS),
-        "algorithm": str(getattr(child, "algorithm", "SAS") or "SAS"),
+        "algorithm": str(getattr(child, "algorithm", DEFAULT_ALGORITHM) or DEFAULT_ALGORITHM),
         "quality": int(getattr(child, "quality", DEFAULT_QUALITY) or DEFAULT_QUALITY),
         "wireframe": bool(getattr(child, "wireframe", False)),
         "radius_mode": str(getattr(child, "radius_mode", DEFAULT_RADIUS_MODE) or DEFAULT_RADIUS_MODE),

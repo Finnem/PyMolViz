@@ -6,6 +6,7 @@ from . import Mesh
 from ..points import point_sources_from_sequence, resolve_xyz
 from ..util.mesh_clip import clip_mesh_by_planes, normalize_clip_planes
 from ..util.solvent_surface import (
+    DEFAULT_ALGORITHM,
     DEFAULT_ATOM_RADIUS,
     DEFAULT_PROBE_RADIUS,
     DEFAULT_QUALITY,
@@ -15,6 +16,7 @@ from ..util.solvent_surface import (
     normalize_algorithm,
     normalize_point_radii,
     normalize_radius_mode,
+    resolve_atom_elements,
     resolve_atom_radii,
 )
 
@@ -26,14 +28,14 @@ def _xyz_of_sources(sources, context=None):
 
 
 class Surface(Mesh):
-    """Solvent surface around point spheres: rolling-ball SAS or accessible ASA."""
+    """Solvent surface around point spheres: Connolly SAS, marching-cubes SES, PyMOL Gaussian, or accessible ASA."""
 
     def __init__(
         self,
         points,
         atom_radius=DEFAULT_ATOM_RADIUS,
         probe_radius=DEFAULT_PROBE_RADIUS,
-        algorithm="SAS",
+        algorithm=DEFAULT_ALGORITHM,
         quality=DEFAULT_QUALITY,
         color=None,
         wireframe=False,
@@ -58,6 +60,7 @@ class Surface(Mesh):
         xyz = _xyz_of_sources(self.point_sources, context)
         src_v, src_n, src_f = build_solvent_surface(
             xyz, self._atom_radii(context), self.probe_radius, self.algorithm, self.quality,
+            elements=self._atom_elements(),
         )
         self._source_vertices = np.asarray(src_v, dtype=float).reshape(-1, 3)
         self._source_normals = np.asarray(src_n, dtype=float).reshape(-1, 3)
@@ -75,6 +78,9 @@ class Surface(Mesh):
             self.point_radii,
             context,
         )
+
+    def _atom_elements(self):
+        return resolve_atom_elements(self.point_sources, len(self.point_sources))
 
     def _clipped_geometry(self):
         vertices = np.asarray(self._source_vertices, dtype=float).reshape(-1, 3)
@@ -113,6 +119,7 @@ class Surface(Mesh):
         self.point_radii = normalize_point_radii(self.point_radii, len(self.point_sources))
         src_v, src_n, src_f = build_solvent_surface(
             xyz, self._atom_radii(context), self.probe_radius, self.algorithm, self.quality,
+            elements=self._atom_elements(),
         )
         self._source_vertices = np.asarray(src_v, dtype=float).reshape(-1, 3)
         self._source_normals = np.asarray(src_n, dtype=float).reshape(-1, 3)

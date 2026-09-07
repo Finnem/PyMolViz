@@ -467,6 +467,7 @@ def _dump_surface(obj) -> dict:
     data = _common_mesh_fields(obj)
     n = len(getattr(obj, "point_sources", None) or ())
     from .util.solvent_surface import (
+        DEFAULT_ALGORITHM,
         DEFAULT_ATOM_RADIUS,
         DEFAULT_RADIUS_MODE,
         DEFAULT_VDW_SCALE,
@@ -477,7 +478,7 @@ def _dump_surface(obj) -> dict:
         "points": _sources_to_dict(obj.point_sources),
         "atom_radius": float(getattr(obj, "atom_radius", DEFAULT_ATOM_RADIUS)),
         "probe_radius": float(getattr(obj, "probe_radius", 1.4)),
-        "algorithm": str(getattr(obj, "algorithm", "SAS")),
+        "algorithm": str(getattr(obj, "algorithm", DEFAULT_ALGORITHM)),
         "quality": int(getattr(obj, "quality", 3)),
         "wireframe": bool(getattr(obj, "wireframe", False)),
         "radius_mode": normalize_radius_mode(getattr(obj, "radius_mode", DEFAULT_RADIUS_MODE)),
@@ -492,11 +493,13 @@ def _dump_surface(obj) -> dict:
 
 
 def _load_surface(cls, data: dict):
+    from .util.solvent_surface import DEFAULT_ALGORITHM
+
     return cls(
         _sources_from_dict(data["points"]),
         atom_radius=data.get("atom_radius", 1.5),
         probe_radius=data.get("probe_radius", 1.4),
-        algorithm=data.get("algorithm", "SAS"),
+        algorithm=data.get("algorithm", DEFAULT_ALGORITHM),
         quality=data.get("quality", 3),
         wireframe=data.get("wireframe", False),
         radius_mode=data.get("radius_mode", "uniform"),

@@ -2,8 +2,13 @@
 
 ``SAS`` — rolling-ball solvent-excluded surface (Connolly / MSMS): reduced
 surface, analytical contact/saddle/reentrant faces, singularity clipping,
-then a geodesic template sphere whose contact patches are Delaunay-filled
-to the torus polylines (Sanner, Olson & Spehner, Biopolymers 38:305–320, 1996).
+then a geodesic template sphere whose contact patches are clipped to the
+torus polylines (Sanner, Olson & Spehner, Biopolymers 38:305–320, 1996).
+``MC`` — the same rolling-ball SES via a Euclidean distance transform of the
+accessible union, extracted with marching cubes (EDTSurf-style). The mesh
+is watertight on the voxel grid and has no cap/saddle stitches.
+``GAUSS`` — PyMOL ``map_new gaussian`` + ``isosurface``: Cromer–Mann atomic
+scattering Gaussians, B-factor floor, normalized brick, contour at 1σ.
 ``ASA`` — Shrake–Rupley solvent-accessible patches on the expanded spheres
 (atom radius + probe), clipped to neighboring intersection circles.
 """
@@ -20,14 +25,34 @@ from scipy.ndimage import distance_transform_edt
 from scipy.spatial import Delaunay, cKDTree
 
 from .geometries import geodesic_icosphere
+from .gaussian_map import (
+    DEFAULT_GAUSSIAN_B_FLOOR,
+    DEFAULT_GAUSSIAN_ISOLEVEL,
+    DEFAULT_GAUSSIAN_RESOLUTION,
+    atom_gaussian_terms,
+    gaussian_blur_factor,
+    normalize_gaussian_map,
+    paint_gaussian_density,
+)
+from .marching_cubes import march_cubes
 
-SURFACE_ALGORITHMS = ("SAS", "ASA")
+SURFACE_ALGORITHMS = ("SAS", "MC", "GAUSS", "ASA")
+_ALGORITHM_ALIASES = {
+    "CUBES": "MC",
+    "EDT": "MC",
+    "MARCHING_CUBES": "MC",
+    "MARCHINGCUBES": "MC",
+    "GAUSSIAN": "GAUSS",
+    "BLOB": "GAUSS",
+    "MAP": "GAUSS",
+}
 RADIUS_MODES = ("uniform", "vdw")
 DEFAULT_ATOM_RADIUS = 1.0
 DEFAULT_PROBE_RADIUS = 1.4
 DEFAULT_QUALITY = 3
 DEFAULT_VDW_SCALE = 1.0
 DEFAULT_RADIUS_MODE = "vdw"
+DEFAULT_ALGORITHM = "GAUSS"
 
 # Bondi (1964) van der Waals radii, Å.
 BONDI_VDW = {
@@ -44,7 +69,7 @@ _TWO_LETTER_ELEM = frozenset(
 MAX_SAS_CUBES = 80000
 MAX_SAS_VOXELS = 1200000
 
-# Grid step (Å) for SAS marching tetrahedra.
+# Grid step (Å) for the MC EDT isosurface (capped further by probe / 4.5).
 SAS_SPACING = {1: 0.90, 2: 0.65, 3: 0.45, 4: 0.32, 5: 0.22}
 # Icosphere frequency for ASA patches (same ladder as sphere meshes).
 ASA_FREQUENCY = {1: 2, 2: 3, 3: 4, 4: 6, 5: 8}
@@ -58,26 +83,23 @@ def _convex_cap_frequency(frequency: int) -> int:
     """
     return min(20, max(12, 4 * int(frequency)))
 
-_TETS = (
-    (0, 1, 3, 7),
-    (0, 1, 5, 7),
-    (0, 4, 5, 7),
-    (0, 2, 3, 7),
-    (0, 2, 6, 7),
-    (0, 4, 6, 7),
-)
-_CUBE = (
-    (0, 0, 0), (1, 0, 0), (0, 1, 0), (1, 1, 0),
-    (0, 0, 1), (1, 0, 1), (0, 1, 1), (1, 1, 1),
-)
-_CUBE_OFF = np.array(_CUBE, dtype=np.int32)
+
+def _torus_n_theta(frequency: int) -> int:
+    """Contact-circle samples so the torus rim matches the geodesic cap.
+
+    Quality 3 used 32 theta samples against a 16-frequency VDW ico. Clip hits
+    then hung on ~0.18 Å chords and lit as a jagged stitch even after T-split.
+    """
+    cap_freq = _convex_cap_frequency(frequency)
+    return max(24, 8 * int(frequency), 4 * int(cap_freq))
 
 
 def normalize_algorithm(name) -> str:
-    text = str(name or "SAS").strip().upper()
+    text = str(name or DEFAULT_ALGORITHM).strip().upper().replace("-", "_").replace(" ", "_")
+    text = _ALGORITHM_ALIASES.get(text, text)
     if text in SURFACE_ALGORITHMS:
         return text
-    return "SAS"
+    return DEFAULT_ALGORITHM
 
 
 def normalize_radius_mode(name) -> str:
@@ -182,6 +204,22 @@ def resolve_atom_radii(
     return out
 
 
+def resolve_atom_elements(sources, n: int):
+    """Per-point element symbols; carbon when the source has no identity."""
+    count = max(int(n), 0)
+    out = ["C"] * count
+    if not sources:
+        return out
+    for i, source in enumerate(sources):
+        if i >= count:
+            break
+        out[i] = element_from_atom_name(
+            getattr(source, "name", ""),
+            getattr(source, "elem", ""),
+        )
+    return out
+
+
 def _quality_level(quality: int) -> int:
     return max(1, min(5, int(quality)))
 
@@ -201,6 +239,13 @@ def edt_spacing(quality: int, probe_radius: float) -> float:
 
 def asa_frequency(quality: int) -> int:
     return int(ASA_FREQUENCY[_quality_level(quality)])
+
+
+def gauss_spacing(quality: int, resolution: float = DEFAULT_GAUSSIAN_RESOLUTION) -> float:
+    """Voxel size for the PyMOL Gaussian map. Default grid is resolution / 3."""
+    h = sas_spacing(quality)
+    resol = max(float(resolution), 1.0)
+    return float(min(h, max(resol / 3.0, 0.16)))
 
 
 def expanded_radii(atom_radius, n: int, probe_radius: float) -> np.ndarray:
@@ -229,59 +274,12 @@ def signed_distance(xyz: np.ndarray, centers: np.ndarray, radii: np.ndarray) -> 
     return np.min(np.linalg.norm(offset, axis=2) - radii.reshape(1, -1), axis=1)
 
 
-def _interp(p0, p1, v0, v1):
-    if v0 == 0.0:
-        return np.asarray(p0, dtype=float)
-    if v1 == 0.0:
-        return np.asarray(p1, dtype=float)
-    denom = v0 - v1
-    if abs(denom) < 1e-18:
-        return np.asarray(p0, dtype=float)
-    t = float(v0 / denom)
-    t = min(max(t, 0.0), 1.0)
-    return np.asarray(p0, dtype=float) + t * (np.asarray(p1, dtype=float) - np.asarray(p0, dtype=float))
-
-
 def _orient(tri, hint):
     a, b, c = tri
     n = np.cross(b - a, c - a)
     if np.dot(n, hint) < 0.0:
         return (a, c, b)
     return tri
-
-
-def _tet_tris(pts, vals):
-    inside = [i for i in range(4) if vals[i] < 0.0]
-    outside = [i for i in range(4) if vals[i] >= 0.0]
-    n_in = len(inside)
-    if n_in == 0 or n_in == 4:
-        return []
-    pts = [np.asarray(p, dtype=float) for p in pts]
-
-    def edge(i, j):
-        return _interp(pts[i], pts[j], vals[i], vals[j])
-
-    inside_c = np.mean([pts[i] for i in inside], axis=0)
-    tris = []
-    if n_in == 1:
-        a = inside[0]
-        b, c, d = outside
-        tri = (edge(a, b), edge(a, c), edge(a, d))
-        tris.append(_orient(tri, np.mean(tri, axis=0) - inside_c))
-    elif n_in == 3:
-        a, b, c = inside
-        d = outside[0]
-        tri = (edge(a, d), edge(b, d), edge(c, d))
-        tris.append(_orient(tri, np.mean(tri, axis=0) - inside_c))
-    else:
-        a, b = inside
-        c, d = outside
-        ac, ad, bc, bd = edge(a, c), edge(a, d), edge(b, c), edge(b, d)
-        t0 = (ac, bc, bd)
-        t1 = (ac, bd, ad)
-        tris.append(_orient(t0, np.mean(t0, axis=0) - inside_c))
-        tris.append(_orient(t1, np.mean(t1, axis=0) - inside_c))
-    return tris
 
 
 def _weld(tris, ndigits=5):
@@ -337,6 +335,49 @@ def _drop_degenerate_faces(vertices, faces, min_cross=1e-12):
     p2 = vertices[faces[:, 2]]
     area2 = np.linalg.norm(np.cross(p1 - p0, p2 - p0), axis=1)
     keep = area2 > float(min_cross)
+    if np.all(keep):
+        return faces
+    return faces[keep]
+
+
+def _drop_overcovered_edge_faces(vertices, faces):
+    """Drop extra slivers on edges that already have two faces.
+
+    A Delaunay cap plus torus share the contact polyline (manifold). Tiny
+    leftover clip/fan triangles stacked on those edges z-fight as a dark
+    stitch. Keep the two largest faces per over-covered edge.
+    """
+    faces = np.asarray(faces, dtype=int).reshape(-1, 3)
+    vertices = np.asarray(vertices, dtype=float).reshape(-1, 3)
+    if faces.shape[0] == 0:
+        return faces
+    p0 = vertices[faces[:, 0]]
+    p1 = vertices[faces[:, 1]]
+    p2 = vertices[faces[:, 2]]
+    area2 = np.linalg.norm(np.cross(p1 - p0, p2 - p0), axis=1)
+    keep = np.ones((int(faces.shape[0]),), dtype=bool)
+    changed = True
+    while changed:
+        changed = False
+        edge_faces = {}
+        for fi, (a, b, c) in enumerate(faces):
+            if not keep[fi]:
+                continue
+            for u, v in ((int(a), int(b)), (int(b), int(c)), (int(c), int(a))):
+                key = (u, v) if u < v else (v, u)
+                bucket = edge_faces.get(key)
+                if bucket is None:
+                    edge_faces[key] = [fi]
+                else:
+                    bucket.append(fi)
+        for fis in edge_faces.values():
+            if len(fis) <= 2:
+                continue
+            order = sorted(fis, key=lambda i: (float(area2[i]), int(i)))
+            for fi in order[: len(fis) - 2]:
+                if keep[fi]:
+                    keep[fi] = False
+                    changed = True
     if np.all(keep):
         return faces
     return faces[keep]
@@ -566,6 +607,163 @@ def _subdivide_triangle(a, b, c, ab, bc, ca, out):
     out.append((ab, ca, a))
 
 
+def _split_t_junctions(vertices, faces, max_dist=0.04, t_pad=0.02, max_passes=8, cleanup=True):
+    """Split a boundary edge when a hanging rim vertex lies on it.
+
+    Cap/torus T-junctions show up as a dense-patch vertex sitting in the
+    interior of a coarser boundary edge. Interior chords are left alone:
+    on a curved SES those look close in Euclidean space without being
+    T-junctions.
+    """
+    vertices = np.asarray(vertices, dtype=float).reshape(-1, 3)
+    faces = np.asarray(faces, dtype=int).reshape(-1, 3)
+    if faces.shape[0] == 0 or vertices.shape[0] < 4:
+        return vertices, faces
+    max_dist = float(max_dist)
+    t_pad = float(t_pad)
+
+    def edge_key(i, j):
+        i, j = int(i), int(j)
+        return (i, j) if i < j else (j, i)
+
+    did_split = False
+    for _ in range(max(0, int(max_passes))):
+        faces = np.asarray(faces, dtype=int).reshape(-1, 3)
+        if faces.shape[0] == 0:
+            break
+        adj = _boundary_adjacency(faces)
+        if len(adj) < 3:
+            break
+        bverts = np.array(list(adj.keys()), dtype=int)
+        tree = cKDTree(vertices[bverts])
+        boundary_edges = {}
+        for u, nbrs in adj.items():
+            u = int(u)
+            for v in nbrs:
+                key = edge_key(u, v)
+                if key not in boundary_edges:
+                    boundary_edges[key] = True
+        incident = {}
+        for a, b, c in faces:
+            a, b, c = int(a), int(b), int(c)
+            for u, v in ((a, b), (b, c), (c, a)):
+                key = edge_key(u, v)
+                if key not in boundary_edges:
+                    continue
+                bucket = incident.get(key)
+                if bucket is None:
+                    incident[key] = {a, b, c}
+                else:
+                    bucket.update((a, b, c))
+        splits = {}
+        for (u, v), used in incident.items():
+            pu = vertices[u]
+            pv = vertices[v]
+            span = pv - pu
+            length2 = float(np.dot(span, span))
+            # Dense clip hits put ~2–3 hanging verts on one torus chord.
+            # Skipping anything shorter than 2*max_dist left the last hit
+            # on a ~0.05 Å stub and a slit in the contact seam.
+            if length2 < 0.02 * 0.02:
+                continue
+            length = math.sqrt(length2)
+            mid = 0.5 * (pu + pv)
+            cand = tree.query_ball_point(mid, r=0.5 * length + max_dist)
+            best = None
+            for ci in cand:
+                w = int(bverts[int(ci)])
+                if w in used:
+                    continue
+                t = float(np.dot(vertices[w] - pu, span) / length2)
+                if t <= t_pad or t >= 1.0 - t_pad:
+                    continue
+                dist = float(np.linalg.norm(vertices[w] - (pu + t * span)))
+                if dist >= max_dist:
+                    continue
+                if best is None or dist < best[0]:
+                    best = (dist, w)
+            if best is not None:
+                splits[edge_key(u, v)] = best[1]
+        if not splits:
+            break
+        did_split = True
+        new_faces = []
+        for a, b, c in faces:
+            a, b, c = int(a), int(b), int(c)
+            _subdivide_triangle(
+                a, b, c,
+                splits.get(edge_key(a, b)),
+                splits.get(edge_key(b, c)),
+                splits.get(edge_key(c, a)),
+                new_faces,
+            )
+        faces = np.asarray(new_faces, dtype=int)
+    if did_split and cleanup:
+        faces = _unique_faces(faces)
+        faces = _drop_degenerate_faces(vertices, faces)
+    return vertices, faces
+
+
+def _weld_contact_seam_stubs(vertices, faces, centers, vdw, tol=0.02):
+    """Merge near-duplicate cap/torus rim vertices on the contact circle.
+
+    T-split leaves unmatched 3–4 cycles whose endpoints miss by ~5e-4 Å. Those
+    slits line up around the join and render as a dark stitch. Only the
+    two-atom contact band is welded so a tight reentrant is not chorded.
+    """
+    faces = np.asarray(faces, dtype=int).reshape(-1, 3)
+    vertices = np.asarray(vertices, dtype=float).reshape(-1, 3)
+    if faces.shape[0] == 0 or vertices.shape[0] < 2 or centers.shape[0] < 2:
+        return vertices, faces
+    adj = _boundary_adjacency(faces)
+    if len(adj) < 2:
+        return vertices, faces
+    bverts = np.array(list(adj.keys()), dtype=int)
+    sdf = signed_distance(vertices[bverts], centers, vdw)
+    keep = np.abs(sdf) < 0.08
+    if int(np.count_nonzero(keep)) < 2:
+        return vertices, faces
+    sel = bverts[keep]
+    tree = cKDTree(vertices[sel])
+    pairs = tree.query_pairs(r=float(tol))
+    if not pairs:
+        return vertices, faces
+    parent = np.arange(int(vertices.shape[0]), dtype=int)
+
+    def find(i):
+        i = int(i)
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = int(parent[i])
+        return i
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    for i, j in pairs:
+        union(int(sel[int(i)]), int(sel[int(j)]))
+    clusters = {}
+    for i in sel:
+        clusters.setdefault(find(int(i)), []).append(int(i))
+    out = np.array(vertices, copy=True)
+    for root, members in clusters.items():
+        if len(members) < 2:
+            continue
+        out[root] = np.mean(out[np.asarray(members, dtype=int)], axis=0)
+    new_faces = []
+    for a, b, c in faces:
+        a, b, c = find(int(a)), find(int(b)), find(int(c))
+        if a == b or b == c or c == a:
+            continue
+        new_faces.append((a, b, c))
+    if not new_faces:
+        return vertices, faces
+    faces = _unique_faces(np.asarray(new_faces, dtype=int))
+    return _compact_mesh(out, faces)
+
+
 def _split_seam_edges(vertices, faces, centers, radii):
     """Insert shared circle / triple-point vertices on mixed-owner faces."""
     if faces.shape[0] == 0 or centers.shape[0] < 2:
@@ -757,6 +955,11 @@ def _fill_boundary_holes(vertices, faces, max_loop=8, max_edge=0.85):
     used = set()
     max_loop = int(max_loop)
     max_edge = float(max_edge)
+    occupancy = {}
+    for a, b, c in faces:
+        for u, v in ((int(a), int(b)), (int(b), int(c)), (int(c), int(a))):
+            key = (u, v) if u < v else (v, u)
+            occupancy[key] = occupancy.get(key, 0) + 1
 
     def edge_key(u, v):
         u, v = int(u), int(v)
@@ -784,10 +987,22 @@ def _fill_boundary_holes(vertices, faces, max_loop=8, max_edge=0.85):
             a, b = rotated[i], rotated[i + 1]
             if origin == a or a == b or b == origin:
                 continue
-            added.append((origin, a, b))
+            p0 = vertices[int(origin)]
+            p1 = vertices[int(a)]
+            p2 = vertices[int(b)]
+            area2 = float(np.linalg.norm(np.cross(p1 - p0, p2 - p0)))
+            if area2 <= 1e-12:
+                continue
+            tri_edges = (edge_key(origin, a), edge_key(a, b), edge_key(b, origin))
+            if any(occupancy.get(key, 0) >= 2 for key in tri_edges):
+                return
+            added.append((origin, a, b, tri_edges))
         if not added:
             return
-        extra.extend(added)
+        for origin, a, b, tri_edges in added:
+            extra.append((origin, a, b))
+            for key in tri_edges:
+                occupancy[key] = occupancy.get(key, 0) + 1
         used.update(edges)
 
     adj = _boundary_adjacency(faces)
@@ -2008,6 +2223,8 @@ def _ses_vertex_normals(vertices, faces, centers, vdw, expanded, circles=None, n
     owner atom's radial SAS point as ``q``; saddles and reentrants use the
     closest probe-center circle or triple. Those ``q`` coincide at a contact
     circle, so a hard ``sdf`` threshold is not needed and would crease speculars.
+    The C1 join is left unsmoothed: averaging across it flattens curvature
+    into an indented band that wireframe does not show.
     """
     if vertices.shape[0] == 0:
         return np.zeros((0, 3), dtype=float)
@@ -2048,7 +2265,6 @@ def _ses_vertex_normals(vertices, faces, centers, vdw, expanded, circles=None, n
     if np.any(bad):
         normals = np.array(normals, copy=True)
         normals[bad] = dirs[bad]
-    normals = _smooth_contact_band_normals(vertices, normals, centers, vdw)
     finite = np.isfinite(normals).all(axis=1)
     if not np.all(finite):
         geom = _face_normals(vertices, faces)
@@ -2057,50 +2273,108 @@ def _ses_vertex_normals(vertices, faces, centers, vdw, expanded, circles=None, n
     return normals
 
 
-def _smooth_contact_band_normals(
-    vertices, normals, centers, vdw, radius=0.7, sigma=0.35, mix=0.88,
+def _refine_phong_faces(
+    vertices,
+    faces,
+    normals,
+    centers,
+    expanded,
+    probe,
+    circles=None,
+    neighbors=None,
+    triples=None,
+    min_dot=0.92,
+    max_level=3,
+    max_vertices=120000,
 ):
-    """Gaussian-blur normals around two-atom joins so Phong can cross the C1 seam.
+    """Split faces whose vertex normals span too much for CGO Phong.
 
-    Geometry stays Connolly. Only the lighting field is softened in a ~0.7 Å
-    band where the second-nearest VDW is close, which is what turns split
-    speculars into a highlighted crease.
+    PyMOL interpolates the three corner normals in the fragment shader. When
+    those vectors are ~40° apart, the lerp dips out of a tight specular lobe
+    and shows up as a dark diamond with a hard triangle edge. Midpoints are
+    lifted onto the sphere implied by the endpoints so the split stays on the
+    Connolly patch.
     """
-    n = int(np.asarray(vertices).shape[0])
-    if n == 0 or int(np.asarray(centers).reshape(-1, 3).shape[0]) < 2:
-        return normals
-    sdf = _sas_sdf(vertices, centers, vdw)
-    order = np.argsort(sdf, axis=1)
-    rows = np.arange(n)
-    d0 = sdf[rows, order[:, 0]]
-    d1 = sdf[rows, order[:, 1]]
-    band = (d0 < 0.32) & (d1 < 0.95)
-    if not np.any(band):
-        return normals
-    tree = cKDTree(vertices)
-    idx = np.flatnonzero(band)
-    neighbors = tree.query_ball_point(vertices[idx], r=float(radius))
-    out = np.array(normals, copy=True, dtype=float)
-    sig2 = 2.0 * float(sigma) * float(sigma)
-    mix = float(mix)
-    keep = 1.0 - mix
-    for k, nbrs in enumerate(neighbors):
-        if len(nbrs) < 3:
-            continue
-        delta = vertices[nbrs] - vertices[idx[k]]
-        dist2 = np.einsum("ij,ij->i", delta, delta)
-        w = np.exp(-dist2 / sig2)
-        acc = w @ normals[nbrs]
-        ln = float(np.linalg.norm(acc))
-        if ln < 1e-12:
-            continue
-        acc = acc / ln
-        i = int(idx[k])
-        blended = keep * normals[i] + mix * acc
-        ln = float(np.linalg.norm(blended))
-        if ln > 1e-12:
-            out[i] = blended / ln
-    return out
+    from .field_sample import project_edge_midpoint
+
+    vertices = np.asarray(vertices, dtype=float).reshape(-1, 3)
+    faces = np.asarray(faces, dtype=int).reshape(-1, 3)
+    normals = np.asarray(normals, dtype=float).reshape(-1, 3)
+    if faces.shape[0] == 0 or vertices.shape[0] < 3:
+        return vertices, faces, normals
+    verts = vertices.tolist()
+    norms = normals.tolist()
+    faces_list = [tuple(int(i) for i in tri) for tri in faces]
+    min_dot = float(min_dot)
+    max_vertices = max(int(max_vertices), int(vertices.shape[0]))
+    skinny_aspect = 2.8
+
+    def _key(i, j):
+        return (i, j) if i < j else (j, i)
+
+    for _ in range(max(0, int(max_level))):
+        if len(verts) >= max_vertices:
+            break
+        nrm = np.asarray(norms, dtype=float)
+        lengths = np.linalg.norm(nrm, axis=1, keepdims=True)
+        nrm = nrm / np.maximum(lengths, 1e-18)
+        marked = set()
+        for a, b, c in faces_list:
+            pairs = ((a, b), (b, c), (c, a))
+            dots = [float(np.dot(nrm[i], nrm[j])) for i, j in pairs]
+            if min(dots) >= min_dot:
+                continue
+            edge_len = [
+                float(np.linalg.norm(np.subtract(verts[i], verts[j])))
+                for i, j in pairs
+            ]
+            longest = max(edge_len)
+            shortest = max(min(edge_len), 1e-18)
+            skinny = (longest / shortest) > skinny_aspect
+            for (i, j), cdot, length in zip(pairs, dots, edge_len):
+                if cdot >= min_dot:
+                    continue
+                if length < 0.08:
+                    continue
+                if skinny and length < 0.70 * longest:
+                    continue
+                marked.add(_key(i, j))
+        if not marked:
+            break
+        mids = {}
+        for i, j in marked:
+            if len(verts) >= max_vertices and _key(i, j) not in mids:
+                continue
+            point, normal = project_edge_midpoint(
+                verts[i], verts[j], norms[i], norms[j],
+            )
+            mids[_key(i, j)] = len(verts)
+            verts.append(np.asarray(point, dtype=float).reshape(3).tolist())
+            ln = float(np.linalg.norm(normal))
+            if ln > 1e-18:
+                normal = np.asarray(normal, dtype=float).reshape(3) / ln
+            else:
+                normal = np.asarray(norms[i], dtype=float).reshape(3)
+            norms.append(normal.tolist())
+        new_faces = []
+        for a, b, c in faces_list:
+            _subdivide_triangle(
+                a, b, c,
+                mids.get(_key(a, b)),
+                mids.get(_key(b, c)),
+                mids.get(_key(c, a)),
+                new_faces,
+            )
+        faces_list = new_faces
+
+    vertices = np.asarray(verts, dtype=float).reshape(-1, 3)
+    faces = np.asarray(faces_list, dtype=int).reshape(-1, 3)
+    vdw = np.maximum(np.asarray(expanded, dtype=float).reshape(-1) - float(probe), 1e-6)
+    normals = _ses_vertex_normals(
+        vertices, faces, centers, vdw, expanded,
+        circles=circles, neighbors=neighbors, triples=triples,
+    )
+    return vertices, faces, normals
 
 
 def _resample_dirs(dirs, count):
@@ -2240,44 +2514,6 @@ def _align_loop_start(inner, outer):
     return np.vstack((inner[k:], inner[:k]))
 
 
-def _ordered_boundary_loops(vertices, faces):
-    """Closed polylines of a manifold patch boundary (degree-2 vertices)."""
-    adj = _boundary_adjacency(faces)
-    loops = []
-    used = set()
-    for start in adj:
-        if start in used or len(adj.get(start, ())) != 2:
-            continue
-        cycle = [start]
-        used.add(start)
-        prev = None
-        cur = start
-        ok = True
-        while True:
-            nxt = None
-            for cand in adj[cur]:
-                if cand != prev:
-                    nxt = cand
-                    break
-            if nxt is None:
-                ok = False
-                break
-            if nxt == start:
-                break
-            if nxt in used:
-                ok = False
-                break
-            cycle.append(nxt)
-            used.add(nxt)
-            prev, cur = cur, nxt
-            if len(cycle) > int(vertices.shape[0]):
-                ok = False
-                break
-        if ok and len(cycle) >= 3:
-            loops.append(np.asarray(vertices[np.asarray(cycle, dtype=int)], dtype=float))
-    return loops
-
-
 def _spherical_in_loop(unit, loop_dirs, interior=None):
     """Keep template directions inside a convex spherical polygon."""
     loop_dirs = np.asarray(loop_dirs, dtype=float).reshape(-1, 3)
@@ -2301,6 +2537,132 @@ def _spherical_in_loop(unit, loop_dirs, interior=None):
             nrm = -nrm
         keep &= np.dot(unit, nrm) >= -1e-6
     return keep
+
+
+def _small_circle_cap_mask(unit, loop_dirs, interior, eps=1e-6):
+    """Keep directions on the interior side of a planar contact circle.
+
+    Contact loops are small circles. Great-circle half-spaces of the samples
+    clip a >90° cap at the antipodal latitude and leave a folded Delaunay
+    annulus down to the torus.
+    """
+    loop_dirs = np.asarray(loop_dirs, dtype=float).reshape(-1, 3)
+    unit = np.asarray(unit, dtype=float).reshape(-1, 3)
+    if loop_dirs.shape[0] < 3 or unit.shape[0] == 0:
+        return np.ones((int(unit.shape[0]),), dtype=bool)
+    interior = _unit_vec(interior)
+    axis = np.mean(loop_dirs, axis=0)
+    if float(np.linalg.norm(axis)) < 1e-12:
+        return _spherical_in_loop(unit, loop_dirs, interior=interior)
+    axis = _unit_vec(axis)
+    dots = unit @ axis
+    loop_dots = loop_dirs @ axis
+    if float(np.dot(axis, interior)) > 0.0:
+        return dots >= (float(np.min(loop_dots)) - eps)
+    return dots <= (float(np.max(loop_dots)) + eps)
+
+
+def _contact_cap_plane(center, r_vdw, loop_dirs, interior):
+    """Plane of the contact circle: keep points with ``ge`` relative to offset."""
+    loop_dirs = np.asarray(loop_dirs, dtype=float).reshape(-1, 3)
+    center = np.asarray(center, dtype=float).reshape(3)
+    r_vdw = float(r_vdw)
+    interior = _unit_vec(interior)
+    axis = _unit_vec(np.mean(loop_dirs, axis=0))
+    loop_dots = loop_dirs @ axis
+    if float(np.dot(axis, interior)) > 0.0:
+        return axis, center, r_vdw * float(np.min(loop_dots)), True
+    return axis, center, r_vdw * float(np.max(loop_dots)), False
+
+
+def _snap_point_to_loop(point, loop_pts, tol=0.20):
+    """Project a contact-circle point onto the torus polyline."""
+    loop_pts = np.asarray(loop_pts, dtype=float).reshape(-1, 3)
+    point = np.asarray(point, dtype=float).reshape(3)
+    n_k = int(loop_pts.shape[0])
+    if n_k == 0:
+        return point
+    dist = np.linalg.norm(loop_pts - point.reshape(1, 3), axis=1)
+    k = int(np.argmin(dist))
+    edge = float(np.linalg.norm(loop_pts[(k + 1) % n_k] - loop_pts[k]))
+    prev_edge = float(np.linalg.norm(loop_pts[k] - loop_pts[(k - 1) % n_k]))
+    vert_tol = max(0.02, 0.40 * min(edge, prev_edge))
+    if float(dist[k]) <= vert_tol:
+        return loop_pts[k]
+    best = loop_pts[k]
+    best_d = float(dist[k])
+    for i in range(n_k):
+        a = loop_pts[i]
+        b = loop_pts[(i + 1) % n_k]
+        span = b - a
+        length2 = float(np.dot(span, span))
+        if length2 < 1e-18:
+            continue
+        t = float(np.clip(np.dot(point - a, span) / length2, 0.0, 1.0))
+        q = a + t * span
+        d = float(np.linalg.norm(point - q))
+        if d < best_d:
+            best_d = d
+            best = q
+    if best_d <= float(tol):
+        return best
+    return point
+
+
+def _sphere_arc_meet_cap_plane(a, b, nrm, origin, offset, center, r_vdw):
+    """Intersection of a geodesic VDW edge with the contact plane, on the sphere."""
+    center = np.asarray(center, dtype=float).reshape(3)
+    nrm = np.asarray(nrm, dtype=float).reshape(3)
+    origin = np.asarray(origin, dtype=float).reshape(3)
+    r_vdw = float(r_vdw)
+    offset = float(offset)
+    da = _unit_vec(a - center)
+    db = _unit_vec(b - center)
+    edge_n = np.cross(da, db)
+    length = float(np.linalg.norm(edge_n))
+    if length < 1e-18:
+        return None
+    edge_n = edge_n / length
+    d1 = offset + float(np.dot(nrm, center - origin))
+    direction = np.cross(nrm, edge_n)
+    denom = float(np.dot(direction, direction))
+    if denom < 1e-18:
+        return None
+    u0 = (d1 * np.cross(edge_n, direction) + 0.0 * np.cross(direction, nrm)) / denom
+    A = denom
+    B = 2.0 * float(np.dot(u0, direction))
+    C = float(np.dot(u0, u0)) - r_vdw * r_vdw
+    disc = B * B - 4.0 * A * C
+    if disc < 0.0:
+        return None
+    sqrt_d = math.sqrt(disc)
+    best = None
+    for t in ((-B + sqrt_d) / (2.0 * A), (-B - sqrt_d) / (2.0 * A)):
+        u = u0 + t * direction
+        un = _unit_vec(u)
+        if float(np.dot(np.cross(da, un), edge_n)) < -1e-7:
+            continue
+        if float(np.dot(np.cross(un, db), edge_n)) < -1e-7:
+            continue
+        best = center + r_vdw * un
+        break
+    return best
+
+
+def _fan_world_tris(center, pts):
+    center = np.asarray(center, dtype=float).reshape(3)
+    pts = [np.asarray(p, dtype=float).reshape(3) for p in pts]
+    if len(pts) < 3:
+        return []
+    tris = []
+    for i in range(1, len(pts) - 1):
+        tri = (pts[0], pts[i], pts[i + 1])
+        geom = np.cross(tri[1] - tri[0], tri[2] - tri[0])
+        if float(np.linalg.norm(geom)) < 1e-16:
+            continue
+        centroid = (tri[0] + tri[1] + tri[2]) / 3.0
+        tris.append(_orient(tri, centroid - center))
+    return tris
 
 
 def _contact_interior_dir(center, expanded_r, index, centers, expanded, loop_dirs):
@@ -2418,6 +2780,36 @@ def _inside_poly_2d(points, poly):
     return inside
 
 
+def _dirs_away_from_loop_edges(dirs, loop_dirs, min_dist=None):
+    """Drop Steiner directions that sit on a rim chord (Delaunay sliver seeds)."""
+    dirs = np.asarray(dirs, dtype=float).reshape(-1, 3)
+    loop_dirs = np.asarray(loop_dirs, dtype=float).reshape(-1, 3)
+    if dirs.shape[0] == 0 or loop_dirs.shape[0] < 2:
+        return dirs
+    keep = np.ones((int(dirs.shape[0]),), dtype=bool)
+    n_loop = int(loop_dirs.shape[0])
+    if min_dist is None:
+        step = 0.0
+        for k in range(n_loop):
+            step += float(np.linalg.norm(loop_dirs[(k + 1) % n_loop] - loop_dirs[k]))
+        min_dist = max(0.02, 0.30 * step / float(n_loop))
+    min_dist = float(min_dist)
+    for k in range(n_loop):
+        a = loop_dirs[k]
+        b = loop_dirs[(k + 1) % n_loop]
+        span = b - a
+        length2 = float(np.dot(span, span))
+        if length2 < 1e-18:
+            continue
+        t = np.clip(((dirs - a) @ span) / length2, 0.0, 1.0)
+        proj = a + t[:, None] * span
+        dist = np.linalg.norm(dirs - proj, axis=1)
+        keep &= dist >= min_dist
+    if not np.any(keep):
+        return dirs[:0]
+    return dirs[keep]
+
+
 def _delaunay_contact_tris(center, r_vdw, interior_dirs, loop_pts, pole=None):
     """Triangulate a spherical contact face so the rim is exactly the torus loop."""
     loop_pts = np.asarray(loop_pts, dtype=float).reshape(-1, 3)
@@ -2446,6 +2838,7 @@ def _delaunay_contact_tris(center, r_vdw, interior_dirs, loop_pts, pole=None):
         interior_dirs = interior_dirs / np.maximum(lengths, 1e-12)
         close = np.max(interior_dirs @ loop_dirs.T, axis=1) > 0.9995
         interior_dirs = interior_dirs[~close]
+        interior_dirs = _dirs_away_from_loop_edges(interior_dirs, loop_dirs)
     if interior_dirs.shape[0] > 0:
         int_xy = stereo(interior_dirs)
         interior_dirs = interior_dirs[_inside_poly_2d(int_xy, loop_xy)]
@@ -2482,8 +2875,36 @@ def _delaunay_contact_tris(center, r_vdw, interior_dirs, loop_pts, pole=None):
     return tris
 
 
+def _exposed_cap_steiner_dirs(center, expanded_r, index, centers, expanded, unit, loop_dirs, interior):
+    """Geodesic directions inside the contact cap whose SAS sample is still exposed."""
+    unit = np.asarray(unit, dtype=float).reshape(-1, 3)
+    keep = _small_circle_cap_mask(unit, loop_dirs, interior, eps=-0.012)
+    if not np.any(keep):
+        keep = _small_circle_cap_mask(unit, loop_dirs, interior)
+    dirs = unit[keep]
+    if dirs.shape[0] == 0:
+        return dirs
+    center = np.asarray(center, dtype=float).reshape(3)
+    expanded_r = float(expanded_r)
+    out = []
+    for direction in dirs:
+        sas = center + expanded_r * direction
+        if _probe_collides(sas, centers, expanded, (index,), eps=0.02):
+            continue
+        out.append(direction)
+    if not out:
+        return dirs[:0]
+    return np.asarray(out, dtype=float)
+
+
 def _template_contact_tris(center, r_vdw, expanded_r, index, centers, expanded, loop, unit, faces):
-    """Algorithm 4: geodesic Steiner points, Delaunay-filled to the torus loop."""
+    """Algorithm 4: contact cap whose rim is the torus loop.
+
+    Plane-clip of a dense geodesic ico puts extra vertices on torus chords.
+    Those T-junctions light as a jagged stitch. Delaunay of exposed ico
+    vertices against the exact contact polyline shares the torus rim; clip
+    is the fallback when the projected loop is not a convex disk.
+    """
     pts = np.asarray(loop, dtype=float).reshape(-1, 3)
     if pts.shape[0] >= 2 and _points_near(pts[0], pts[-1], 1e-5):
         pts = pts[:-1]
@@ -2491,40 +2912,100 @@ def _template_contact_tris(center, r_vdw, expanded_r, index, centers, expanded, 
         return []
     center = np.asarray(center, dtype=float).reshape(3)
     unit = np.asarray(unit, dtype=float)
-    sas = center.reshape(1, 3) + unit * float(expanded_r)
-    exposed = np.ones((int(unit.shape[0]),), dtype=bool)
-    n = int(centers.shape[0])
-    for j in range(n):
-        if j == int(index):
-            continue
-        exposed &= np.linalg.norm(sas - centers[j], axis=1) >= float(expanded[j]) - 1e-7
+    faces = np.asarray(faces, dtype=int).reshape(-1, 3)
     loop_dirs = np.asarray([_unit_vec(p - center) for p in pts], dtype=float)
     interior = _contact_interior_dir(center, expanded_r, index, centers, expanded, loop_dirs)
-    rim_pts = pts
-    collar = []
-    angs = np.arccos(np.clip(loop_dirs @ interior, -1.0, 1.0))
-    if float(np.min(angs)) > 0.18 and pts.shape[0] >= 6:
-        inset_dirs = _inset_contact_dirs(loop_dirs, interior, step=0.10)
-        inset_pts = center.reshape(1, 3) + inset_dirs * float(r_vdw)
-        collar = _zip_closed_loops(inset_pts, pts, center)
-        if collar:
-            rim_pts = inset_pts
-            loop_dirs = inset_dirs
-    keep = exposed & _spherical_in_loop(unit, loop_dirs, interior=interior)
+    vdw = np.maximum(np.asarray(expanded, dtype=float) - (float(expanded_r) - float(r_vdw)), 1e-6)
+    nrm, origin, offset, _ge = _contact_cap_plane(center, r_vdw, loop_dirs, interior)
+    world = origin.reshape(1, 3) + unit * float(r_vdw)
+
+    def _on_sphere(tris):
+        for tri in tris:
+            centroid = (tri[0] + tri[1] + tri[2]) / 3.0
+            if float(signed_distance(centroid.reshape(1, 3), centers, vdw)[0]) < -0.12:
+                return False
+        return True
+
+    steiner = _exposed_cap_steiner_dirs(
+        center, expanded_r, index, centers, expanded, unit, loop_dirs, interior,
+    )
+    patch = _delaunay_contact_tris(center, r_vdw, steiner, pts, pole=interior)
+    if patch and _manifold_disk(patch, int(pts.shape[0])) and _on_sphere(patch):
+        return patch
+
+    tris = []
+    verts_inside = _small_circle_cap_mask(unit, loop_dirs, interior)
+    edge_clip = {}
+
+    def clipped_edge(i, j):
+        key = (i, j) if i < j else (j, i)
+        if key in edge_clip:
+            return edge_clip[key]
+        if bool(verts_inside[i]) == bool(verts_inside[j]):
+            edge_clip[key] = None
+            return None
+        hit = _sphere_arc_meet_cap_plane(
+            world[i], world[j], nrm, origin, offset, center, r_vdw,
+        )
+        if hit is None:
+            a, b = world[i], world[j]
+            va = float(np.dot(nrm, a - origin))
+            vb = float(np.dot(nrm, b - origin))
+            denom = vb - va
+            if abs(denom) > 1e-18:
+                t = min(1.0, max(0.0, (offset - va) / denom))
+                point = a + t * (b - a)
+                hit = center + float(r_vdw) * _unit_vec(point - center)
+        if hit is not None:
+            hit = _snap_point_to_loop(hit, pts)
+        edge_clip[key] = hit
+        return hit
+
+    for a, b, c in faces:
+        a, b, c = int(a), int(b), int(c)
+        corners = (a, b, c)
+        inside = [bool(verts_inside[i]) for i in corners]
+        n_in = sum(inside)
+        if n_in == 3:
+            poly = [world[a], world[b], world[c]]
+        elif n_in == 0:
+            continue
+        else:
+            poly = []
+            for k in range(3):
+                i0 = corners[k]
+                i1 = corners[(k + 1) % 3]
+                if inside[k]:
+                    poly.append(world[i0])
+                if inside[k] != inside[(k + 1) % 3]:
+                    hit = clipped_edge(i0, i1)
+                    if hit is not None:
+                        poly.append(hit)
+            if len(poly) < 3:
+                continue
+        for tri in _fan_world_tris(center, poly):
+            centroid = (tri[0] + tri[1] + tri[2]) / 3.0
+            if float(signed_distance(centroid.reshape(1, 3), centers, vdw)[0]) < -0.12:
+                continue
+            if n_in == 3:
+                direction = _unit_vec(centroid - center)
+                sas = center + float(expanded_r) * direction
+                if _probe_collides(sas, centers, expanded, (index,), eps=0.02):
+                    continue
+            tris.append(tri)
+    if tris:
+        return tris
+    keep = _small_circle_cap_mask(unit, loop_dirs, interior)
     if not np.any(keep):
-        keep = exposed
-    patch = _delaunay_contact_tris(center, r_vdw, unit[keep], rim_pts, pole=interior)
+        keep = np.ones((int(unit.shape[0]),), dtype=bool)
+    patch = _delaunay_contact_tris(center, r_vdw, unit[keep], pts, pole=interior)
     if not patch:
         return []
-    if not _manifold_disk(patch, int(rim_pts.shape[0])):
+    if not _manifold_disk(patch, int(pts.shape[0])):
         return []
-    vdw = np.maximum(np.asarray(expanded, dtype=float) - (float(expanded_r) - float(r_vdw)), 1e-6)
-    combined = collar + patch
-    for tri in combined:
-        centroid = (tri[0] + tri[1] + tri[2]) / 3.0
-        if float(signed_distance(centroid.reshape(1, 3), centers, vdw)[0]) < -0.12:
-            return []
-    return combined
+    if not _on_sphere(patch):
+        return []
+    return patch
 
 
 def _fan_vdw_loop(center, r_vdw, expanded_r, index, centers, expanded, loop, frequency):
@@ -2903,30 +3384,39 @@ def _cubes_with_sign_change(field):
     return np.stack((ii, jj, kk), axis=1).astype(np.int32)
 
 
-def _march_field_cubes(origin, h, field, cubes):
+def _isosurface_from_signed_field(origin, h, field, grad):
+    empty = (
+        np.zeros((0, 3), dtype=float),
+        np.zeros((0, 3), dtype=float),
+        np.zeros((0, 3), dtype=int),
+    )
+    cubes = _cubes_with_sign_change(field)
     if cubes.shape[0] == 0:
-        return []
-    tris = []
-    origin = np.asarray(origin, dtype=float)
-    h = float(h)
-    for ci in range(int(cubes.shape[0])):
-        i, j, k = (int(cubes[ci, 0]), int(cubes[ci, 1]), int(cubes[ci, 2]))
-        pts8 = []
-        vals8 = []
-        for dx, dy, dz in _CUBE:
-            pts8.append(origin + np.array((i + dx, j + dy, k + dz), dtype=float) * h)
-            vals8.append(float(field[i + dx, j + dy, k + dz]))
-        if all(v < 0.0 for v in vals8) or all(v >= 0.0 for v in vals8):
-            continue
-        for tet in _TETS:
-            tpts = [pts8[t] for t in tet]
-            tvals = [vals8[t] for t in tet]
-            tris.extend(_tet_tris(tpts, tvals))
-    return tris
+        return empty
+    tris = march_cubes(origin, h, field, cubes)
+    if not tris:
+        return empty
+    vertices, faces = _weld(tris, ndigits=5)
+    faces = _unique_faces(faces)
+    faces = _drop_degenerate_faces(vertices, faces)
+    vertices, faces = _compact_mesh(vertices, faces)
+    if faces.shape[0] == 0:
+        return empty
+    normals = _trilinear_sample(grad, origin, h, vertices)
+    lengths = np.linalg.norm(normals, axis=1, keepdims=True)
+    tiny = lengths[:, 0] < 1e-12
+    lengths = np.maximum(lengths, 1e-12)
+    normals = normals / lengths
+    if np.any(tiny):
+        geom = _face_normals(vertices, faces)
+        normals = np.array(normals, copy=True)
+        normals[tiny] = geom[tiny]
+    faces = _orient_faces_to_vertex_normals(vertices, faces, normals)
+    return vertices, normals, faces
 
 
 def _edt_ses_grid(centers, expanded, probe, spacing, _depth=0):
-    """SAS occupancy EDT: zero of (probe - dist_to_solvent) is the rolling-ball SES."""
+    """Accessible-union EDT: zero of (probe - dist_to_solvent) is the rolling-ball SES."""
     h = float(spacing)
     probe = float(probe)
     if h < 1e-8 or centers.shape[0] == 0:
@@ -2968,26 +3458,7 @@ def _edt_ses_component(centers, expanded, probe, spacing, _depth=0):
             centers, expanded, probe, h * max(math.sqrt(float(cubes.shape[0]) / float(MAX_SAS_CUBES)), 1.15),
             _depth=_depth + 1,
         )
-    tris = _march_field_cubes(origin, h, field, cubes)
-    if not tris:
-        return empty
-    vertices, faces = _weld(tris, ndigits=5)
-    faces = _unique_faces(faces)
-    faces = _drop_degenerate_faces(vertices, faces)
-    vertices, faces = _compact_mesh(vertices, faces)
-    if faces.shape[0] == 0:
-        return empty
-    normals = _trilinear_sample(grad, origin, h, vertices)
-    lengths = np.linalg.norm(normals, axis=1, keepdims=True)
-    tiny = lengths[:, 0] < 1e-12
-    lengths = np.maximum(lengths, 1e-12)
-    normals = normals / lengths
-    if np.any(tiny):
-        geom = _face_normals(vertices, faces)
-        normals = np.array(normals, copy=True)
-        normals[tiny] = geom[tiny]
-    faces = _orient_faces_to_vertex_normals(vertices, faces, normals)
-    return vertices, normals, faces
+    return _isosurface_from_signed_field(origin, h, field, grad)
 
 
 def _connolly_ses_component(centers, expanded, vdw, probe, frequency):
@@ -3011,7 +3482,7 @@ def _connolly_ses_component(centers, expanded, vdw, probe, frequency):
     pairs.extend(rs["edge_faces"].keys())
     pair_set = {_rs_edge_key(i, j) for i, j in pairs}
     eat = [q for _i, _j, _k, q in triples]
-    n_theta = max(24, 8 * freq)
+    n_theta = _torus_n_theta(freq)
     n_phi = max(16, _saddle_n_phi(centers, expanded, n_theta))
     torus, contacts = _ses_torus_tris(
         centers, expanded, probe, n_theta, n_phi,
@@ -3034,20 +3505,41 @@ def _connolly_ses_component(centers, expanded, vdw, probe, frequency):
     vertices, faces = _weld(tris, ndigits=5)
     faces = _unique_faces(faces)
     faces = _drop_degenerate_faces(vertices, faces)
+    faces = _drop_overcovered_edge_faces(vertices, faces)
     vertices, faces = _compact_mesh(vertices, faces)
     if faces.shape[0] == 0:
         return empty
+    vertices, faces = _split_t_junctions(vertices, faces)
+    vertices, faces = _weld_contact_seam_stubs(vertices, faces, centers, vdw)
+    vertices, faces = _split_t_junctions(vertices, faces)
+    faces = _drop_overcovered_edge_faces(vertices, faces)
+    vertices, faces = _compact_mesh(vertices, faces)
     vertices, faces = _fill_boundary_holes(vertices, faces)
-    faces = _unique_faces(faces)
-    faces = _drop_degenerate_faces(vertices, faces)
-    vertices, faces = _compact_mesh(vertices, faces)
-    if faces.shape[0] == 0:
-        return empty
     circles = _intersection_circles(centers, expanded)
     neighbors = _overlap_neighbors(centers, expanded)
+    triples = _sas_triple_vertices(centers, expanded)
+    vertices = _smooth_on_ses(
+        vertices, faces, centers, expanded, probe,
+        circles=circles, neighbors=neighbors, triples=triples,
+        iterations=3, lam=0.22, pin_vdw=True,
+    )
     normals = _ses_vertex_normals(
         vertices, faces, centers, vdw, expanded,
-        circles=circles, neighbors=neighbors, triples=_sas_triple_vertices(centers, expanded),
+        circles=circles, neighbors=neighbors, triples=triples,
+    )
+    vertices, faces, normals = _refine_phong_faces(
+        vertices, faces, normals, centers, expanded, probe,
+        circles=circles, neighbors=neighbors, triples=triples,
+    )
+    vertices, faces = _split_t_junctions(vertices, faces, cleanup=True)
+    vertices, faces = _weld_contact_seam_stubs(vertices, faces, centers, vdw)
+    vertices, faces = _fill_boundary_holes(vertices, faces)
+    faces = _drop_overcovered_edge_faces(vertices, faces)
+    vertices, faces = _compact_mesh(vertices, faces)
+    vertices, faces = _fill_boundary_holes(vertices, faces)
+    normals = _ses_vertex_normals(
+        vertices, faces, centers, vdw, expanded,
+        circles=circles, neighbors=neighbors, triples=triples,
     )
     faces = _orient_faces_to_vertex_normals(vertices, faces, normals)
     return vertices, normals, faces
@@ -3088,7 +3580,6 @@ def _sas_mesh(centers, radii, frequency: int, probe_radius: float = 0.0):
     normals = np.vstack(parts_n)
     faces = np.vstack(parts_f)
     faces = _unique_faces(faces)
-    faces = _drop_degenerate_faces(vertices, faces)
     if faces.shape[0] == 0:
         return empty
     used = np.unique(np.asarray(faces, dtype=int).ravel())
@@ -3099,6 +3590,136 @@ def _sas_mesh(centers, radii, frequency: int, probe_radius: float = 0.0):
         normals = normals[used]
         faces = remap[faces]
     return vertices, normals, faces
+
+
+def _mc_mesh(centers, radii, quality: int, probe_radius: float = 0.0):
+    empty = (
+        np.zeros((0, 3), dtype=float),
+        np.zeros((0, 3), dtype=float),
+        np.zeros((0, 3), dtype=int),
+    )
+    probe = float(probe_radius)
+    expanded = np.asarray(radii, dtype=float).reshape(-1)
+    n = int(np.asarray(centers).reshape(-1, 3).shape[0])
+    if n == 0:
+        return empty
+    centers = np.asarray(centers, dtype=float).reshape(-1, 3)
+    spacing = edt_spacing(quality, probe)
+    parts_v = []
+    parts_n = []
+    parts_f = []
+    offset = 0
+    for group in _overlap_components(centers, expanded):
+        idx = np.asarray(group, dtype=int)
+        vertices, normals, faces = _edt_ses_component(
+            centers[idx], expanded[idx], probe, spacing,
+        )
+        if faces.shape[0] == 0:
+            continue
+        parts_v.append(vertices)
+        parts_n.append(normals)
+        parts_f.append(faces + offset)
+        offset += int(vertices.shape[0])
+    if not parts_v:
+        return empty
+    vertices = np.vstack(parts_v)
+    normals = np.vstack(parts_n)
+    faces = np.vstack(parts_f)
+    faces = _unique_faces(faces)
+    if faces.shape[0] == 0:
+        return empty
+    used = np.unique(np.asarray(faces, dtype=int).ravel())
+    if used.size != vertices.shape[0]:
+        remap = np.full(int(vertices.shape[0]), -1, dtype=int)
+        remap[used] = np.arange(used.size, dtype=int)
+        vertices = vertices[used]
+        normals = normals[used]
+        faces = remap[faces]
+    return vertices, normals, faces
+
+
+def _gauss_pad_radius(elements, resolution, b_floor) -> float:
+    blur = gaussian_blur_factor(resolution)
+    extent = max(float(resolution), 1.0)
+    for elem in elements:
+        _amps, _kappas, rcut = atom_gaussian_terms(elem, b_floor, 1.0, blur)
+        real = rcut / blur if blur > 1e-12 else rcut
+        if real > extent:
+            extent = real
+    return float(extent)
+
+
+def _gauss_grid(centers, elements, spacing, resolution, b_floor, isolevel, _depth=0):
+    """Normalized PyMOL Gaussian brick; signed field is isolevel - density."""
+    h = float(spacing)
+    if h < 1e-8 or centers.shape[0] == 0:
+        return None
+    pad = _gauss_pad_radius(elements, resolution, b_floor) + 2.0 * h
+    origin = np.min(centers, axis=0) - pad
+    hi = np.max(centers, axis=0) + pad
+    shape = np.floor((hi - origin) / h).astype(np.int32) + 3
+    shape = np.maximum(shape, 2)
+    n_vox = int(shape[0]) * int(shape[1]) * int(shape[2])
+    if n_vox > MAX_SAS_VOXELS and _depth < 8:
+        scale = (float(n_vox) / float(MAX_SAS_VOXELS)) ** (1.0 / 3.0)
+        return _gauss_grid(
+            centers, elements, h * max(scale, 1.12), resolution, b_floor, isolevel,
+            _depth=_depth + 1,
+        )
+    density = paint_gaussian_density(
+        shape, origin, h, centers, elements,
+        resolution=resolution, b_floor=b_floor,
+    )
+    if not np.any(np.abs(density) > 1e-12):
+        return None
+    signed = float(isolevel) - normalize_gaussian_map(density)
+    gx, gy, gz = np.gradient(signed, h, h, h)
+    grad = np.stack((gx, gy, gz), axis=-1)
+    return origin, h, signed, grad
+
+
+def _gauss_component(centers, elements, spacing, resolution, b_floor, isolevel, _depth=0):
+    empty = (
+        np.zeros((0, 3), dtype=float),
+        np.zeros((0, 3), dtype=float),
+        np.zeros((0, 3), dtype=int),
+    )
+    built = _gauss_grid(centers, elements, spacing, resolution, b_floor, isolevel, _depth=_depth)
+    if built is None:
+        return empty
+    origin, h, field, grad = built
+    cubes = _cubes_with_sign_change(field)
+    if cubes.shape[0] == 0:
+        return empty
+    if cubes.shape[0] > MAX_SAS_CUBES and _depth < 6:
+        return _gauss_component(
+            centers, elements,
+            h * max(math.sqrt(float(cubes.shape[0]) / float(MAX_SAS_CUBES)), 1.15),
+            resolution, b_floor, isolevel, _depth=_depth + 1,
+        )
+    return _isosurface_from_signed_field(origin, h, field, grad)
+
+
+def _gauss_mesh(centers, elements, quality: int):
+    empty = (
+        np.zeros((0, 3), dtype=float),
+        np.zeros((0, 3), dtype=float),
+        np.zeros((0, 3), dtype=int),
+    )
+    n = int(np.asarray(centers).reshape(-1, 3).shape[0])
+    if n == 0:
+        return empty
+    centers = np.asarray(centers, dtype=float).reshape(-1, 3)
+    elems = [str(e or "C") for e in list(elements or [])]
+    if len(elems) < n:
+        elems.extend(["C"] * (n - len(elems)))
+    elif len(elems) > n:
+        elems = elems[:n]
+    spacing = gauss_spacing(quality)
+    return _gauss_component(
+        centers, elems, spacing,
+        DEFAULT_GAUSSIAN_RESOLUTION, DEFAULT_GAUSSIAN_B_FLOOR, DEFAULT_GAUSSIAN_ISOLEVEL,
+    )
 
 
 _ASA_INSIDE_EPS = 1e-7
@@ -3358,8 +3979,9 @@ def build_solvent_surface(
     points: Sequence[Sequence[float]],
     atom_radius=DEFAULT_ATOM_RADIUS,
     probe_radius: float = DEFAULT_PROBE_RADIUS,
-    algorithm: str = "SAS",
+    algorithm: str = DEFAULT_ALGORITHM,
     quality: int = DEFAULT_QUALITY,
+    elements=None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return ``(vertices, normals, faces)`` for the chosen algorithm."""
     empty = (
@@ -3375,4 +3997,8 @@ def build_solvent_surface(
     kind = normalize_algorithm(algorithm)
     if kind == "ASA":
         return _asa_mesh(centers, radii, asa_frequency(quality))
+    if kind == "MC":
+        return _mc_mesh(centers, radii, quality, float(probe_radius))
+    if kind == "GAUSS":
+        return _gauss_mesh(centers, elements, quality)
     return _sas_mesh(centers, radii, asa_frequency(quality), float(probe_radius))

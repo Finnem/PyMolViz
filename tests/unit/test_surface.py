@@ -1,4 +1,4 @@
-"""SAS (rolling-ball) / ASA (accessible) solvent surfaces around point spheres."""
+"""SAS (Connolly), MC (marching-cubes SES), GAUSS (PyMOL Gaussian), and ASA surfaces."""
 
 from __future__ import annotations
 
@@ -13,9 +13,13 @@ from pymolviz.util.solvent_surface import (
     DEFAULT_PROBE_RADIUS,
     _convex_cap_frequency,
     _decimate_torus_succ,
+    _drop_overcovered_edge_faces,
     _fill_boundary_holes,
     _reduced_surface,
+    _split_t_junctions,
+    _torus_n_theta,
     build_solvent_surface,
+    edt_spacing,
     element_from_atom_name,
     expanded_radii,
     normalize_algorithm,
@@ -75,7 +79,15 @@ def _triangle_cgo_corners(tokens):
 def test_normalize_algorithm():
     assert normalize_algorithm("asa") == "ASA"
     assert normalize_algorithm("SAS") == "SAS"
-    assert normalize_algorithm("nope") == "SAS"
+    assert normalize_algorithm("mc") == "MC"
+    assert normalize_algorithm("cubes") == "MC"
+    assert normalize_algorithm("marching-cubes") == "MC"
+    assert normalize_algorithm("edt") == "MC"
+    assert normalize_algorithm("gauss") == "GAUSS"
+    assert normalize_algorithm("gaussian") == "GAUSS"
+    assert normalize_algorithm("blob") == "GAUSS"
+    assert normalize_algorithm(None) == "GAUSS"
+    assert normalize_algorithm("nope") == "GAUSS"
 
 
 def test_empty_surface_has_no_geometry():
@@ -84,6 +96,7 @@ def test_empty_surface_has_no_geometry():
     assert normals.shape == (0, 3)
     assert faces.shape == (0, 3)
     mesh = Surface([], bypass_colormap=True)
+    assert mesh.algorithm == "GAUSS"
     assert mesh.vertices.shape == (0, 3)
     assert mesh.faces.shape == (0, 3)
 
@@ -142,6 +155,9 @@ def test_convex_cap_frequency_ladder():
     assert _convex_cap_frequency(2) == 12
     assert _convex_cap_frequency(4) == 16
     assert _convex_cap_frequency(8) == 20
+    assert _torus_n_theta(2) == 48
+    assert _torus_n_theta(4) == 64
+    assert _torus_n_theta(8) == 80
 
 
 def test_msms_reduced_surface_one_two_three_spheres():
@@ -181,6 +197,104 @@ def test_sas_overlapping_verts_lie_between_vdw_and_accessible():
     assert float(np.max(sdf_vdw)) > 0.05
 
 
+def test_mc_single_sphere_verts_near_atom_radius():
+    center = np.zeros(3)
+    mesh = Surface(
+        [center], algorithm="MC", quality=1, bypass_colormap=True,
+    )
+    assert mesh.vertices.shape[0] > 0
+    assert mesh.faces.shape[0] > 0
+    radii = np.linalg.norm(mesh.vertices - center, axis=1)
+    h = edt_spacing(1, DEFAULT_PROBE_RADIUS)
+    assert radii == pytest.approx(DEFAULT_ATOM_RADIUS, abs=h + 0.05)
+    tokens = mesh._create_CGO_list()
+    kinds = [t for t in tokens if isinstance(t, str)]
+    assert kinds[:2] == ["ENABLE", "LIGHTING"]
+    assert "BEGIN" in kinds
+    assert "TRIANGLES" in kinds
+    assert kinds[-1] == "END"
+    nlen = np.linalg.norm(mesh.normals, axis=1)
+    assert np.all(nlen > 0.5)
+
+
+def test_mc_overlapping_verts_lie_between_vdw_and_accessible():
+    points = np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
+    mesh = Surface(
+        points, algorithm="MC", quality=1, bypass_colormap=True,
+    )
+    h = edt_spacing(1, DEFAULT_PROBE_RADIUS)
+    slack = h + 0.08
+    sas_r = expanded_radii(DEFAULT_ATOM_RADIUS, 2, DEFAULT_PROBE_RADIUS)
+    vdw_r = sas_r - DEFAULT_PROBE_RADIUS
+    sdf_sas = signed_distance(mesh.vertices, points, sas_r)
+    sdf_vdw = signed_distance(mesh.vertices, points, vdw_r)
+    assert np.all(sdf_sas <= slack)
+    assert np.all(sdf_vdw >= -slack)
+    assert float(np.max(sdf_vdw)) > 0.05
+
+
+def test_mc_overlapping_mesh_is_watertight():
+    mesh = Surface(
+        [(0.0, 0.0, 0.0), (2.0, 0.0, 0.0)],
+        algorithm="MC", quality=1, bypass_colormap=True,
+    )
+    assert mesh.faces.shape[0] > 0
+    assert _boundary_edge_count(mesh.faces) == 0
+    counts = _edge_multiplicities(mesh.faces)
+    assert counts
+    assert all(n == 2 for n in counts.values())
+
+
+def test_gauss_single_sphere_is_closed_blob():
+    center = np.zeros(3)
+    mesh = Surface(
+        [center], algorithm="GAUSS", quality=1, bypass_colormap=True,
+    )
+    assert mesh.vertices.shape[0] > 0
+    assert mesh.faces.shape[0] > 0
+    radii = np.linalg.norm(mesh.vertices - center, axis=1)
+    assert float(np.min(radii)) > 0.4
+    assert float(np.max(radii)) < 3.5
+    assert float(np.median(radii)) > 0.8
+    tokens = mesh._create_CGO_list()
+    kinds = [t for t in tokens if isinstance(t, str)]
+    assert kinds[:2] == ["ENABLE", "LIGHTING"]
+    assert "BEGIN" in kinds
+    assert "TRIANGLES" in kinds
+    assert kinds[-1] == "END"
+    nlen = np.linalg.norm(mesh.normals, axis=1)
+    assert np.all(nlen > 0.5)
+
+
+def test_gauss_two_spheres_fuse_and_are_watertight():
+    points = np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
+    mesh = Surface(
+        points, algorithm="GAUSS", quality=1, bypass_colormap=True,
+    )
+    assert mesh.faces.shape[0] > 0
+    assert _boundary_edge_count(mesh.faces) == 0
+    counts = _edge_multiplicities(mesh.faces)
+    assert counts
+    assert all(n == 2 for n in counts.values())
+    vdw = np.full(2, DEFAULT_ATOM_RADIUS)
+    sdf_vdw = signed_distance(mesh.vertices, points, vdw)
+    assert float(np.max(sdf_vdw)) > 0.05
+
+
+def test_gauss_hydrogen_blob_is_smaller_than_carbon():
+    carbon = build_solvent_surface(
+        [(0.0, 0.0, 0.0)], algorithm="GAUSS", quality=1, elements=["C"],
+    )
+    hydrogen = build_solvent_surface(
+        [(0.0, 0.0, 0.0)], algorithm="GAUSS", quality=1, elements=["H"],
+    )
+    assert carbon[0].shape[0] > 0
+    assert hydrogen[0].shape[0] > 0
+    r_c = float(np.median(np.linalg.norm(carbon[0], axis=1)))
+    r_h = float(np.median(np.linalg.norm(hydrogen[0], axis=1)))
+    assert r_h < r_c
+
+
 def _boundary_edge_count(faces):
     count = {}
     for a, b, c in np.asarray(faces, dtype=int):
@@ -214,6 +328,20 @@ def test_fill_boundary_holes_closes_small_triangle_not_large_gap():
     assert _boundary_edge_count(unfilled) == 3
 
 
+def test_drop_overcovered_edge_faces_keeps_two_largest():
+    verts = np.array([
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.5, 1.0, 0.0],
+        [0.5, 0.01, 0.0],
+        [0.5, -1.0, 0.0],
+    ], dtype=float)
+    faces = np.array([[0, 1, 2], [0, 1, 3], [0, 1, 4]], dtype=int)
+    out = _drop_overcovered_edge_faces(verts, faces)
+    keys = {tuple(sorted(tri)) for tri in np.asarray(out, dtype=int)}
+    assert keys == {(0, 1, 2), (0, 1, 4)}
+
+
 def test_sas_overlapping_mesh_has_no_small_boundary_holes():
     two = Surface(
         [(0.0, 0.0, 0.0), (2.0, 0.0, 0.0)],
@@ -221,6 +349,12 @@ def test_sas_overlapping_mesh_has_no_small_boundary_holes():
     )
     assert two.faces.shape[0] > 0
     assert _boundary_edge_count(two.faces) == 0
+    two_hi = Surface(
+        [(0.0, 0.0, 0.0), (2.0, 0.0, 0.0)],
+        algorithm="SAS", quality=3, bypass_colormap=True,
+    )
+    assert two_hi.faces.shape[0] > 0
+    assert _boundary_edge_count(two_hi.faces) == 0
     three = Surface(
         [(0.0, 0.0, 0.0), (2.0, 0.0, 0.0), (1.0, float(np.sqrt(3.0)), 0.0)],
         algorithm="SAS", quality=1, bypass_colormap=True,
@@ -274,6 +408,39 @@ def test_sas_cluster_is_watertight_without_interior_chords():
     assert float(np.max(sdf_vdw)) > 0.05
 
 
+def _vertex_face_valence(faces, n_verts):
+    val = np.zeros(int(n_verts), dtype=int)
+    for a, b, c in np.asarray(faces, dtype=int):
+        val[int(a)] += 1
+        val[int(b)] += 1
+        val[int(c)] += 1
+    return val
+
+
+def _adjacent_face_normal_dots(verts, faces):
+    verts = np.asarray(verts, dtype=float)
+    faces = np.asarray(faces, dtype=int)
+    p0, p1, p2 = verts[faces[:, 0]], verts[faces[:, 1]], verts[faces[:, 2]]
+    fn = np.cross(p1 - p0, p2 - p0)
+    fn = fn / np.maximum(np.linalg.norm(fn, axis=1, keepdims=True), 1e-18)
+    cent = (p0 + p1 + p2) / 3.0
+    edge_faces = {}
+    for fi, (a, b, c) in enumerate(faces):
+        for u, v in ((int(a), int(b)), (int(b), int(c)), (int(c), int(a))):
+            key = (u, v) if u < v else (v, u)
+            edge_faces.setdefault(key, []).append(fi)
+    dots = []
+    cents = []
+    for _key, fis in edge_faces.items():
+        if len(fis) != 2:
+            continue
+        dots.append(float(np.dot(fn[fis[0]], fn[fis[1]])))
+        cents.append(0.5 * (cent[fis[0]] + cent[fis[1]]))
+    if not dots:
+        return np.zeros(0, dtype=float), np.zeros((0, 3), dtype=float)
+    return np.asarray(dots, dtype=float), np.asarray(cents, dtype=float)
+
+
 def test_sas_triangles_are_not_extremely_skinny():
     mesh = Surface(
         [(0.0, 0.0, 0.0), (2.0, 0.0, 0.0), (1.0, float(np.sqrt(3.0)), 0.0)],
@@ -290,6 +457,61 @@ def test_sas_triangles_are_not_extremely_skinny():
     ratios = longest / np.maximum(shortest, 1e-12)
     assert float(np.median(ratios)) < 4.0
     assert float(np.percentile(ratios, 95)) < 12.0
+    val = _vertex_face_valence(mesh.faces, len(mesh.vertices))
+    assert int(val.max()) <= 12
+
+
+def test_sas_contact_band_has_bounded_valence():
+    """Cap/torus density jump must not create a high-valence Phong knot."""
+    mesh = Surface(
+        [(0.0, 0.0, 0.0), (2.0, 0.0, 0.0)],
+        algorithm="SAS", quality=3, bypass_colormap=True,
+    )
+    val = _vertex_face_valence(mesh.faces, len(mesh.vertices))
+    assert int(val.max()) <= 12
+
+
+def test_sas_vdw_cap_is_not_folded():
+    """A two-sphere VDW cap must not crumple (opposite adjacent face normals)."""
+    points = np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
+    mesh = Surface(
+        points, algorithm="SAS", quality=3, bypass_colormap=True,
+    )
+    dots, mids = _adjacent_face_normal_dots(mesh.vertices, mesh.faces)
+    assert dots.size
+    sdf = signed_distance(mids, points, np.full(len(points), DEFAULT_ATOM_RADIUS))
+    cap = dots[sdf < 0.05]
+    assert cap.size
+    assert float(np.min(cap)) > 0.0
+
+
+def test_split_t_junctions_uses_hanging_vertex():
+    """A vertex on a coarser edge must become an endpoint of that edge."""
+    vertices = np.array([
+        [0.0, 0.0, 0.0],
+        [2.0, 0.0, 0.0],
+        [1.0, 1.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.4, 0.4, 0.0],
+    ], dtype=float)
+    faces = np.array([[0, 1, 2], [0, 3, 4]], dtype=int)
+    out_v, out_f = _split_t_junctions(vertices, faces)
+    edges = set()
+    for a, b, c in out_f:
+        for u, v in ((int(a), int(b)), (int(b), int(c)), (int(c), int(a))):
+            edges.add((u, v) if u < v else (v, u))
+    assert (0, 1) not in edges
+    assert (0, 3) in edges
+    assert (1, 3) in edges
+
+
+def test_sas_mesh_has_no_t_junctions():
+    mesh = Surface(
+        [(0.0, 0.0, 0.0), (2.0, 0.0, 0.0), (1.0, float(np.sqrt(3.0)), 0.0)],
+        algorithm="SAS", quality=3, bypass_colormap=True,
+    )
+    again_v, again_f = _split_t_junctions(mesh.vertices, mesh.faces)
+    assert len(again_f) == len(mesh.faces)
 
 
 def test_sas_contact_circle_has_no_spike_faces():
@@ -322,7 +544,9 @@ def test_sas_contact_circle_has_no_spike_faces():
         if len(fis) != 2:
             continue
         s0, s1 = float(sdf[fis[0]]), float(sdf[fis[1]])
-        if not ((s0 < 0.025 and s1 > 0.04) or (s1 < 0.025 and s0 > 0.04)):
+        if abs(s0 - s1) < 0.02:
+            continue
+        if min(s0, s1) > 0.05 or max(s0, s1) < 0.0:
             continue
         c = float(np.clip(np.dot(fn[fis[0]], fn[fis[1]]), -1.0, 1.0))
         dihs.append(float(np.degrees(np.arccos(c))))
@@ -506,8 +730,75 @@ def test_sas_cap_triangle_normals_are_smooth_not_faceted():
         assert min(dots) > 0.90
 
 
-def test_sas_contact_circle_normals_do_not_crease():
-    """Adjacent cap/torus vertices should not have a specular crease."""
+def _min_face_normal_dots(mesh):
+    n = mesh.normals / np.maximum(
+        np.linalg.norm(mesh.normals, axis=1, keepdims=True), 1e-18,
+    )
+    faces = np.asarray(mesh.faces, dtype=int)
+    n0, n1, n2 = n[faces[:, 0]], n[faces[:, 1]], n[faces[:, 2]]
+    d01 = np.einsum("ij,ij->i", n0, n1)
+    d12 = np.einsum("ij,ij->i", n1, n2)
+    d20 = np.einsum("ij,ij->i", n2, n0)
+    return np.minimum(np.minimum(d01, d12), d20)
+
+
+def _centroid_interpolant_face_dots(mesh):
+    """Dot of CGO Phong's centroid interpolant with the geometric face normal."""
+    n = mesh.normals / np.maximum(
+        np.linalg.norm(mesh.normals, axis=1, keepdims=True), 1e-18,
+    )
+    faces = np.asarray(mesh.faces, dtype=int)
+    verts = np.asarray(mesh.vertices, dtype=float)
+    n0, n1, n2 = n[faces[:, 0]], n[faces[:, 1]], n[faces[:, 2]]
+    navg = n0 + n1 + n2
+    navg = navg / np.maximum(np.linalg.norm(navg, axis=1, keepdims=True), 1e-18)
+    p0, p1, p2 = verts[faces[:, 0]], verts[faces[:, 1]], verts[faces[:, 2]]
+    geom = np.cross(p1 - p0, p2 - p0)
+    geom = geom / np.maximum(np.linalg.norm(geom, axis=1, keepdims=True), 1e-18)
+    align = np.einsum("ij,ij->i", geom, navg)
+    geom = np.where(align[:, None] < 0.0, -geom, geom)
+    return np.einsum("ij,ij->i", navg, geom)
+
+
+def test_sas_phong_interpolation_stays_in_lobe():
+    """A triangle whose vertex normals span ~40° goes dark under CGO Phong."""
+    cluster = [
+        [0.0, 0.0, 0.0], [1.5, 0.0, 0.0], [0.75, 1.3, 0.0],
+        [2.8, 0.4, 0.2], [3.5, 1.6, 0.0], [4.9, 1.2, 0.3],
+        [5.6, 2.3, 0.1], [3.0, -0.9, 0.4],
+    ]
+    samples = (
+        ([(0.0, 0.0, 0.0), (2.0, 0.0, 0.0)], 3, {}),
+        ([(0.0, 0.0, 0.0), (2.0, 0.0, 0.0), (1.0, float(np.sqrt(3.0)), 0.0)], 3, {}),
+        (cluster, 3, {"atom_radius": 1.7, "radius_mode": "uniform"}),
+    )
+    for points, quality, extra in samples:
+        mesh = Surface(
+            points, algorithm="SAS", quality=quality, bypass_colormap=True,
+            **extra,
+        )
+        dots = _min_face_normal_dots(mesh)
+        assert dots.size
+        assert float(np.min(dots)) > 0.90
+        assert float(np.percentile(dots, 5)) > 0.92
+        faces = np.asarray(mesh.faces, dtype=int)
+        verts = np.asarray(mesh.vertices, dtype=float)
+        p0, p1, p2 = verts[faces[:, 0]], verts[faces[:, 1]], verts[faces[:, 2]]
+        area = 0.5 * np.linalg.norm(np.cross(p1 - p0, p2 - p0), axis=1)
+        gdot = _centroid_interpolant_face_dots(mesh)[area > 1e-4]
+        assert gdot.size
+        assert float(np.percentile(gdot, 5)) > 0.995
+        if len(points) <= 3:
+            assert float(np.min(gdot)) > 0.99
+
+
+def test_sas_contact_circle_normals_follow_curvature():
+    """Cap/torus lighting must keep Connolly curvature; flattening shades as a groove.
+
+    A unit VDW cap rotates normals at ``180/pi`` deg/Å. Averaging across the
+    contact edge dropped that to ~29 deg/Å — a trough PyMOL draws as an
+    indented band that is invisible in wireframe.
+    """
     mesh = Surface(
         [(0.0, 0.0, 0.0), (2.0, 0.0, 0.0)],
         algorithm="SAS", quality=3, bypass_colormap=True,
@@ -521,17 +812,48 @@ def test_sas_contact_circle_normals_do_not_crease():
     )
     sdf = signed_distance(verts, points, vdw)
     angles = []
+    rates = []
+    seen = set()
     for a, b, c in faces:
         for u, v in ((int(a), int(b)), (int(b), int(c)), (int(c), int(a))):
+            key = (u, v) if u < v else (v, u)
+            if key in seen:
+                continue
+            seen.add(key)
             s0, s1 = float(sdf[u]), float(sdf[v])
             lo, hi = (s0, s1) if s0 <= s1 else (s1, s0)
-            if lo > 0.015 or hi < 0.03:
+            if lo > 0.02 or hi < 0.02:
+                continue
+            if (hi - lo) < 0.008:
                 continue
             cdot = float(np.clip(np.dot(n[u], n[v]), -1.0, 1.0))
-            angles.append(float(np.degrees(np.arccos(cdot))))
+            ang = float(np.degrees(np.arccos(cdot)))
+            el = float(np.linalg.norm(verts[u] - verts[v]))
+            angles.append(ang)
+            if el > 1e-6:
+                rates.append(ang / el)
     assert angles
-    assert float(np.percentile(angles, 95)) < 10.0
-    assert float(np.max(angles)) < 16.0
+    assert float(np.percentile(angles, 95)) < 7.5
+    assert float(np.max(angles)) < 8.5
+    assert rates
+    assert float(np.median(rates)) > 40.0
+
+
+def test_sas_two_sphere_contact_rim_has_no_near_duplicates():
+    """Cap and torus must share the contact polyline, not hang 5e-4 Å apart."""
+    from scipy.spatial import cKDTree
+
+    points = np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
+    mesh = Surface(
+        points, algorithm="SAS", quality=3, bypass_colormap=True,
+    )
+    sdf = signed_distance(
+        mesh.vertices, points, np.full(2, DEFAULT_ATOM_RADIUS),
+    )
+    band = np.abs(sdf) < 0.008
+    pts = np.asarray(mesh.vertices, dtype=float)[band]
+    assert pts.shape[0] >= 16
+    assert not cKDTree(pts).query_pairs(r=0.006)
 
 
 def test_sas_unequal_radii_vertices_lie_between_vdw_and_accessible():

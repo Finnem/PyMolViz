@@ -1,4 +1,4 @@
-"""Surface mesh builder: SAS / ASA around selected points."""
+"""Surface mesh builder: SAS / MC / GAUSS / ASA around selected points."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import numpy as np
 
 from ...util.mesh_clip import clip_plane_from_view, normalize_clip_planes, oriented_clip_normal
 from ...util.solvent_surface import (
+    DEFAULT_ALGORITHM,
     DEFAULT_ATOM_RADIUS,
     DEFAULT_PROBE_RADIUS,
     DEFAULT_QUALITY,
@@ -146,7 +147,7 @@ class SurfaceBuilderPage:
             self._vdw_scale.setValue(DEFAULT_VDW_SCALE)
             self._vdw_scale.setEnabled(DEFAULT_RADIUS_MODE == "vdw")
         if self._algorithm is not None:
-            self._algorithm.setCurrentText("SAS")
+            self._algorithm.setCurrentText(DEFAULT_ALGORITHM)
         if self._quality is not None:
             self._quality.setValue(DEFAULT_QUALITY)
         if self._wireframe is not None:
@@ -230,7 +231,7 @@ class SurfaceBuilderPage:
         self._algorithm = QtWidgets.QComboBox()
         for name in SURFACE_ALGORITHMS:
             self._algorithm.addItem(name)
-        self._algorithm.setCurrentText("SAS")
+        self._algorithm.setCurrentText(DEFAULT_ALGORITHM)
         self._algorithm.currentIndexChanged.connect(self._schedule_preview)
         self._radius_widget = LogSegmentRadiusWidget(initial=DEFAULT_ATOM_RADIUS)
         self._radius_widget.connect_changed(self._on_radius_policy_changed)
@@ -414,6 +415,10 @@ class SurfaceBuilderPage:
                     self._algorithm,
                     "SAS: rolling-ball solvent-excluded surface (MSMS / Connolly) "
                     "— geodesic van der Waals caps with probe-radius fillets. "
+                    "MC: the same SES from an EDT of the accessible union, extracted "
+                    "with marching cubes (watertight grid, no cap/saddle stitches). "
+                    "GAUSS: PyMOL map_new gaussian + isosurface — atomic scattering "
+                    "Gaussians, B-factor floor, contour at 1σ (blob envelope). "
                     "ASA: solvent-accessible patches on the expanded spheres "
                     "(atom radius + probe).",
                 ),
@@ -421,7 +426,8 @@ class SurfaceBuilderPage:
                 (
                     self._probe_widget,
                     "Radius of the rolling solvent sphere in Ångströms "
-                    "(1.4 Å is water). Larger probes carve smoother, shallower valleys.",
+                    "(1.4 Å is water). Larger probes carve smoother, shallower valleys. "
+                    "GAUSS ignores the probe (it uses scattering factors and a B-floor).",
                 ),
                 (
                     self._use_vdw,
@@ -437,7 +443,7 @@ class SurfaceBuilderPage:
                 (self._quality,
                     "Mesh detail from 1 (coarse, fast) to 5 (fine). "
                     "SAS densifies the geodesic template caps and probe fillets; "
-                    "ASA uses a denser sphere sampling.",
+                    "MC and GAUSS use a finer voxel grid; ASA uses a denser sphere sampling.",
                 ),
                 (
                     self._color_btn,
