@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from ..points import PointUnresolvedError, has_dynamic_sources
 from ..serialization import style_hash
-from ..util.pymol_helpers import load_cgo_no_zoom, replace_cgo_no_zoom, set_cgo_transparency
+from ..util.pymol_helpers import load_cgo_no_zoom, replace_cgo_no_zoom, set_cgo_specular, set_cgo_transparency
 from ..util.sanitize import sanitize_pymol_string
 from .bindings import BindingRegistry, PyMOLBinding
 from .context import ResolveContext
-from .renderer import resolved_cgo_tokens
+from .renderer import FIELD_VISUAL_TYPES, renders_cgo, resolved_cgo_tokens
 
 _DEFAULT = None
 
@@ -62,11 +62,14 @@ class PyMOLRuntime:
             state = 1
         return ResolveContext(self.cmd, state)
 
-    def _apply_transparency(self, obj, name):
+    def _apply_object_look(self, obj, name):
         alpha = 1.0 - max(0.0, min(1.0, _scalar_transparency(obj)))
         set_cgo_transparency(self.cmd, name, alpha)
+        set_cgo_specular(self.cmd, name, bool(getattr(obj, "specular", True)))
 
     def _load(self, obj, name, replace=False, rebuild=True):
+        if not renders_cgo(obj):
+            return
         context = self._context() if rebuild else None
         try:
             tokens = resolved_cgo_tokens(obj, context)
@@ -77,16 +80,28 @@ class PyMOLRuntime:
             replace_cgo_no_zoom(self.cmd, tokens, name, state)
         else:
             load_cgo_no_zoom(self.cmd, tokens, name, state)
-        self._apply_transparency(obj, name)
+        self._apply_object_look(obj, name)
+
+    def _load_field_visual(self, obj):
+        """Load Volume / IsoSurface / IsoMesh via native PyMOL cmds, not CGO."""
+        from ..Displayable import call_load
+
+        call_load(obj, self.cmd)
 
     def materialize(self, obj, rebuild=True):
         name = binding_name(obj)
+        if not renders_cgo(obj):
+            if type(obj).__name__ in FIELD_VISUAL_TYPES:
+                self._load_field_visual(obj)
+            return name
         self._load(obj, name, replace=False, rebuild=rebuild)
         binding = PyMOLBinding(obj.id, name, "cgo", style_hash=style_hash(obj))
         self.bindings.put(binding)
         return name
 
     def sync(self, obj):
+        if not renders_cgo(obj):
+            return self.materialize(obj)
         binding = self.bindings.get(obj.id)
         if binding is None:
             return self.materialize(obj)
@@ -96,13 +111,15 @@ class PyMOLRuntime:
 
     def replace_cgo(self, obj):
         """Reload CGO tokens without resolving or remeshing."""
+        if not renders_cgo(obj):
+            return binding_name(obj)
         binding = self.bindings.get(obj.id)
         if binding is None:
             return self.materialize(obj)
         tokens = list(resolved_cgo_tokens(obj, None))
         state = int(getattr(obj, "state", 1) or 1)
         replace_cgo_no_zoom(self.cmd, tokens, binding.pymol_name, state)
-        self._apply_transparency(obj, binding.pymol_name)
+        self._apply_object_look(obj, binding.pymol_name)
         return binding.pymol_name
 
     def remove(self, obj):
@@ -119,6 +136,11 @@ class PyMOLRuntime:
         except Exception:
             existing = set()
         for obj in objects:
+            if not renders_cgo(obj):
+                name = binding_name(obj)
+                if type(obj).__name__ in FIELD_VISUAL_TYPES and name not in existing:
+                    self._load_field_visual(obj)
+                continue
             name = binding_name(obj)
             if name in existing:
                 self.bindings.put(PyMOLBinding(obj.id, name, "cgo", style_hash=style_hash(obj)))

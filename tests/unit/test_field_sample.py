@@ -15,6 +15,10 @@ from pymolviz.util.field_sample import (
     grid_from_pymol_map,
     resolve_grid_from_session,
     discover_fields,
+    field_choices,
+    paint_mesh_by_field,
+    paint_mesh_by_point_colors,
+    sample_rgb_at,
     _NATIVE_GRIDS,
 )
 from pymolviz.volumetric.GridData import GridData
@@ -328,3 +332,105 @@ def test_discover_fields_lists_native_maps_not_molecules():
     found = discover_fields([], cmd=cmd)
     ids = [str(obj.id) for obj in found]
     assert ids == [PYMOL_MAP_ID_PREFIX + "density"]
+
+
+def test_field_choices_uses_map_name_as_label():
+    _NATIVE_GRIDS.clear()
+    values = np.zeros((2, 2, 2), dtype=float)
+    cmd = _map_cmd(values)
+    choices = field_choices([], cmd=cmd)
+    assert choices == [(PYMOL_MAP_ID_PREFIX + "density", "density")]
+
+
+def test_paint_mesh_by_point_colors_blends_anchor_colors():
+    from pymolviz.meshes.Mesh import Mesh
+
+    verts = np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [1.0, 1.0, 0.0]], dtype=float)
+    mesh = Mesh(
+        verts,
+        color=(1.0, 1.0, 1.0),
+        faces=[[0, 1, 2]],
+        bypass_colormap=True,
+    )
+    centers = [(0.0, 0.0, 0.0), (2.0, 0.0, 0.0)]
+    colors = [(1.0, 0.0, 0.0), (0.0, 0.0, 1.0)]
+    radii = [2.0, 2.0]
+    assert paint_mesh_by_point_colors(mesh, centers, colors, radii)
+    got = np.asarray(mesh.color, dtype=float).reshape(-1, 3)
+    assert got.shape[0] == 3
+    unique = {tuple(np.round(row, 3)) for row in got}
+    assert len(unique) > 1
+    assert got[0, 0] > got[1, 0]
+    assert got[1, 2] > got[0, 2]
+    assert paint_mesh_by_point_colors(mesh, centers, colors, radii) is False
+    again = np.asarray(mesh.color, dtype=float).reshape(-1, 3)
+    assert np.allclose(got, again)
+
+
+def test_paint_mesh_by_field_sets_per_vertex_colors():
+    _NATIVE_GRIDS.clear()
+    values = np.zeros((2, 2, 2), dtype=float)
+    values[1, 1, 1] = 1.0
+    grid = GridData(
+        values.reshape(-1),
+        step_sizes=(1.0, 1.0, 1.0),
+        step_counts=(1, 1, 1),
+        origin=(0.0, 0.0, 0.0),
+        name="grad",
+    )
+    _NATIVE_GRIDS[grid.id] = grid
+    from pymolviz.meshes.Sphere import Sphere
+    from pymolviz.points import FixedPoint
+
+    sphere = Sphere(
+        FixedPoint((0.5, 0.5, 0.5)), 0.5,
+        color=(1.0, 0.0, 0.0), bypass_colormap=True, frequency=2,
+    )
+    assert paint_mesh_by_field(sphere, grid.id, colormap="coolwarm", refine=False)
+    colors = np.asarray(sphere.color, dtype=float).reshape(-1, 3)
+    assert colors.shape[0] == sphere.vertices.shape[0]
+    assert sphere.field_id == str(grid.id)
+    unique = {tuple(np.round(row, 4)) for row in colors}
+    assert len(unique) > 1
+    sampled = sample_rgb_at((1.0, 1.0, 1.0), grid.id, "coolwarm")
+    assert sampled is not None
+    assert len(sampled) == 3
+
+
+def test_rgb_from_scalars_uses_custom_spec_stops():
+    from pymolviz.util.colormap_spec import ColorStop, ColormapDefinition
+    from pymolviz.util.field_sample import rgb_from_scalars
+
+    defn = ColormapDefinition(
+        preset="custom",
+        stops=(
+            ColorStop(0.0, (0.0, 0.0, 1.0, 1.0)),
+            ColorStop(1.0, (1.0, 0.0, 0.0, 1.0)),
+        ),
+        customized=True,
+    )
+    rgb, used = rgb_from_scalars([0.0, 1.0], defn, clims=(0.0, 1.0))
+    assert used == pytest.approx((0.0, 1.0))
+    assert rgb[0] == pytest.approx((0.0, 0.0, 1.0), abs=0.02)
+    assert rgb[1] == pytest.approx((1.0, 0.0, 0.0), abs=0.02)
+    rgb2, _ = rgb_from_scalars([0.0, 1.0], defn.to_dict(), clims=(0.0, 1.0))
+    assert np.allclose(rgb, rgb2)
+
+
+def test_visual_point_field_choice_clears_on_solid_color():
+    from pymolviz.wizards.builders.colors import ColorChoice
+    from pymolviz.wizards.builders.points import VisualPoint
+
+    pt = VisualPoint("a", "manual", 0.0, 0.0, 0.0)
+    choice = ColorChoice(
+        rgba=(0.2, 0.3, 0.4, 0.5),
+        field_id="pymol_map:density",
+        colormap="viridis",
+    )
+    painted = pt.with_color_choice(choice)
+    assert painted.field_id == "pymol_map:density"
+    assert painted.field_colormap == "viridis"
+    assert painted.alpha == pytest.approx(0.5)
+    solid = painted.with_color((1.0, 0.0, 0.0, 1.0))
+    assert solid.field_id is None
+    assert solid.color[0] == pytest.approx(1.0)

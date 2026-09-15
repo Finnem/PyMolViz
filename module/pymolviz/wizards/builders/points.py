@@ -8,9 +8,14 @@ from typing import List, Optional, Sequence, Tuple
 from ...points import AtomPoint, FixedPoint, PointSource, PseudoAtomPoint
 from ...util.sanitize import sanitize_pymol_string
 from ...util.view import screen_center
-from .colors import DEFAULT_SPHERE_COLOR, colors_for_new_points
+from .colors import DEFAULT_SPHERE_COLOR, ColorChoice, as_color_choice, colors_for_new_points
+from .surface_params import COLOR_MODE_FIELD, COLOR_MODE_PER_POINT, COLOR_MODE_UNIFORM
 
 RGB = Tuple[float, float, float]
+
+SOURCE_SELECTION = "selection"
+SOURCE_CAMERA = "manual"
+SOURCE_MANUAL = "manual"
 
 AA_ONE = {
     "ALA": "A", "ARG": "R", "ASN": "N", "ASP": "D", "CYS": "C",
@@ -68,18 +73,38 @@ def _atom_ref(model, atom_id, chain, resi, atom_name, elem="") -> AtomRef:
 
 
 @dataclass
+class PointDefinition:
+    """Intermediate point placement before Appearance stamps color/opacity."""
+
+    x: float
+    y: float
+    z: float
+    name: str
+    source_type: str
+    label: str = ""
+    atom_ref: Optional[AtomRef] = None
+    point_source: Optional[PointSource] = None
+
+
+@dataclass
 class VisualPoint:
     name: str
     source: str
     x: float
     y: float
     z: float
+    enabled: bool = True
     color: RGB = field(default_factory=lambda: DEFAULT_SPHERE_COLOR)
     alpha: float = 1.0
     point_source: Optional[PointSource] = None
     atom_ref: Optional[AtomRef] = None
     anchor_intent: Optional[bool] = None
     radius: Optional[float] = None
+    field_id: Optional[str] = None
+    field_colormap: Optional[str] = None
+    field_clims: Optional[Tuple[float, float]] = None
+    field_clim_mode: Optional[str] = None
+    field_colormap_spec: Optional[dict] = None
 
     def __post_init__(self):
         if self.point_source is None:
@@ -152,6 +177,9 @@ class VisualPoint:
             float(self.alpha),
         )
 
+    def with_enabled(self, enabled: bool) -> "VisualPoint":
+        return self._replace(enabled=bool(enabled))
+
     def _replace(self, **kwargs) -> "VisualPoint":
         return VisualPoint(
             kwargs.get("name", self.name),
@@ -159,12 +187,18 @@ class VisualPoint:
             kwargs.get("x", self.x),
             kwargs.get("y", self.y),
             kwargs.get("z", self.z),
+            kwargs.get("enabled", self.enabled),
             kwargs.get("color", self.color),
             kwargs.get("alpha", self.alpha),
             kwargs.get("point_source", self.point_source),
             kwargs.get("atom_ref", self.atom_ref),
             kwargs.get("anchor_intent", self.anchor_intent),
             kwargs.get("radius", self.radius),
+            kwargs.get("field_id", self.field_id),
+            kwargs.get("field_colormap", self.field_colormap),
+            kwargs.get("field_clims", self.field_clims),
+            kwargs.get("field_clim_mode", self.field_clim_mode),
+            kwargs.get("field_colormap_spec", self.field_colormap_spec),
         )
 
     def with_xyz(self, xyz: Sequence[float]) -> "VisualPoint":
@@ -184,15 +218,130 @@ class VisualPoint:
         return self._replace(source=str(source))
 
     def with_color(self, color: Sequence[float]) -> "VisualPoint":
+        if isinstance(color, ColorChoice):
+            return self.with_color_choice(color)
         alpha = float(color[3]) if len(color) >= 4 else self.alpha
         return self._replace(
             color=(float(color[0]), float(color[1]), float(color[2])),
             alpha=alpha,
+            field_id=None,
+            field_colormap=None,
+            field_clims=None,
+            field_clim_mode=None,
+            field_colormap_spec=None,
+        )
+
+    def with_color_choice(self, choice: ColorChoice) -> "VisualPoint":
+        choice = as_color_choice(choice)
+        field_id = str(choice.field_id) if choice.field_id else None
+        rgb = choice.rgb
+        clim_mode = None
+        clims = None
+        if field_id:
+            from .colors import effective_clim_mode, resolve_color_clims
+
+            clim_mode = effective_clim_mode(choice)
+            clims = resolve_color_clims(clim_mode, choice.clims, field_id)
+            from ...util.field_sample import sample_rgb_at
+            sampled = sample_rgb_at(
+                self.xyz(), field_id, choice.colormap_spec or choice.colormap, clims,
+            )
+            if sampled is not None:
+                rgb = sampled
+        return self._replace(
+            color=rgb,
+            alpha=float(choice.rgba[3]),
+            field_id=field_id,
+            field_colormap=choice.colormap if field_id else None,
+            field_clims=clims if field_id else None,
+            field_clim_mode=clim_mode if field_id else None,
+            field_colormap_spec=getattr(choice, "colormap_spec", None) if field_id else None,
+        )
+
+    def color_choice(self) -> ColorChoice:
+        return ColorChoice(
+            rgba=self.rgba(),
+            field_id=self.field_id,
+            colormap=self.field_colormap or "RdYlBu_r",
+            clims=self.field_clims,
+            clim_mode=self.field_clim_mode,
+            colormap_spec=self.field_colormap_spec,
         )
 
     def with_radius(self, radius: Optional[float]) -> "VisualPoint":
         value = None if radius is None else float(radius)
         return self._replace(radius=value)
+
+
+def enabled_points(points: Sequence[VisualPoint]) -> List[VisualPoint]:
+    """Points included in preview, commit, export, and clip span."""
+    return [pt for pt in points if getattr(pt, "enabled", True)]
+
+
+def _colors_equal(a: Sequence[float], b: Sequence[float], tol: float = 1e-5) -> bool:
+    return all(abs(float(a[i]) - float(b[i])) < tol for i in range(3))
+
+
+def _alphas_equal(points: Sequence[VisualPoint], tol: float = 1e-5) -> bool:
+    if not points:
+        return True
+    first = float(points[0].alpha)
+    return all(abs(float(pt.alpha) - first) < tol for pt in points)
+
+
+def infer_color_mode(points: Sequence[VisualPoint]) -> str:
+    """Infer Uniform / Per-point / Field from enabled points."""
+    active = enabled_points(points)
+    if not active:
+        return COLOR_MODE_UNIFORM
+    field_ids = {pt.field_id for pt in active if pt.field_id}
+    if field_ids:
+        if len(field_ids) == 1:
+            cmap = {pt.field_colormap for pt in active if pt.field_id}
+            clims = {pt.field_clims for pt in active if pt.field_id}
+            if len(cmap) <= 1 and len(clims) <= 1:
+                return COLOR_MODE_FIELD
+        return COLOR_MODE_PER_POINT
+    first = active[0].color
+    if all(_colors_equal(first, pt.color) for pt in active) and _alphas_equal(active):
+        return COLOR_MODE_UNIFORM
+    return COLOR_MODE_PER_POINT
+
+
+def definition_from_visual_point(pt: VisualPoint) -> PointDefinition:
+    label = atom_anchor_label(pt.atom_ref) or str(pt.name or "")
+    return PointDefinition(
+        float(pt.x),
+        float(pt.y),
+        float(pt.z),
+        str(pt.name),
+        str(pt.source),
+        label=label,
+        atom_ref=pt.atom_ref,
+        point_source=pt.point_source,
+    )
+
+
+def visual_point_from_definition(
+    defn: PointDefinition,
+    *,
+    color: Sequence[float] = DEFAULT_SPHERE_COLOR,
+    alpha: float = 1.0,
+    enabled: bool = True,
+) -> VisualPoint:
+    ps = defn.point_source or FixedPoint((defn.x, defn.y, defn.z))
+    return VisualPoint(
+        defn.name,
+        defn.source_type,
+        defn.x,
+        defn.y,
+        defn.z,
+        enabled=bool(enabled),
+        color=(float(color[0]), float(color[1]), float(color[2])),
+        alpha=float(alpha),
+        point_source=ps,
+        atom_ref=defn.atom_ref,
+    )
 
 
 def assign_distinct_colors(points: List[VisualPoint]) -> None:
@@ -201,9 +350,21 @@ def assign_distinct_colors(points: List[VisualPoint]) -> None:
         points[i] = pt.with_color(colors_for_new_points(len(points))[i])
 
 
-def apply_global_color(points: List[VisualPoint], color: Sequence[float]) -> None:
-    for i, pt in enumerate(points):
-        points[i] = pt.with_color(color)
+def apply_global_color(
+    points: List[VisualPoint],
+    color: Sequence[float],
+    *,
+    rows: Optional[Sequence[int]] = None,
+) -> None:
+    targets = list(rows) if rows is not None else list(range(len(points)))
+    if isinstance(color, ColorChoice):
+        for row in targets:
+            if 0 <= row < len(points):
+                points[row] = points[row].with_color_choice(color)
+        return
+    for row in targets:
+        if 0 <= row < len(points):
+            points[row] = points[row].with_color(color)
 
 
 def commit_point_anchors(points: Sequence[VisualPoint]) -> List[VisualPoint]:
@@ -303,6 +464,52 @@ def _count_selection_atoms(cmd_, sele_expr: str, state: int = 0) -> int:
     return 0
 
 
+def _unwrap_selection_name(sele_expr: str) -> str:
+    name = str(sele_expr).strip()
+    if name.startswith("(") and name.endswith(")"):
+        inner = name[1:-1].strip()
+        if inner and "(" not in inner and ")" not in inner:
+            return inner
+    return name
+
+
+def _enabled_selection_names(cmd_):
+    """Enabled selection names, or None if PyMOL cannot report them."""
+    get_names = getattr(cmd_, "get_names", None)
+    if not callable(get_names):
+        return None
+    try:
+        names = get_names("selections", enabled_only=1)
+    except TypeError:
+        try:
+            names = get_names("selections", 1)
+        except Exception:
+            return None
+    except Exception:
+        return None
+    try:
+        return {str(name) for name in names}
+    except TypeError:
+        return None
+
+
+def _selection_is_enabled(cmd_, sele_expr: str) -> bool:
+    """True if the named selection is enabled in PyMOL's object panel.
+
+    Disabling ``sele`` (the usual deselect) does **not** clear its atoms:
+    ``cmd.count_atoms("sele")`` and ``"sele and enabled"`` still return the
+    old count. ``enabled`` in a selection expression means atoms in enabled
+    *objects*. Panel state is ``name in cmd.get_names("selections", enabled_only=1)``.
+    """
+    name = _unwrap_selection_name(sele_expr)
+    if not name:
+        return False
+    enabled = _enabled_selection_names(cmd_)
+    if enabled is None:
+        return True
+    return name in enabled
+
+
 def _iterate_atoms(cmd_, sele_expr: str, atoms: list, state: int = 0) -> bool:
     """Fill atoms with [model, chain, elem, resn, resi, id, x, y, z] per atom."""
     expressions = (
@@ -327,18 +534,40 @@ def _iterate_atoms(cmd_, sele_expr: str, atoms: list, state: int = 0) -> bool:
 
 
 def _active_selection(cmd_, interactive_only: bool = False) -> Optional[str]:
-    """Return a selection expression with at least one atom, or None."""
+    """Return a selection expression with at least one atom, or None.
+
+    When ``interactive_only`` is True, only the live atom selection
+    ``(sele)`` / ``(selextended)`` is considered — not ``(pk1)`` or saved
+    named selections that can remain populated after the user clears sele.
+
+    A **disabled** named selection is treated as absent. PyMOL keeps ``sele``
+    and its atom count after ``disable sele``; only
+    ``get_names("selections", enabled_only=1)`` reports the panel state.
+    """
     state = _current_state(cmd_)
-    candidates = ["(sele)", "(selextended)", "(pk1)"]
-    if not interactive_only:
+    if interactive_only:
+        candidates = ["(sele)", "(selextended)"]
+    else:
+        candidates = ["(sele)", "(selextended)", "(pk1)"]
         try:
-            for name in cmd_.get_names("selections"):
+            listed = cmd_.get_names("selections", enabled_only=1)
+        except TypeError:
+            try:
+                listed = cmd_.get_names("selections", 1)
+            except Exception:
+                listed = ()
+        except Exception:
+            listed = ()
+        try:
+            for name in listed:
                 expr = _selection_expr(name)
                 if expr not in candidates:
                     candidates.append(expr)
-        except Exception:
+        except TypeError:
             pass
     for expr in candidates:
+        if not _selection_is_enabled(cmd_, expr):
+            continue
         if _count_selection_atoms(cmd_, expr, state) > 0:
             return expr
     return None
@@ -540,7 +769,7 @@ def selection_points(
 
 def apply_location(dst: VisualPoint, src: VisualPoint) -> VisualPoint:
     """Copy location and atom identity from src, keep dst color, alpha, and radius."""
-    return src.with_color(dst.rgba()).with_radius(dst.radius)
+    return src.with_color_choice(dst.color_choice()).with_radius(dst.radius)
 
 
 def _unique_named(point: VisualPoint, used) -> VisualPoint:
@@ -597,7 +826,9 @@ def update_points_from_selection(
     chosen = _valid_rows(out, rows)
     if not chosen:
         return out
-    atoms = selection_points(cmd_, existing=(), hook_to_selection=hook_to_selection)
+    atoms = selection_points(
+        cmd_, existing=(), interactive_only=True, hook_to_selection=hook_to_selection,
+    )
     if not atoms:
         return None
     srcs = atoms if len(atoms) > 1 else [atoms[0]] * len(chosen)
@@ -607,16 +838,25 @@ def update_points_from_selection(
     return out
 
 
-def export_points_to_selection(cmd_, points: Sequence[VisualPoint], tmp_object: str = "_pmv_points_tmp"):
-    """Create pseudoatoms and a PyMOL selection covering them."""
+POINTS_EXPORT_PREFIX = "_pmv_points_tmp"
+POINTS_EXPORT_SELE = "_pmv_points_sel"
+
+
+def export_points_to_selection(
+    cmd_,
+    points: Sequence[VisualPoint],
+    tmp_object: str = POINTS_EXPORT_PREFIX,
+):
+    """Create labeled pseudoatoms and a PyMOL selection covering enabled points."""
     purge = []
     try:
         cmd_.delete(tmp_object)
     except Exception:
         pass
-    if not points:
+    active = enabled_points(points)
+    if not active:
         return None
-    for i, pt in enumerate(points):
+    for i, pt in enumerate(active):
         obj = "%s_%d" % (tmp_object, i)
         purge.append(obj)
         try:
@@ -624,10 +864,251 @@ def export_points_to_selection(cmd_, points: Sequence[VisualPoint], tmp_object: 
         except Exception:
             pass
         cmd_.pseudoatom(obj, pos=[pt.x, pt.y, pt.z], label=pt.name)
-    sele_name = "_pmv_points_sel"
-    names = " or ".join('object "%s"' % n for n in purge)
+        try:
+            cmd_.show("labels", obj)
+        except Exception:
+            pass
     try:
-        cmd_.select(sele_name, names)
+        cmd_.select(POINTS_EXPORT_SELE, " or ".join('object "%s"' % n for n in purge))
     except Exception:
-        cmd_.select(sele_name, "none")
-    return sele_name
+        cmd_.select(POINTS_EXPORT_SELE, "none")
+    return POINTS_EXPORT_SELE
+
+
+def _exported_point_object_names(cmd_, prefix: str = POINTS_EXPORT_PREFIX):
+    names = []
+    try:
+        existing = list(cmd_.get_names("objects"))
+    except Exception:
+        existing = []
+    prefix = str(prefix)
+    for name in existing:
+        text = str(name)
+        if text == prefix or text.startswith(prefix + "_"):
+            names.append(text)
+    return names
+
+
+def hide_exported_point_labels(cmd_) -> None:
+    """Hide labels on the Create-PyMOL-selection overlay without dropping the selection."""
+    targets = _exported_point_object_names(cmd_)
+    if POINTS_EXPORT_SELE not in targets:
+        targets.append(POINTS_EXPORT_SELE)
+    for name in targets:
+        for selection in (name, 'object "%s"' % name):
+            try:
+                cmd_.hide("labels", selection)
+            except Exception:
+                continue
+            break
+
+
+INSERT_SOURCE_SELECTION = "selection"
+INSERT_SOURCE_CAMERA = "camera"
+INSERTION_NOTHING_SELECTED = (
+    "Nothing selected, select atoms or switch selection source."
+)
+ADD_POINT_LABEL = "Add Point(s)"
+
+
+def _selection_atom_dicts(cmd_, interactive_only: bool = True) -> List[dict]:
+    """Atom rows from the active PyMOL selection without building VisualPoints."""
+    sele = _active_selection(cmd_, interactive_only=interactive_only)
+    if sele is None:
+        return []
+    return _atom_dicts(cmd_, sele)
+
+
+def _residue_key(atom: dict) -> Tuple[str, str, str, str]:
+    return (
+        str(atom.get("model") or ""),
+        str(atom.get("chain") or ""),
+        str(atom.get("resn") or ""),
+        str(atom.get("resi") or ""),
+    )
+
+
+def _residue_preview_label(atom: dict) -> str:
+    resn = str(atom.get("resn") or "").strip().upper()
+    resi = str(atom.get("resi") or "").strip()
+    if len(resn) == 3:
+        display = resn
+    else:
+        display = resn_one_letter(resn) or resn
+    if display and resi:
+        return "%s %s" % (display, resi)
+    return display or resi or "?"
+
+
+def atom_insertion_preview_label(atom: dict) -> str:
+    """Human-readable atom label, e.g. ``CA · A · GLY 42``."""
+    name = str(atom.get("name") or atom.get("elem") or "").strip()
+    chain = str(atom.get("chain") or "").strip()
+    residue = _residue_preview_label(atom)
+    parts = [part for part in (name, chain, residue) if part]
+    if parts:
+        return " · ".join(parts)
+    model = abbreviate_object_name(str(atom.get("model") or ""))
+    return model or "Atom"
+
+
+def _preview_with_coords(label: str, atom: dict) -> str:
+    return "%s  (%.2f, %.2f, %.2f)" % (
+        label,
+        float(atom["x"]),
+        float(atom["y"]),
+        float(atom["z"]),
+    )
+
+
+def insertion_selection_summary(
+    cmd_,
+    *,
+    interactive_only: bool = True,
+) -> Tuple[int, str]:
+    """Return ``(count, preview_text)`` for the current PyMOL selection."""
+    atoms = _selection_atom_dicts(cmd_, interactive_only=interactive_only)
+    count = len(atoms)
+    if count == 0:
+        return 0, INSERTION_NOTHING_SELECTED
+    if count == 1:
+        return 1, _preview_with_coords(atom_insertion_preview_label(atoms[0]), atoms[0])
+    residue_keys = {_residue_key(atom) for atom in atoms}
+    if len(residue_keys) == 1:
+        label = _residue_preview_label(atoms[0])
+        return count, "%s (%d atoms)" % (label, count)
+    hint = atom_insertion_preview_label(atoms[0])
+    return count, "%d atoms selected  (%s, …)" % (count, hint)
+
+
+def insertion_add_label(count: int) -> str:
+    """Add-button copy. Count is unused; the header is always plural-safe."""
+    return ADD_POINT_LABEL
+
+
+def _first_atom_identity(cmd_, sele: str):
+    """``(model, atom_id)`` of the first atom in ``sele``, or None."""
+    state = _current_state(cmd_)
+    for expr in ("first %s" % sele, sele):
+        rows = []
+        if not _iterate_atoms(cmd_, expr, rows, state) or not rows:
+            continue
+        atom = _atom_row_as_dict(rows[0])
+        return (str(atom.get("model") or ""), int(atom["index"]))
+    return None
+
+
+def insertion_preview_fingerprint(
+    cmd_,
+    source: str,
+    snap: bool = False,
+    *,
+    interactive_only: bool = True,
+):
+    """Cheap poll key: selection count + first atom id + whether sele is live.
+
+    Camera source uses a rounded view-center instead of iterating atoms.
+    """
+    source = str(source)
+    if source == INSERT_SOURCE_CAMERA:
+        center = None
+        try:
+            view = tuple(cmd_.get_view())
+            pos = screen_center(view)
+            center = (
+                round(float(pos[0]), 3),
+                round(float(pos[1]), 3),
+                round(float(pos[2]), 3),
+            )
+        except Exception:
+            pass
+        return (source, bool(snap), center, False)
+    sele = _active_selection(cmd_, interactive_only=interactive_only)
+    live = bool(sele) and _selection_is_enabled(cmd_, sele)
+    if not live:
+        # Count must be 0 here: refresh_preview uses fingerprint[1] as the
+        # Add-button N, and count_atoms("sele") stays non-zero after disable.
+        return (source, 0, None, False)
+    count = _count_selection_atoms(cmd_, sele, _current_state(cmd_))
+    first_id = _first_atom_identity(cmd_, sele) if count else None
+    return (source, int(count), first_id, True)
+
+
+def insertion_selection_count(cmd_, interactive_only: bool = True) -> int:
+    sele = _active_selection(cmd_, interactive_only=interactive_only)
+    if sele is None:
+        return 0
+    return _count_selection_atoms(cmd_, sele, _current_state(cmd_))
+
+
+def insertion_can_add(
+    cmd_,
+    source: str,
+    *,
+    interactive_only: bool = True,
+) -> bool:
+    if str(source) == INSERT_SOURCE_CAMERA:
+        return True
+    return insertion_selection_count(cmd_, interactive_only=interactive_only) > 0
+
+
+def insertion_preview_text(
+    cmd_,
+    source: str,
+    snap: bool = False,
+    *,
+    interactive_only: bool = True,
+) -> str:
+    """Live-preview copy. Callers must re-read via ``resolve_insertion_points`` on Add."""
+    if str(source) == INSERT_SOURCE_CAMERA:
+        if bool(snap):
+            atom = nearest_atom_at_view_center(cmd_)
+            if atom is not None:
+                return _preview_with_coords(atom_insertion_preview_label(atom), atom)
+        pt = camera_center_point(
+            cmd_, snap_to_atom=bool(snap), existing=(), hook_to_selection=False,
+        )
+        if pt.source == "selection" and pt.atom_ref is not None:
+            ref = pt.atom_ref
+            label = atom_insertion_preview_label({
+                "model": ref.model,
+                "chain": ref.chain,
+                "resn": "",
+                "resi": ref.resi,
+                "name": ref.name,
+                "elem": ref.elem,
+                "x": pt.x,
+                "y": pt.y,
+                "z": pt.z,
+            })
+            if not label or label == abbreviate_object_name(ref.model):
+                label = atom_anchor_label(ref) or pt.name
+            return "%s  (%.2f, %.2f, %.2f)" % (label, pt.x, pt.y, pt.z)
+        return "Camera center  (%.2f, %.2f, %.2f)" % (pt.x, pt.y, pt.z)
+    _, text = insertion_selection_summary(
+        cmd_, interactive_only=interactive_only,
+    )
+    return text
+
+
+def resolve_insertion_points(
+    cmd_,
+    source: str,
+    existing: Sequence[VisualPoint] = (),
+    snap: bool = False,
+    hook: bool = True,
+) -> List[VisualPoint]:
+    """Re-read PyMOL at click time; never insert from a stale preview."""
+    if str(source) == INSERT_SOURCE_CAMERA:
+        return [camera_center_point(
+            cmd_,
+            snap_to_atom=bool(snap),
+            existing=existing,
+            hook_to_selection=bool(hook),
+        )]
+    return selection_points(
+        cmd_,
+        existing=existing,
+        interactive_only=True,
+        hook_to_selection=bool(hook),
+    )

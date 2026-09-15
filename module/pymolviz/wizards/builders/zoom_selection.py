@@ -11,7 +11,7 @@ TMP_PREFIX = "_pmv_zoom_tmp"
 TMP_SELE = "_pmv_zoom_sel"
 
 ZOOM_TO_SELECTION_TIP = (
-    "When on, selecting a point or arrow zooms the camera to frame it. "
+    "When on, zoom the camera to newly added points and to the selected table row. "
     "Turning it on also zooms the current selection immediately."
 )
 

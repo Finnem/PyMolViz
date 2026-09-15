@@ -29,6 +29,9 @@ def test_points_from_sphere_collection():
     opts = sphere_options(coll)
     assert opts["radius"] == 1.25
     assert opts["wireframe"] is True
+    assert opts["specular"] is True
+    coll.specular = False
+    assert sphere_options(coll)["specular"] is False
 
 
 def test_points_from_box_uses_center():
@@ -68,7 +71,7 @@ def test_points_from_surface_collection():
         [src, FixedPoint((1.0, 0.0, 0.0))],
         atom_radius=1.1,
         probe_radius=1.4,
-        algorithm="ASA",
+        algorithm="GAUSS",
         quality=1,
         color=(0.2, 0.4, 0.8),
         bypass_colormap=True,
@@ -90,7 +93,7 @@ def test_points_from_surface_collection():
     opts = surface_options(coll)
     assert opts["radius"] == pytest.approx(1.1)
     assert opts["probe_radius"] == pytest.approx(1.4)
-    assert opts["algorithm"] == "ASA"
+    assert opts["algorithm"] == "GAUSS"
     assert opts["quality"] == 1
     assert opts["wireframe"] is True
     assert opts["radius_mode"] == "uniform"
@@ -105,7 +108,7 @@ def test_surface_options_include_clip_planes():
     planes = [{"origin": [1.0, 0.0, 0.0], "normal": [1.0, 0.0, 0.0], "scale": 4.0}]
     surface = Surface(
         [FixedPoint((0.0, 0.0, 0.0))],
-        algorithm="ASA",
+        algorithm="GAUSS",
         quality=1,
         clip_planes=planes,
         bypass_colormap=True,
@@ -115,5 +118,70 @@ def test_surface_options_include_clip_planes():
     assert len(opts["clip_planes"]) == 1
     assert opts["clip_planes"][0]["origin"] == pytest.approx([1.0, 0.0, 0.0])
     assert opts["clip_planes"][0]["normal"] == pytest.approx([1.0, 0.0, 0.0])
+
+
+def test_points_from_mesh_restore_field_id():
+    sphere = Sphere(
+        FixedPoint((0.0, 0.0, 0.0)),
+        0.5,
+        color=(0.1, 0.2, 0.3),
+        bypass_colormap=True,
+    )
+    sphere.field_id = "pymol_map:density"
+    sphere.field_colormap = "plasma"
+    sphere.field_clims = [0.0, 1.0]
+    coll = CGOCollection([sphere], name="pmv_spheres")
+    points = points_from_mesh(coll)
+    assert points[0].field_id == "pymol_map:density"
+    assert points[0].field_colormap == "plasma"
+    assert points[0].field_clims == pytest.approx((0.0, 1.0))
+    assert points[0].color_choice().is_field is True
+
+
+def test_points_from_mesh_restore_enabled():
+    sphere = Sphere(
+        FixedPoint((0.0, 0.0, 0.0)), 0.5,
+        bypass_colormap=True, enabled=False, frequency=2,
+    )
+    coll = CGOCollection([sphere], name="pmv_spheres")
+    points = points_from_mesh(coll)
+    assert len(points) == 1
+    assert points[0].enabled is False
+
+
+def test_surface_points_restore_point_enabled():
+    from pymolviz.meshes.Surface import Surface
+
+    surface = Surface(
+        [FixedPoint((0.0, 0.0, 0.0)), FixedPoint((1.0, 0.0, 0.0))],
+        algorithm="GAUSS", quality=1, bypass_colormap=True,
+        point_enabled=[True, False],
+    )
+    coll = CGOCollection([surface], name="pmv_surface")
+    points = points_from_mesh(coll)
+    assert [pt.enabled for pt in points] == [True, False]
+
+
+def test_box_and_arrow_options_include_clip_planes():
+    from pymolviz.wizards.builders.load_visual import arrow_options, box_options
+
+    planes = [{"origin": [0.0, 1.0, 0.0], "normal": [0.0, 1.0, 0.0], "scale": 3.0}]
+    box = CenteredBox(
+        FixedPoint((0.0, 0.0, 0.0)), (1.0, 1.0, 1.0),
+        bypass_colormap=True, clip_planes=planes,
+    )
+    assert box_options(CGOCollection([box], name="pmv_boxes"))["clip_planes"][0]["scale"] == pytest.approx(3.0)
+    arrows = Arrows(
+        starts=[FixedPoint((0.0, 0.0, 0.0))],
+        ends=[FixedPoint((1.0, 0.0, 0.0))],
+        color=[(1.0, 0.0, 0.0)],
+        bypass_colormap=True,
+        clip_planes=planes,
+        head_radius=0.2,
+    )
+    opts = arrow_options(CGOCollection([arrows], name="pmv_arrows"))
+    assert opts["clip_planes"][0]["origin"] == pytest.approx([0.0, 1.0, 0.0])
+    assert opts["head_radius"] == pytest.approx(0.2)
+
 
 

@@ -336,6 +336,12 @@ def _nudge_mesh(mesh, context):
         mesh.shift_vertices(delta)
     except Exception:
         return False
+    if getattr(mesh, "field_id", None):
+        try:
+            from ..util.field_sample import paint_mesh_by_field
+            paint_mesh_by_field(mesh, refine=False)
+        except Exception:
+            return False
     for src, _delta, new in deltas:
         src._last_xyz = new
     return True

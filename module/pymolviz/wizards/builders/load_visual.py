@@ -29,6 +29,12 @@ def visual_point_from_source(
     alpha: float,
     existing: Sequence[VisualPoint] = (),
     radius=None,
+    field_id=None,
+    field_colormap=None,
+    field_clims=None,
+    field_clim_mode=None,
+    field_colormap_spec=None,
+    enabled: bool = True,
 ) -> VisualPoint:
     xyz = _xyz(source)
     rgb = (float(color[0]), float(color[1]), float(color[2]))
@@ -52,11 +58,17 @@ def visual_point_from_source(
             xyz[0],
             xyz[1],
             xyz[2],
+            enabled=bool(enabled),
             color=rgb,
             alpha=float(alpha),
             point_source=source,
             atom_ref=atom_ref_from_point_source(source),
             radius=None if radius is None else float(radius),
+            field_id=field_id,
+            field_colormap=field_colormap,
+            field_clims=_clims_tuple(field_clims),
+            field_clim_mode=field_clim_mode,
+            field_colormap_spec=field_colormap_spec,
         )
     name = manual_fallback_name("pt", existing)
     return VisualPoint(
@@ -65,10 +77,16 @@ def visual_point_from_source(
         xyz[0],
         xyz[1],
         xyz[2],
+        enabled=bool(enabled),
         color=rgb,
         alpha=float(alpha),
         point_source=source,
         radius=None if radius is None else float(radius),
+        field_id=field_id,
+        field_colormap=field_colormap,
+        field_clims=_clims_tuple(field_clims),
+        field_clim_mode=field_clim_mode,
+        field_colormap_spec=field_colormap_spec,
     )
 
 
@@ -77,14 +95,24 @@ def points_from_mesh(obj) -> List[VisualPoint]:
     children = mesh_children(obj)
     if children and type(children[0]).__name__ == "Surface":
         surf = children[0]
-        color = _rgb(surf)
         alpha = _alpha(surf)
+        field = _field_from_obj(surf)
+        flags = getattr(surf, "point_enabled", None) or ()
+        stored_colors = getattr(surf, "point_colors", None)
+        default_color = _rgb(surf)
         for i, src in enumerate(getattr(surf, "point_sources", None) or ()):
             custom = None
             radii = getattr(surf, "point_radii", None) or ()
             if i < len(radii) and radii[i] is not None:
                 custom = float(radii[i])
-            points.append(visual_point_from_source(src, color, alpha, points, radius=custom))
+            enabled = True if i >= len(flags) else bool(flags[i])
+            if stored_colors and i < len(stored_colors) and not field:
+                color = stored_colors[i]
+            else:
+                color = default_color
+            points.append(visual_point_from_source(
+                src, color, alpha, points, radius=custom, enabled=enabled, **field,
+            ))
         return points
     for child in children:
         src = getattr(child, "position", None) or getattr(child, "center", None)
@@ -92,7 +120,11 @@ def points_from_mesh(obj) -> List[VisualPoint]:
             continue
         color = _rgb(child)
         alpha = _alpha(child)
-        points.append(visual_point_from_source(src, color, alpha, points))
+        points.append(visual_point_from_source(
+            src, color, alpha, points,
+            enabled=bool(getattr(child, "enabled", True)),
+            **_field_from_obj(child),
+        ))
     return points
 
 
@@ -105,9 +137,13 @@ def pairs_from_mesh(obj) -> List[VisualPair]:
         colors = _rgbs(child, len(starts))
         alphas = _alphas(child, len(starts))
         for i, (start, end) in enumerate(zip(starts, ends)):
-            start_pt = visual_point_from_source(start, colors[i], alphas[i], existing)
+            start_pt = visual_point_from_source(
+                start, colors[i], alphas[i], existing, **_field_from_obj(child),
+            )
             existing.append(start_pt)
-            end_pt = visual_point_from_source(end, colors[i], alphas[i], existing)
+            end_pt = visual_point_from_source(
+                end, colors[i], alphas[i], existing, **_field_from_obj(child),
+            )
             existing.append(end_pt)
             width = float(getattr(child, "shaft_radius", DEFAULT_ARROW_WIDTH) or DEFAULT_ARROW_WIDTH)
             radii = getattr(child, "pair_radii", None) or ()
@@ -135,6 +171,8 @@ def sphere_options(obj) -> dict:
         "radius": float(getattr(child, "radius", 1.0) or 1.0),
         "wireframe": bool(getattr(child, "wireframe", False)),
         "quality": _quality_from_frequency(frequency),
+        "clip_planes": list(getattr(child, "clip_planes", None) or []),
+        "specular": bool(getattr(obj, "specular", True)),
     }
 
 
@@ -144,6 +182,8 @@ def box_options(obj) -> dict:
     return {
         "extent": (float(extent[0]), float(extent[1]), float(extent[2])),
         "wireframe": bool(getattr(child, "wireframe", False)),
+        "clip_planes": list(getattr(child, "clip_planes", None) or []),
+        "specular": bool(getattr(obj, "specular", True)),
     }
 
 
@@ -153,6 +193,12 @@ def arrow_options(obj) -> dict:
     return {
         "quality": int(getattr(child, "quality", 3) or 3),
         "line_style": style,
+        "shaft_radius": float(getattr(child, "shaft_radius", 0.045) or 0.045),
+        "head_length": float(getattr(child, "head_length", 0.25) or 0.25),
+        "head_width": float(getattr(child, "head_width", 1.618) or 1.618),
+        "head_radius": getattr(child, "head_radius", None),
+        "clip_planes": list(getattr(child, "clip_planes", None) or []),
+        "specular": bool(getattr(obj, "specular", True)),
     }
 
 
@@ -168,8 +214,15 @@ def surface_options(obj) -> dict:
         "vdw_scale": float(getattr(child, "vdw_scale", DEFAULT_VDW_SCALE) or DEFAULT_VDW_SCALE),
         "point_radii": getattr(child, "point_radii", None),
         "clip_planes": list(getattr(child, "clip_planes", None) or []),
+        "point_enabled": getattr(child, "point_enabled", None),
         "color": _rgb(child),
         "alpha": _alpha(child),
+        "field_id": getattr(child, "field_id", None),
+        "field_colormap": getattr(child, "field_colormap", None),
+        "field_clims": getattr(child, "field_clims", None),
+        "field_clim_mode": getattr(child, "field_clim_mode", None),
+        "field_colormap_spec": getattr(child, "field_colormap_spec", None),
+        "specular": bool(getattr(obj, "specular", True)),
     }
 
 
@@ -235,6 +288,28 @@ def _alphas(obj, n: int) -> List[float]:
         item = values[i] if i < len(values) else values[-1]
         out.append(max(0.0, min(1.0, 1.0 - float(item))))
     return out
+
+
+def _clims_tuple(clims):
+    if clims is None:
+        return None
+    try:
+        return (float(clims[0]), float(clims[1]))
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
+def _field_from_obj(obj) -> dict:
+    field_id = getattr(obj, "field_id", None)
+    if not field_id:
+        return {}
+    return {
+        "field_id": str(field_id),
+        "field_colormap": getattr(obj, "field_colormap", None),
+        "field_clims": _clims_tuple(getattr(obj, "field_clims", None)),
+        "field_clim_mode": getattr(obj, "field_clim_mode", None),
+        "field_colormap_spec": getattr(obj, "field_colormap_spec", None),
+    }
 
 
 def _quality_from_frequency(frequency: int) -> int:

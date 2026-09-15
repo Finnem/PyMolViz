@@ -2,26 +2,28 @@
 
 from __future__ import annotations
 
-from typing import Callable, List, Optional
+from typing import List, Optional
 
+from ...meshes.Arrows import HEAD_WIDTH, default_head_radius, head_radius_follows_shaft
 from ...util.line_style import (
-    ARROW_QUALITY_SEGMENTS,
     LineStyle,
     MAX_ARROW_MARGIN,
+    default_head_length,
     max_margin_for_length,
+    style_margins,
 )
-from ..pick import DeferredCallback, qt_modules, qt_widget_alive
-from ..tooltips import (
-    HOOK_TO_SELECTION_TIP,
-    SNAP_TO_ATOM_TIP,
-    apply_required_tooltips,
-    warn_missing_setting_tooltips,
-)
+from ..pick import qt_modules, qt_widget_alive
+from ..widgets.breadcrumb import CRUMB_ARROWS
+from ..widgets.log_slider import LogSegmentRadiusWidget
+from ..widgets.section import make_section
+from ..widgets.theme import style_info_banner
+from .appearance_section import AppearanceSection
 from .arrow_list import ArrowPairEditor
 from .arrow_type import ArrowTypeControl
-from .colors import colors_for_new_points, pick_rgb
-from .object_names import unused_object_name
+from .base import BuilderPage
+from .colors import bind_color_pick_result, colors_for_new_points, pick_rgb
 from .pairs import (
+    DEFAULT_ARROW_WIDTH,
     VisualPair,
     commit_pair_anchors,
     complete_pairs,
@@ -34,90 +36,75 @@ from .points import VisualPoint, camera_center_point
 from .preview import (
     ArrowPreview,
     build_arrow_collection,
-    persist_live_preview,
     retarget_arrow_collection,
 )
-from .zoom_selection import ZOOM_TO_SELECTION_TIP, focus_visual_point, zoom_to_visual_points
-
-QUALITY_HINTS = {
-    0: "2D lines",
-    1: "cylinder / cone · 6 sides",
-    2: "cylinder / cone · 8 sides",
-    3: "cylinder / cone · 10 sides",
-    4: "cylinder / cone · 14 sides",
-    5: "cylinder / cone · 18 sides",
-}
+from .modifiers_section import ModifiersSection
+from .zoom_selection import focus_visual_point, zoom_to_visual_points
 
 
-class ArrowBuilderPage:
+class ArrowBuilderPage(BuilderPage):
     """Editor for multi-pair arrow CGOs."""
 
-    def __init__(
-        self,
-        cmd_,
-        on_back: Callable[[], None],
-        on_create: Optional[Callable[[], None]] = None,
-        parent=None,
-    ):
-        self.cmd = cmd_
-        self._on_back = on_back
-        self._on_create = on_create
+    DEFAULT_NAME = "pmv_arrows"
+    CRUMB_LEAF = CRUMB_ARROWS
+    CONTEXT = "ArrowBuilderPage"
+
+    def _init_editor(self):
         self._pairs: List[VisualPair] = []
-        self._preview = ArrowPreview(cmd_)
+        self._preview = ArrowPreview(self.cmd)
         self._pick_role = None
         self._pick_pair_id = None
         self._selected_id = None
         self._ignore_xyz = None
         self._poll_timer = None
-        self._deferred = DeferredCallback()
-        self._page = None
         self._list = None
-        self._quality = None
-        self._quality_hint = None
-        self._snap_atom = None
-        self._hook_selection = None
+        self._appearance = None
+        self._appearance_pts: List[VisualPoint] = []
+        self._snap_atom = True
+        self._hook_selection = True
         self._zoom_selection = None
         self._status = None
-        self._object_name = None
-        self._create_btn = None
         self._key_filter = None
-        self._editing_id = None
-        self._loaded_name = None
         self._line_style = LineStyle()
-        self._margin = 0.0
+        self._modifiers = None
         self._style_control = None
-        self._suspend_preview = False
-        self._build(parent)
+        self._shaft_widget = None
+        self._head_length = None
+        self._head_radius = None
+        self._head_follows_shaft = True
 
-    @property
-    def widget(self):
-        return self._page
-
-    def cleanup_preview(self):
-        self._deferred.cancel()
+    def _cleanup_ephemeral(self):
         self._stop_poll_timer()
+        if self._modifiers is not None:
+            self._modifiers.cleanup()
         self._pick_role = None
         self._pick_pair_id = None
         self._ignore_xyz = None
-        self._preview.cleanup()
 
     def reset_for_create(self):
-        self._editing_id = None
-        self._loaded_name = None
+        self._apply_create_chrome()
         self._pairs = []
         self._selected_id = None
         self._clear_pick()
-        if self._object_name is not None:
-            self._object_name.setText(unused_object_name("pmv_arrows", self.cmd))
-        if self._create_btn is not None:
-            self._create_btn.setText("Create CGO")
-        if self._quality is not None:
-            self._quality.setValue(3)
+        if self._appearance is not None:
+            self._appearance.set_quality(3)
+            self._appearance.set_specular(True)
         self._line_style = LineStyle()
-        self._margin = 0.0
         if self._style_control is not None:
             self._style_control.set_max_margin(MAX_ARROW_MARGIN)
             self._style_control.set_style(self._line_style)
+        if self._shaft_widget is not None:
+            self._shaft_widget.set_value(DEFAULT_ARROW_WIDTH)
+        if self._head_length is not None:
+            self._head_length.setValue(default_head_length(DEFAULT_ARROW_WIDTH))
+        self._head_follows_shaft = True
+        if self._head_radius is not None:
+            self._head_radius.blockSignals(True)
+            self._head_radius.setValue(default_head_radius(DEFAULT_ARROW_WIDTH))
+            self._head_radius.blockSignals(False)
+        if self._modifiers is not None:
+            self._modifiers.clip.reset()
+            self._modifiers.refresh_summary()
         self._sync_list(preview=False)
         self._preview.cleanup()
 
@@ -126,29 +113,45 @@ class ArrowBuilderPage:
         from ..catalog import display_name
 
         self._editing_id = str(obj.id)
-        self._loaded_name = display_name(obj) or "pmv_arrows"
+        name = display_name(obj) or self.DEFAULT_NAME
         self._pairs = pairs_from_mesh(obj)
         self._selected_id = self._pairs[0].pair_id if self._pairs else None
         opts = arrow_options(obj)
+        clip = opts.get("clip_planes") or []
         self._deferred.cancel()
         self._clear_pick()
         self._suspend_preview = True
         try:
-            if self._object_name is not None:
-                self._object_name.setText(display_name(obj) or "pmv_arrows")
-            if self._create_btn is not None:
-                self._create_btn.setText("Update CGO")
-            if self._quality is not None:
-                self._quality.setValue(int(opts["quality"]))
+            self._apply_edit_chrome(name)
+            if self._appearance is not None:
+                self._appearance.set_quality(int(opts["quality"]))
+                self._appearance.set_specular(opts.get("specular", True))
+            if self._shaft_widget is not None:
+                self._shaft_widget.set_value(float(opts.get("shaft_radius") or DEFAULT_ARROW_WIDTH))
+            if self._head_length is not None:
+                self._head_length.setValue(float(opts.get("head_length") or default_head_length(DEFAULT_ARROW_WIDTH)))
+            shaft = float(opts.get("shaft_radius") or DEFAULT_ARROW_WIDTH)
+            hr = opts.get("head_radius")
+            self._head_follows_shaft = head_radius_follows_shaft(shaft, hr)
+            if self._head_radius is not None:
+                if hr is None:
+                    hr = default_head_radius(shaft)
+                self._head_radius.blockSignals(True)
+                self._head_radius.setValue(float(hr))
+                self._head_radius.blockSignals(False)
             if opts.get("line_style") is not None:
                 self._line_style = opts["line_style"].copy() if hasattr(opts["line_style"], "copy") else opts["line_style"]
-                self._margin = float(getattr(self._line_style, "margin", 0.0) or 0.0)
                 if self._style_control is not None:
                     self._style_control.set_style(self._line_style)
+            clip = opts.get("clip_planes") or []
             self._sync_list(preview=False)
         finally:
             self._suspend_preview = False
         self._preview.adopt(obj)
+        if self._modifiers is not None:
+            self._modifiers.clip.set_planes(clip)
+            self._modifiers.refresh_summary()
+        self._schedule_preview()
 
     def _existing_points(self) -> List[VisualPoint]:
         pts = []
@@ -159,50 +162,22 @@ class ArrowBuilderPage:
         return pts
 
     def _build(self, parent):
-        QtCore, _, QtWidgets = qt_modules()
-        if QtWidgets is None:
-            raise RuntimeError("PyMOL Qt UI required")
+        QtCore, _, QtWidgets = self._require_qt()
+        page, root, back = self._mount_shell(parent, QtWidgets)
 
-        page = QtWidgets.QWidget(parent)
-        root = QtWidgets.QVBoxLayout(page)
-
-        header = QtWidgets.QHBoxLayout()
-        back = QtWidgets.QPushButton("← Back")
-        back.setFlat(True)
-        back.clicked.connect(self._go_back)
-        title = QtWidgets.QLabel("Arrows")
-        title.setStyleSheet("font-size: 16px; font-weight: 600;")
-        header.addWidget(back)
-        header.addWidget(title)
-        header.addStretch(1)
-        root.addLayout(header)
-
-        flags = QtWidgets.QHBoxLayout()
-        self._snap_atom = QtWidgets.QCheckBox("Snap to atom")
-        self._snap_atom.setChecked(True)
-        self._hook_selection = QtWidgets.QCheckBox("Anchor new points")
-        self._hook_selection.setChecked(True)
-        self._zoom_selection = QtWidgets.QCheckBox("Zoom to selection")
-        flags.addWidget(self._snap_atom)
-        flags.addWidget(self._hook_selection)
-        flags.addWidget(self._zoom_selection)
-        flags.addStretch(1)
-        root.addLayout(flags)
-
-        quality_row = QtWidgets.QHBoxLayout()
-        quality_row.addWidget(QtWidgets.QLabel("Quality"))
-        self._quality = QtWidgets.QSpinBox()
-        self._quality.setRange(0, 5)
-        self._quality.setValue(3)
-        self._quality.valueChanged.connect(self._on_quality_changed)
-        self._quality_hint = QtWidgets.QLabel(QUALITY_HINTS[3])
-        self._quality_hint.setStyleSheet("color: gray;")
-        quality_row.addWidget(self._quality)
-        quality_row.addWidget(self._quality_hint, stretch=1)
-        root.addLayout(quality_row)
-
-        style_row = QtWidgets.QHBoxLayout()
-        style_row.addWidget(QtWidgets.QLabel("Style"))
+        geom = make_section("Geometry", form=True)
+        geom_layout = geom.layout
+        self._shaft_widget = LogSegmentRadiusWidget(initial=DEFAULT_ARROW_WIDTH)
+        self._shaft_widget.connect_changed(self._on_object_shaft_changed)
+        self._head_length = QtWidgets.QDoubleSpinBox()
+        self._head_length.setRange(0.01, 10.0)
+        self._head_length.setValue(default_head_length(DEFAULT_ARROW_WIDTH))
+        self._head_length.valueChanged.connect(lambda *_: self._on_object_head_changed())
+        self._head_radius = QtWidgets.QDoubleSpinBox()
+        self._head_radius.setRange(0.01, 10.0)
+        self._head_radius.setDecimals(3)
+        self._head_radius.setValue(default_head_radius(DEFAULT_ARROW_WIDTH))
+        self._head_radius.valueChanged.connect(self._on_object_head_radius_changed)
         self._style_control = ArrowTypeControl(
             page,
             style=self._line_style,
@@ -210,47 +185,51 @@ class ArrowBuilderPage:
             on_change=self.set_line_style,
         )
         self._style_control.widget.setMinimumWidth(160)
-        style_row.addWidget(self._style_control.widget, stretch=1)
-        root.addLayout(style_row)
+        geom_layout.addRow("Shaft radius (Å)", self._shaft_widget.widget)
+        geom_layout.addRow("Head length (Å)", self._head_length)
+        geom_layout.addRow("Head radius (Å)", self._head_radius)
+        geom_layout.addRow("Style", self._style_control.widget)
+        root.addWidget(geom.widget)
 
-        self._list = ArrowPairEditor(page, self)
-        root.addWidget(self._list.widget, stretch=1)
+        self._appearance = AppearanceSection(
+            page,
+            self.cmd,
+            self.CONTEXT,
+            show_wireframe=False,
+            show_quality=True,
+            quality_range=(0, 5),
+            quality_tooltip=(
+                "0 = 2D lines; 1–5 = cylinder / cone meshes with more vertices"
+            ),
+            on_changed=self._on_appearance_changed,
+            on_preview=self._on_appearance_preview,
+            on_look_changed=self._on_look_changed,
+        )
+        self._appearance.set_quality(3)
+        self._appearance.set_selected_rows_provider(self._selected_appearance_rows)
+        root.addWidget(self._appearance.widget)
 
+        arrows = make_section("Arrows", expanding=True)
         self._status = QtWidgets.QLabel("Add an arrow, or select two atoms first.")
         self._status.setWordWrap(True)
-        self._status.setStyleSheet("color: gray;")
-        root.addWidget(self._status)
+        style_info_banner(self._status)
+        arrows.layout.addWidget(self._status)
+        self._list = ArrowPairEditor(arrows.body, self)
+        arrows.layout.addWidget(self._list.widget, stretch=1)
+        root.addWidget(arrows.widget, stretch=1)
 
-        actions = QtWidgets.QHBoxLayout()
-        self._object_name = QtWidgets.QLineEdit()
-        self._object_name.setPlaceholderText("Object name")
-        self._object_name.setText(unused_object_name("pmv_arrows", self.cmd))
-        self._create_btn = QtWidgets.QPushButton("Create CGO")
-        self._create_btn.clicked.connect(self._create_cgo)
-        export_btn = QtWidgets.QPushButton("Export CGO")
-        export_btn.clicked.connect(self._export_cgo)
-        actions.addWidget(self._object_name, stretch=2)
-        actions.addWidget(self._create_btn)
-        actions.addWidget(export_btn)
-        root.addLayout(actions)
-
-        apply_required_tooltips(
-            [
-                (back, "Return to the mesh type list."),
-                (
-                    self._quality,
-                    "0 = 2D lines; 1–5 = cylinder / cone meshes with more vertices",
-                    "Quality",
-                ),
-                (self._snap_atom, SNAP_TO_ATOM_TIP),
-                (self._hook_selection, HOOK_TO_SELECTION_TIP),
-                (self._zoom_selection, ZOOM_TO_SELECTION_TIP),
-                (self._object_name, "Name of the PyMOL CGO object created or exported."),
-                (self._create_btn, "Commit the arrows to the session as a named CGO object."),
-                (export_btn, "Write a Python script that rebuilds this CGO."),
-            ],
-            context="ArrowBuilderPage",
+        self._modifiers = ModifiersSection(
+            page,
+            self.cmd,
+            self.CONTEXT,
+            self._preview,
+            get_span_points=self._existing_points,
+            on_changed=self._on_modifiers_changed,
+            page=page,
         )
+        root.addWidget(self._modifiers.widget)
+
+        self._mount_action_bar(page, root)
 
         self._poll_timer = QtCore.QTimer(page)
         self._poll_timer.setInterval(250)
@@ -280,38 +259,116 @@ class ArrowBuilderPage:
 
         self._key_filter = _KeyFilter(self)
         page.installEventFilter(self._key_filter)
-        self._page = page
-        warn_missing_setting_tooltips(page, context="ArrowBuilderPage")
+        self._finish_build(
+            page,
+            back,
+            [
+                (self._shaft_widget, "Object-level shaft radius for new pairs and when the slider is moved."),
+                (self._head_length, "Object-level head length for new pairs and when the spinner is moved."),
+                (self._head_radius, "Cone radius at the arrow head (defaults to shaft × %.1f)." % HEAD_WIDTH),
+            ] + list(self._appearance.tooltips()) + list(self._modifiers.tooltips()),
+        )
+
+    def _after_build(self):
+        self._sync_list(preview=False)
 
     def _go_back(self):
-        self._deferred.cancel()
-        self._stop_poll_timer()
         self._abort_pick(silent=True)
-        self._deferred.cancel()
-        self._preview.cleanup()
-        self._on_back()
+        super()._go_back()
 
-    def _on_quality_changed(self, *_args):
-        quality = int(self._quality.value())
-        self._quality_hint.setText(QUALITY_HINTS.get(quality, ""))
-        self._quality.setToolTip(
-            "0 = 2D lines; 1–5 = cylinder / cone (%d sides)."
-            % ARROW_QUALITY_SEGMENTS.get(quality, 0)
-            if quality
-            else "2D CGO lines."
-        )
+    def _quality_value(self) -> int:
+        if self._appearance is None:
+            return 3
+        return int(self._appearance.quality())
+
+    def _head_radius_value(self):
+        if self._head_radius is None:
+            return default_head_radius(DEFAULT_ARROW_WIDTH)
+        return float(self._head_radius.value())
+
+    def _head_radius_for_mesh(self):
+        """None while the cone tracks shaft × HEAD_WIDTH (per-pair)."""
+        if getattr(self, "_head_follows_shaft", True):
+            return None
+        return self._head_radius_value()
+
+    def _clip_planes(self):
+        if self._modifiers is None:
+            return []
+        return self._modifiers.clip.active_planes()
+
+    def _on_modifiers_changed(self):
+        if self._modifiers is not None:
+            self._modifiers.refresh_summary()
+            self._modifiers.clip.refresh_gizmos()
         self._schedule_preview()
 
+    def _on_object_shaft_changed(self):
+        if self._shaft_widget is None:
+            return
+        width = float(self._shaft_widget.value())
+        self._pairs = [pair.with_width(width) for pair in self._pairs]
+        if self._head_length is not None:
+            self._head_length.blockSignals(True)
+            self._head_length.setValue(default_head_length(width))
+            self._head_length.blockSignals(False)
+        if self._head_follows_shaft and self._head_radius is not None:
+            self._head_radius.blockSignals(True)
+            self._head_radius.setValue(default_head_radius(width))
+            self._head_radius.blockSignals(False)
+        self._schedule_preview()
+
+    def _on_object_head_radius_changed(self, *_):
+        self._head_follows_shaft = False
+        self._schedule_preview()
+
+    def _on_object_head_changed(self):
+        if self._head_length is None:
+            return
+        head = float(self._head_length.value())
+        self._pairs = [pair.with_head(head) for pair in self._pairs]
+        self._schedule_preview()
+
+    def _sync_appearance_points(self):
+        self._appearance_pts = [pair.start for pair in self._pairs]
+        if self._appearance is not None:
+            self._appearance.bind_points(self._appearance_pts)
+
+    def _write_appearance_to_pairs(self):
+        for i, pair in enumerate(self._pairs):
+            if i >= len(self._appearance_pts):
+                break
+            start = self._appearance_pts[i]
+            end = pair.end
+            if end is not None:
+                end = end.with_color_choice(start.color_choice())
+            self._pairs[i] = pair.with_start(start).with_end(end)
+
+    def _on_appearance_preview(self):
+        self._write_appearance_to_pairs()
+        self._schedule_preview()
+
+    def _on_appearance_changed(self):
+        self._write_appearance_to_pairs()
+        self._sync_list()
+
+    def _on_look_changed(self):
+        if self._preview is not None and hasattr(self._preview, "set_specular"):
+            enabled = True if self._appearance is None else self._appearance.specular()
+            self._preview.set_specular(enabled)
+
+    def _selected_appearance_rows(self):
+        if self._selected_id is None:
+            return []
+        return [i for i, pair in enumerate(self._pairs) if pair.pair_id == self._selected_id]
+
     def _style(self):
-        style = self._line_style.copy()
-        style.margin = float(self._margin)
-        return style
+        return self._line_style.copy()
 
     def set_line_style(self, style: LineStyle):
         if style is None:
             return
         self._line_style = style.copy()
-        self._margin = float(self._line_style.margin)
         self._schedule_preview()
 
     def _fit_max_margin(self) -> float:
@@ -337,12 +394,14 @@ class ArrowBuilderPage:
 
     def _refresh_margin_limit(self):
         cap = self._fit_max_margin()
-        if self._margin > cap:
-            self._margin = cap
-            self._line_style = self._line_style.updated(margin=self._margin)
+        start, end = style_margins(self._line_style)
+        start = min(start, cap)
+        end = min(end, cap)
+        if start != self._line_style.start_margin or end != self._line_style.end_margin:
+            self._line_style = self._line_style.updated(start_margin=start, end_margin=end)
         if self._style_control is not None:
             self._style_control.set_max_margin(cap)
-            self._style_control.set_margin(self._margin)
+            self._style_control.set_style(self._line_style)
 
     def _pairs_for_draw(self):
         style = self._style()
@@ -423,7 +482,10 @@ class ArrowBuilderPage:
             pass
 
     def _hook(self) -> bool:
-        return bool(self._hook_selection.isChecked())
+        return bool(self._hook_selection)
+
+    def _snap(self) -> bool:
+        return bool(self._snap_atom)
 
     def _clear_pymol_selection(self):
         try:
@@ -436,12 +498,21 @@ class ArrowBuilderPage:
             pass
 
     def _stamp_pair(self, start: VisualPoint, end: Optional[VisualPoint] = None) -> VisualPair:
+        width = self._shaft_widget.value() if self._shaft_widget is not None else DEFAULT_ARROW_WIDTH
+        head = (
+            float(self._head_length.value())
+            if self._head_length is not None
+            else default_head_length(width)
+        )
         palette = colors_for_new_points(1, start_index=len(complete_pairs(self._pairs)))
         color = palette[0]
         start = start.with_color(color)
         if end is not None:
             end = end.with_color(color)
-        return VisualPair(start, end, style=self._line_style.copy())
+        return VisualPair(
+            start, end, style=self._line_style.copy(),
+            width=float(width), head=float(head),
+        )
 
     def add_arrow(self):
         if self._pick_role is not None:
@@ -480,7 +551,7 @@ class ArrowBuilderPage:
     def camera_pick(self):
         pt = camera_center_point(
             self.cmd,
-            self._snap_atom.isChecked(),
+            self._snap(),
             self._existing_points(),
             hook_to_selection=self._hook(),
         )
@@ -551,7 +622,7 @@ class ArrowBuilderPage:
     def select_arrow(self, pair_id, zoom=True):
         self._selected_id = pair_id
         self._sync_list()
-        if not zoom or not self._zoom_selection.isChecked():
+        if not zoom:
             return
         idx = pair_index(self._pairs, pair_id)
         if idx < 0:
@@ -616,7 +687,7 @@ class ArrowBuilderPage:
         pair = self._pairs[idx]
         pt = camera_center_point(
             self.cmd,
-            self._snap_atom.isChecked(),
+            self._snap(),
             self._existing_points(),
             hook_to_selection=self._hook(),
         ).with_color(pair.color)
@@ -641,25 +712,33 @@ class ArrowBuilderPage:
         idx = pair_index(self._pairs, pair_id)
         if idx < 0:
             return
-        original = self._pairs[idx].rgba()
+        original = self._pairs[idx].color_choice()
 
-        def on_preview(rgba):
+        def on_preview(choice):
             i = pair_index(self._pairs, pair_id)
-            if i >= 0:
-                self._pairs[i] = self._pairs[i].with_color(rgba)
+            if i >= 0 and choice is not None:
+                self._pairs[i] = self._pairs[i].with_color_choice(choice)
                 self._schedule_preview()
 
-        def on_done(rgba):
+        def apply_choice(choice):
             i = pair_index(self._pairs, pair_id)
-            if i < 0:
-                return
-            if rgba is None:
-                self._pairs[i] = self._pairs[i].with_color(original)
-            else:
-                self._pairs[i] = self._pairs[i].with_color(rgba)
-            self._sync_list()
+            if i >= 0:
+                self._pairs[i] = self._pairs[i].with_color_choice(choice)
+                self._sync_list()
 
-        pick_rgb(self._page, original, on_change=on_preview, on_done=on_done)
+        def restore_originals():
+            i = pair_index(self._pairs, pair_id)
+            if i >= 0:
+                self._pairs[i] = self._pairs[i].with_color_choice(original)
+                self._sync_list()
+
+        pick_rgb(
+            self._page,
+            original,
+            on_change=on_preview,
+            on_done=bind_color_pick_result(apply_choice, restore_originals),
+            cmd=self.cmd,
+        )
 
     def set_arrow_width(self, pair_id, value):
         idx = pair_index(self._pairs, pair_id)
@@ -703,6 +782,9 @@ class ArrowBuilderPage:
 
     def _sync_list(self, preview=True):
         self._refresh_margin_limit()
+        self._sync_appearance_points()
+        if self._appearance is not None:
+            self._appearance.set_color_selection_enabled(self._selected_id is not None)
         if self._list is not None:
             self._list.rebuild(
                 self._pairs,
@@ -711,6 +793,7 @@ class ArrowBuilderPage:
                 self._pick_role,
                 context=self._resolve_context(),
             )
+        self._sync_commit_enabled()
         if preview:
             self._schedule_preview()
 
@@ -726,58 +809,54 @@ class ArrowBuilderPage:
         try:
             self._preview.update(
                 self._pairs_for_draw(),
-                self._quality.value(),
+                self._quality_value(),
                 self._style(),
                 pending=self._pending_point(),
                 highlight_id=self._selected_id,
+                clip_planes=self._clip_planes(),
+                head_radius=self._head_radius_for_mesh(),
             )
+            if self._modifiers is not None:
+                self._modifiers.clip.refresh_gizmos()
         except RuntimeError:
             pass
 
-    def _create_cgo(self):
-        ready = commit_pair_anchors(self._pairs_for_draw())
-        if not ready:
-            return
-        typed = self._object_name.text().strip() or "pmv_arrows"
-        name = unused_object_name(typed, self.cmd, keep=self._loaded_name)
+    def _can_commit(self) -> bool:
+        return bool(self._committed_pairs())
+
+    def _committed_pairs(self):
+        return commit_pair_anchors(self._pairs_for_draw())
+
+    def _prepare_persist(self, name: str):
+        ready = self._committed_pairs()
         self._deferred.cancel()
         self._preview.update(
             ready,
-            int(self._quality.value()),
+            int(self._quality_value()),
             self._style(),
             pending=None,
             highlight_id=None,
+            clip_planes=self._clip_planes(),
+            head_radius=self._head_radius_for_mesh(),
         )
-        persist_live_preview(
-            self.cmd,
-            self._preview,
-            name,
-            obj_id=self._editing_id,
-            retarget=lambda coll: retarget_arrow_collection(coll, ready),
-            fallback=lambda: build_arrow_collection(
-                ready,
-                int(self._quality.value()),
-                self._style(),
-                name,
-            ),
-        )
-        if self._on_create is not None:
-            self._on_create()
 
-    def _export_cgo(self):
-        ready = commit_pair_anchors(self._pairs_for_draw())
-        if not ready:
-            return
-        _, _, QtWidgets = qt_modules()
-        name = self._object_name.text().strip() or "pmv_arrows"
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self._page, "Export CGO script", "%s.py" % name, "Python (*.py)",
-        )
-        if not path:
-            return
-        build_arrow_collection(
-            ready,
-            int(self._quality.value()),
+    def _collection(self, name: str):
+        coll = build_arrow_collection(
+            self._committed_pairs(),
+            int(self._quality_value()),
             self._style(),
             name,
-        ).write(path)
+            clip_planes=self._clip_planes(),
+            head_radius=self._head_radius_for_mesh(),
+        )
+        if coll is not None:
+            coll.specular = True if self._appearance is None else self._appearance.specular()
+        return coll
+
+    def _retarget(self, collection):
+        return retarget_arrow_collection(
+            collection,
+            self._committed_pairs(),
+            clip_planes=self._clip_planes(),
+            head_radius=self._head_radius_for_mesh(),
+        )

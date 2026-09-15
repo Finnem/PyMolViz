@@ -2,8 +2,27 @@
 
 from __future__ import annotations
 
+FIELD_VISUAL_TYPES = frozenset({"Volume", "IsoVolume", "IsoSurface", "IsoMesh"})
+_NON_CGO_TYPES = frozenset({"Field", "GridData"}) | FIELD_VISUAL_TYPES
+
+
+def renders_cgo(obj) -> bool:
+    """True when ``obj`` should be loaded into PyMOL as CGO.
+
+    Fields (and other non-visual session data) are Displayables for identity
+    and recipes, but they do not produce CGO. Prefer the ``renders_cgo``
+    flag over catching a missing ``_create_CGO_list``.
+    """
+    if getattr(obj, "renders_cgo", None) is False:
+        return False
+    if type(obj).__name__ in _NON_CGO_TYPES:
+        return False
+    return callable(getattr(obj, "_create_CGO_list", None))
+
 
 def cgo_tokens(obj, context=None):
+    if not renders_cgo(obj):
+        return []
     if context is not None and hasattr(obj, "rebuild"):
         obj.rebuild(context)
     merged = getattr(obj, "_merged_cgo_list", None)
@@ -36,8 +55,13 @@ def resolved_cgo_tokens(obj, context=None):
     """Integer CGO tokens, reusing per-mesh caches when geometry was only shifted."""
     from ..util.cgo import resolve_cgo_tokens
 
+    if not renders_cgo(obj):
+        return []
     if context is not None and hasattr(obj, "rebuild"):
         obj.rebuild(context)
+    prepare = getattr(obj, "prepare_child_look", None)
+    if callable(prepare):
+        prepare()
     children = _cgo_children(obj)
     if children is None:
         return _resolved_one(obj, resolve_cgo_tokens)

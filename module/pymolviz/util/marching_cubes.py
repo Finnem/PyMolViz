@@ -9,10 +9,6 @@ from __future__ import annotations
 import numpy as np
 
 # Corner offsets in x + 2y + 4z order (matches the solvent-surface voxel lattice).
-_CUBE = (
-    (0, 0, 0), (1, 0, 0), (0, 1, 0), (1, 1, 0),
-    (0, 0, 1), (1, 0, 1), (0, 1, 1), (1, 1, 1),
-)
 # Bourke / Lorensen vertex order.
 _TO_BOURKE = (0, 1, 3, 2, 4, 5, 7, 6)
 _EDGES = (
@@ -20,6 +16,16 @@ _EDGES = (
     (4, 5), (5, 6), (6, 7), (7, 4),
     (0, 4), (1, 5), (2, 6), (3, 7),
 )
+# Bourke corner xyz in the unit cube (matches _EDGES / _TRI_TABLE bits).
+_BOURKE_XYZ = np.array(
+    (
+        (0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0),
+        (0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1),
+    ),
+    dtype=np.int32,
+)
+_EDGE_A = np.array([pair[0] for pair in _EDGES], dtype=np.int32)
+_EDGE_B = np.array([pair[1] for pair in _EDGES], dtype=np.int32)
 
 # Triangle fans for each of the 256 cube cases, as edge indices, -1 padded to 15.
 # Generated from the 15 complementary Lorensen configurations.
@@ -350,24 +356,120 @@ def cube_triangles(pts8, vals8):
     return tris
 
 
+def _interp_t(v0, v1):
+    """Vectorized edge parameter matching ``_interp`` (v0==0 wins)."""
+    v0 = np.asarray(v0, dtype=float)
+    v1 = np.asarray(v1, dtype=float)
+    denom = v0 - v1
+    t = np.zeros(v0.shape, dtype=float)
+    ok = np.abs(denom) >= 1e-18
+    np.divide(v0, denom, out=t, where=ok)
+    np.clip(t, 0.0, 1.0, out=t)
+    t = np.where(v0 == 0.0, 0.0, np.where(v1 == 0.0, 1.0, t))
+    return t
+
+
+def march_cubes_mesh(origin, h, field, cubes):
+    """Polygonise sign-changing cubes into a welded ``(vertices, faces)`` mesh.
+
+    Shared lattice edges are interpolated once, so adjacent cubes meet exactly
+    (no coordinate rounding). ``cubes`` is an ``(N, 3)`` integer array.
+    """
+    empty_v = np.zeros((0, 3), dtype=float)
+    empty_f = np.zeros((0, 3), dtype=int)
+    cubes = np.asarray(cubes, dtype=np.int32).reshape(-1, 3)
+    if cubes.shape[0] == 0:
+        return empty_v, empty_f
+    field = np.asarray(field, dtype=float)
+    origin = np.asarray(origin, dtype=float).reshape(3)
+    h = float(h)
+    nx, ny, nz = (int(field.shape[0]), int(field.shape[1]), int(field.shape[2]))
+    i = cubes[:, 0]
+    j = cubes[:, 1]
+    k = cubes[:, 2]
+    inside = (
+        (i >= 0) & (j >= 0) & (k >= 0)
+        & (i + 1 < nx) & (j + 1 < ny) & (k + 1 < nz)
+    )
+    if not np.all(inside):
+        i = i[inside]
+        j = j[inside]
+        k = k[inside]
+    if i.size == 0:
+        return empty_v, empty_f
+    b0 = field[i, j, k]
+    b1 = field[i + 1, j, k]
+    b2 = field[i + 1, j + 1, k]
+    b3 = field[i, j + 1, k]
+    b4 = field[i, j, k + 1]
+    b5 = field[i + 1, j, k + 1]
+    b6 = field[i + 1, j + 1, k + 1]
+    b7 = field[i, j + 1, k + 1]
+    idx = np.zeros(i.shape[0], dtype=np.int16)
+    idx |= (b0 < 0.0).astype(np.int16) << 0
+    idx |= (b1 < 0.0).astype(np.int16) << 1
+    idx |= (b2 < 0.0).astype(np.int16) << 2
+    idx |= (b3 < 0.0).astype(np.int16) << 3
+    idx |= (b4 < 0.0).astype(np.int16) << 4
+    idx |= (b5 < 0.0).astype(np.int16) << 5
+    idx |= (b6 < 0.0).astype(np.int16) << 6
+    idx |= (b7 < 0.0).astype(np.int16) << 7
+    alive = (idx != 0) & (idx != 255)
+    if not np.all(alive):
+        i = i[alive]
+        j = j[alive]
+        k = k[alive]
+        idx = idx[alive]
+    if idx.size == 0:
+        return empty_v, empty_f
+    slots = _TRI_TABLE[idx]
+    local = slots.reshape(-1)
+    keep = local >= 0
+    if not np.any(keep):
+        return empty_v, empty_f
+    cube_of = np.repeat(np.arange(idx.size, dtype=np.int32), 15)[keep]
+    local = local[keep].astype(np.int32)
+    a_off = _BOURKE_XYZ[_EDGE_A[local]]
+    b_off = _BOURKE_XYZ[_EDGE_B[local]]
+    i0 = i[cube_of] + a_off[:, 0]
+    j0 = j[cube_of] + a_off[:, 1]
+    k0 = k[cube_of] + a_off[:, 2]
+    i1 = i[cube_of] + b_off[:, 0]
+    j1 = j[cube_of] + b_off[:, 1]
+    k1 = k[cube_of] + b_off[:, 2]
+    axis = np.argmax(np.abs(b_off - a_off), axis=1).astype(np.int32)
+    si = np.minimum(i0, i1)
+    sj = np.minimum(j0, j1)
+    sk = np.minimum(k0, k1)
+    lin = (sk.astype(np.int64) * ny + sj.astype(np.int64)) * nx + si.astype(np.int64)
+    keys = lin * 4 + axis
+    uniq, inverse = np.unique(keys, return_inverse=True)
+    ax = (uniq % 4).astype(np.int32)
+    decoded = uniq // 4
+    ui = (decoded % nx).astype(np.int32)
+    decoded //= nx
+    uj = (decoded % ny).astype(np.int32)
+    uk = (decoded // ny).astype(np.int32)
+    vi = ui + (ax == 0)
+    vj = uj + (ax == 1)
+    vk = uk + (ax == 2)
+    v0 = field[ui, uj, uk]
+    v1 = field[vi, vj, vk]
+    t = _interp_t(v0, v1)
+    vertices = np.empty((uniq.size, 3), dtype=float)
+    vertices[:, 0] = origin[0] + h * (ui + t * (vi - ui))
+    vertices[:, 1] = origin[1] + h * (uj + t * (vj - uj))
+    vertices[:, 2] = origin[2] + h * (uk + t * (vk - uk))
+    faces = inverse.astype(np.int32, copy=False).reshape(-1, 3)
+    return vertices, faces
+
+
 def march_cubes(origin, h, field, cubes):
     """Polygonise sign-changing cubes. ``cubes`` is an ``(N, 3)`` integer array."""
-    if cubes.shape[0] == 0:
+    vertices, faces = march_cubes_mesh(origin, h, field, cubes)
+    if faces.shape[0] == 0:
         return []
-    tris = []
-    origin = np.asarray(origin, dtype=float)
-    h = float(h)
-    nx, ny, nz = field.shape
-    for ci in range(int(cubes.shape[0])):
-        i, j, k = (int(cubes[ci, 0]), int(cubes[ci, 1]), int(cubes[ci, 2]))
-        if i < 0 or j < 0 or k < 0 or i + 1 >= nx or j + 1 >= ny or k + 1 >= nz:
-            continue
-        pts8 = []
-        vals8 = []
-        for dx, dy, dz in _CUBE:
-            pts8.append(origin + np.array((i + dx, j + dy, k + dz), dtype=float) * h)
-            vals8.append(float(field[i + dx, j + dy, k + dz]))
-        if all(v < 0.0 for v in vals8) or all(v >= 0.0 for v in vals8):
-            continue
-        tris.extend(cube_triangles(pts8, vals8))
-    return tris
+    return [
+        (vertices[int(a)], vertices[int(b)], vertices[int(c)])
+        for a, b, c in faces
+    ]

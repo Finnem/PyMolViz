@@ -15,4 +15,4 @@ from .util.math import tanh_distance_weighting
 from .util.colors import get_distinct_colors
 from .Script import Script
 from .Group import Group
-from .ColorMap import ColorMap
+from .fields import Field

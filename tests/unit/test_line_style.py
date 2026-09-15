@@ -7,8 +7,10 @@ import pytest
 from pymolviz.util.line_style import (
     LineStyle,
     MIN_ARROW_SHAFT,
+    MAX_ARROW_CONE_SEGMENTS,
     absolute_head_length,
     apply_margin,
+    arrow_cone_segments,
     dash_on_segments,
     default_head_length,
     max_margin_for_length,
@@ -84,6 +86,19 @@ def test_head_length_follows_width_not_shaft():
     assert tiny == pytest.approx(0.2 - MIN_ARROW_SHAFT)
 
 
+def test_arrow_cone_segments_stay_bounded():
+    from pymolviz.util.line_style import ARROW_QUALITY_SEGMENTS
+
+    n_seg = ARROW_QUALITY_SEGMENTS[3]
+    default_head = 0.045 * 2.4
+    assert arrow_cone_segments(n_seg, 0.045, default_head) == 24
+    skinny = arrow_cone_segments(n_seg, 0.001, default_head)
+    assert skinny <= MAX_ARROW_CONE_SEGMENTS
+    assert skinny >= n_seg
+    huge_head = arrow_cone_segments(n_seg, 0.045, 50.0)
+    assert huge_head <= MAX_ARROW_CONE_SEGMENTS
+
+
 def test_max_margin_leaves_room_for_head():
     head = 0.4
     length = 2.0
@@ -98,3 +113,38 @@ def test_max_margin_leaves_room_for_head():
 def test_apply_margin_oversize_without_head():
     a, b = apply_margin((0, 0, 0), (1, 0, 0), 10.0)
     assert abs((b[0] - a[0]) - MIN_ARROW_SHAFT) < 1e-6
+
+
+def test_apply_margin_independent_ends():
+    a, b = apply_margin(
+        (0, 0, 0), (10, 0, 0),
+        start_margin=2.0,
+        end_margin=1.0,
+    )
+    assert abs(a[0] - 2.0) < 1e-6
+    assert abs(b[0] - 9.0) < 1e-6
+
+
+def test_line_style_independent_margins_roundtrip():
+    mixed = LineStyle(start_margin=1.5, end_margin=0.25)
+    assert mixed.start_margin == 1.5
+    assert mixed.end_margin == 0.25
+    assert mixed.margin == 1.5
+    data = mixed.to_dict()
+    assert data["start_margin"] == 1.5
+    assert data["end_margin"] == 0.25
+    restored = LineStyle.from_dict(data)
+    assert restored.start_margin == 1.5
+    assert restored.end_margin == 0.25
+    legacy = LineStyle.from_dict({"dash": "Solid", "margin": 2.0, "ends": "Arrow"})
+    assert legacy.start_margin == 2.0
+    assert legacy.end_margin == 2.0
+    both = LineStyle(margin=3.0)
+    assert both.start_margin == 3.0
+    assert both.end_margin == 3.0
+    updated = mixed.updated(start_margin=0.5)
+    assert updated.start_margin == 0.5
+    assert updated.end_margin == 0.25
+    symmetric = mixed.updated(margin=1.0)
+    assert symmetric.start_margin == 1.0
+    assert symmetric.end_margin == 1.0

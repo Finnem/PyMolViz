@@ -12,10 +12,14 @@ from pymolviz.wizards.builders.points import (
     _point_source_for_atom,
     apply_global_color,
     camera_center_point,
+    export_points_to_selection,
+    hide_exported_point_labels,
     nearest_atom_at_view_center,
     nearest_atom_within,
     update_points_from_camera,
     update_points_from_selection,
+    POINTS_EXPORT_PREFIX,
+    POINTS_EXPORT_SELE,
 )
 
 
@@ -265,3 +269,163 @@ def test_apply_global_color_sets_rgb_and_alpha():
     assert pts[1].color == pytest.approx((0.2, 0.3, 0.4))
     assert pts[0].alpha == pytest.approx(0.5)
     assert pts[1].alpha == pytest.approx(0.5)
+
+
+def test_export_points_to_selection_shows_labels():
+    from tests.fakes.cmd import FakeCmd
+
+    cmd = FakeCmd()
+    pts = [
+        VisualPoint("A/12/CA", "sele", 1.0, 2.0, 3.0),
+        VisualPoint("A/13/CB", "sele", 4.0, 5.0, 6.0),
+    ]
+    sele = export_points_to_selection(cmd, pts)
+    assert sele == POINTS_EXPORT_SELE
+    first = "%s_0" % POINTS_EXPORT_PREFIX
+    second = "%s_1" % POINTS_EXPORT_PREFIX
+    assert first in cmd.objects
+    assert second in cmd.objects
+    assert cmd.settings[first]["label"] == "A/12/CA"
+    assert ("labels", first) in cmd._shown
+    assert ("labels", second) in cmd._shown
+
+
+def test_hide_exported_point_labels_only_touches_overlay():
+    from tests.fakes.cmd import FakeCmd
+
+    cmd = FakeCmd()
+    cmd.objects["protein"] = []
+    pts = [VisualPoint("CA", "sele", 0.0, 0.0, 0.0)]
+    export_points_to_selection(cmd, pts)
+    hide_exported_point_labels(cmd)
+    overlay = "%s_0" % POINTS_EXPORT_PREFIX
+    hidden_targets = {sel for rep, sel in cmd._hidden if rep == "labels"}
+    assert overlay in hidden_targets
+    assert POINTS_EXPORT_SELE in hidden_targets
+    assert "protein" not in hidden_targets
+    assert overlay in cmd.objects
+
+
+def test_enabled_points_filter_and_roundtrip():
+    from pymolviz.wizards.builders.points import (
+        PointDefinition,
+        definition_from_visual_point,
+        enabled_points,
+        visual_point_from_definition,
+    )
+
+    pts = [
+        VisualPoint("a", "manual", 0, 0, 0, enabled=True),
+        VisualPoint("b", "manual", 1, 0, 0, enabled=False),
+    ]
+    assert len(enabled_points(pts)) == 1
+    assert enabled_points(pts)[0].name == "a"
+    toggled = pts[1].with_enabled(True)
+    assert toggled.enabled is True
+    defn = definition_from_visual_point(pts[0])
+    assert isinstance(defn, PointDefinition)
+    restored = visual_point_from_definition(defn)
+    assert restored.name == "a"
+    assert restored.xyz() == (0.0, 0.0, 0.0)
+
+
+def test_export_skips_disabled_points():
+    from tests.fakes.cmd import FakeCmd
+
+    cmd = FakeCmd()
+    pts = [
+        VisualPoint("on", "manual", 0, 0, 0, enabled=True),
+        VisualPoint("off", "manual", 1, 0, 0, enabled=False),
+    ]
+    sele = export_points_to_selection(cmd, pts)
+    assert sele == POINTS_EXPORT_SELE
+    assert "%s_0" % POINTS_EXPORT_PREFIX in cmd.objects
+    assert "%s_1" % POINTS_EXPORT_PREFIX not in cmd.objects
+
+
+def test_active_selection_ignores_disabled_sele(fake_cmd):
+    from pymolviz.wizards.builders.points import (
+        _active_selection,
+        resolve_insertion_points,
+        selection_points,
+        INSERT_SOURCE_SELECTION,
+    )
+    from tests.fakes.cmd import FakeAtom
+
+    for atom_id in range(1, 23):
+        fake_cmd.add_atom(FakeAtom(
+            "prot", atom_id, float(atom_id), 0.0, 0.0, name="CA",
+        ))
+    fake_cmd.select("sele", 'object "prot"')
+    assert _active_selection(fake_cmd, interactive_only=True) == "(sele)"
+    assert len(selection_points(fake_cmd, interactive_only=True)) == 22
+
+    fake_cmd.disable("sele")
+    assert fake_cmd.count_atoms("sele") == 22
+    assert _active_selection(fake_cmd, interactive_only=True) is None
+    assert selection_points(fake_cmd, interactive_only=True) == []
+    assert resolve_insertion_points(
+        fake_cmd, INSERT_SOURCE_SELECTION, existing=(), snap=False, hook=True,
+    ) == []
+
+    fake_cmd.enable("sele")
+    assert _active_selection(fake_cmd, interactive_only=True) == "(sele)"
+    assert len(selection_points(fake_cmd, interactive_only=True)) == 22
+
+
+def test_resolve_insertion_points_selection_vs_camera(fake_cmd):
+    from pymolviz.wizards.builders.points import (
+        INSERT_SOURCE_CAMERA,
+        INSERT_SOURCE_SELECTION,
+        atom_insertion_preview_label,
+        insertion_preview_text,
+        insertion_selection_summary,
+        resolve_insertion_points,
+    )
+    from tests.fakes.cmd import FakeAtom
+
+    fake_cmd.add_atom(FakeAtom("prot", 1, 1.0, 2.0, 3.0, name="CA"))
+    fake_cmd.select("sele", 'object "prot" and id 1')
+    selected = resolve_insertion_points(
+        fake_cmd, INSERT_SOURCE_SELECTION, existing=(), snap=False, hook=True,
+    )
+    assert len(selected) == 1
+    assert selected[0].xyz() == (1.0, 2.0, 3.0)
+    assert selected[0].source == "selection"
+    count, summary = insertion_selection_summary(fake_cmd)
+    assert count == 1
+    assert "1.00" in summary
+    assert insertion_preview_text(fake_cmd, INSERT_SOURCE_SELECTION) == summary
+    fake_cmd.set_view([
+        1.0, 0.0, 0.0,
+        0.0, 1.0, 0.0,
+        0.0, 0.0, 1.0,
+        0.0, 0.0, -50.0,
+        1.0, 2.0, 3.0,
+        2.0, 200.0, 0.0,
+    ])
+    camera = resolve_insertion_points(
+        fake_cmd, INSERT_SOURCE_CAMERA, existing=(), snap=False, hook=True,
+    )
+    assert len(camera) == 1
+    assert camera[0].source == "manual"
+    assert insertion_preview_text(fake_cmd, INSERT_SOURCE_CAMERA).startswith("Camera center")
+    snapped = resolve_insertion_points(
+        fake_cmd, INSERT_SOURCE_CAMERA, existing=(), snap=True, hook=True,
+    )
+    assert snapped[0].source == "selection"
+    assert snapped[0].xyz() == (1.0, 2.0, 3.0)
+    snap_text = insertion_preview_text(fake_cmd, INSERT_SOURCE_CAMERA, snap=True)
+    assert "CA" in snap_text or atom_insertion_preview_label({
+        "model": "prot",
+        "name": "CA",
+        "elem": "C",
+        "chain": "",
+        "resn": "",
+        "resi": "",
+        "x": 1.0,
+        "y": 2.0,
+        "z": 3.0,
+    }) in snap_text
+
+

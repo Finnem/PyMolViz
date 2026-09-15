@@ -112,3 +112,31 @@ def test_march_cubes_sphere_is_closed():
     assert _boundary_edge_count(faces) == 0
     dist = np.linalg.norm(verts, axis=1)
     assert dist == pytest.approx(radius, abs=h)
+
+
+def test_march_cubes_mesh_welds_shared_edges():
+    from pymolviz.util.marching_cubes import march_cubes_mesh
+
+    origin = np.array([-1.0, -1.0, -1.0], dtype=float)
+    h = 0.125
+    n = 17
+    xs = origin[0] + np.arange(n) * h
+    xx, yy, zz = np.meshgrid(xs, xs, xs, indexing="ij")
+    field = np.sqrt(xx * xx + yy * yy + zz * zz) - 0.55
+    nx, ny, nz = field.shape
+    cubes = []
+    for i in range(nx - 1):
+        for j in range(ny - 1):
+            for k in range(nz - 1):
+                corners = (
+                    field[i, j, k], field[i + 1, j, k],
+                    field[i, j + 1, k], field[i + 1, j + 1, k],
+                    field[i, j, k + 1], field[i + 1, j, k + 1],
+                    field[i, j + 1, k + 1], field[i + 1, j + 1, k + 1],
+                )
+                if min(corners) < 0.0 <= max(corners):
+                    cubes.append((i, j, k))
+    vertices, faces = march_cubes_mesh(origin, h, field, np.asarray(cubes, dtype=np.int32))
+    assert faces.shape[0] > 20
+    assert _boundary_edge_count(faces) == 0
+    assert vertices.shape[0] < 3 * faces.shape[0]

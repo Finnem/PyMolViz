@@ -39,11 +39,22 @@ class FakeCmd:
     def __init__(self) -> None:
         self.atoms: List[FakeAtom] = []
         self.objects: Dict[str, list] = {}
+        self.object_types: Dict[str, str] = {}
+        self.volume_fields: Dict[str, object] = {}
+        self.extents: Dict[str, list] = {}
+        self.symmetries: Dict[str, list] = {}
         self.selections: Dict[str, List[FakeAtom]] = {}
         self.state: int = 1
         self.settings: Dict[str, Dict[str, float]] = {}
         self._view = [1.0] * 18
         self.disabled: set = set()
+        self._drag_selection = ""
+        self._drag_mode = -1
+        self._drag_wizard = 1
+        self._edit_mode = 0
+        self._hidden: set = set()
+        self._shown: set = set()
+        self._origin = [0.0, 0.0, 0.0]
 
     def add_atom(self, atom: FakeAtom) -> None:
         self.atoms.append(atom)
@@ -71,22 +82,29 @@ class FakeCmd:
             atoms_out.append(float(atom.vdw) if atom.vdw is not None else 1.7)
             return
         if "model" in expr and "resn" in expr:
-            atoms_out.append([
+            row = [
                 atom.model,
                 atom.chain,
                 atom.elem,
                 atom.resn,
                 atom.resi,
                 atom.atom_id,
-                atom.x,
-                atom.y,
-                atom.z,
-            ])
-        else:
-            atoms_out.append([atom.x, atom.y, atom.z])
+            ]
+            if "name" in expr:
+                row.extend([atom.name, atom.x, atom.y, atom.z])
+            else:
+                row.extend([atom.x, atom.y, atom.z])
+            atoms_out.append(row)
+            return
+        atoms_out.append([atom.x, atom.y, atom.z])
 
     def _resolve_selection(self, sele_expr: str) -> List[FakeAtom]:
         expr = str(sele_expr).strip()
+        first_match = re.match(r"^first\s+(.+)$", expr, flags=re.I)
+        if first_match:
+            inner = first_match.group(1).strip()
+            atoms = self._resolve_selection(inner)
+            return atoms[:1]
         if re.search(r"\s+or\s+", expr, flags=re.I):
             out = []
             seen = set()
@@ -195,6 +213,7 @@ class FakeCmd:
 
     def load_cgo(self, cgo: Sequence, name: str, state: int = 1, zoom: int = 0) -> None:
         self.objects[str(name)] = list(cgo)
+        self.object_types[str(name)] = "object:cgo"
 
     def load_callback(self, obj, name: str, state: int = 1, finish: int = 1, discrete: int = 0, **_kwargs) -> None:
         self.objects[str(name)] = obj
@@ -206,9 +225,99 @@ class FakeCmd:
         self.load_cgo(cgo, name)
 
     def delete(self, name: str) -> None:
-        self.objects.pop(str(name), None)
-        self.settings.pop(str(name), None)
-        self.disabled.discard(str(name))
+        obj = str(name)
+        self.objects.pop(obj, None)
+        self.settings.pop(obj, None)
+        self.object_types.pop(obj, None)
+        self.volume_fields.pop(obj, None)
+        self.extents.pop(obj, None)
+        self.disabled.discard(obj)
+        self.atoms = [atom for atom in self.atoms if atom.model != obj]
+        if self._drag_selection in (obj, "", self._drag_selection) and (
+            self._drag_selection == obj
+        ):
+            self._drag_selection = ""
+
+    def load(self, filename, object="", state=1, format="", finish=1, discrete=0, quiet=1, **_kwargs) -> None:
+        from pathlib import Path
+
+        name = str(object) if object else Path(str(filename)).stem
+        self.objects[name] = []
+        ext = Path(str(filename)).suffix.lower()
+        if ext in {".ccp4", ".mrc", ".map", ".dx", ".xplor", ".grd", ".mtz"}:
+            self.object_types[name] = "object:map"
+
+    def load_brick(self, brick, name: str) -> None:
+        self.objects[str(name)] = brick
+        self.object_types[str(name)] = "object:map"
+        origin = getattr(brick, "origin", None)
+        step = getattr(brick, "step_sizes", None)
+        if step is None:
+            step = getattr(brick, "spacing", None)
+        counts = getattr(brick, "step_counts", None)
+        if origin is None or step is None or counts is None:
+            return
+        try:
+            lo = [float(origin[0]), float(origin[1]), float(origin[2])]
+            st = [float(step[0]), float(step[1]), float(step[2])]
+            n = [float(counts[0]), float(counts[1]), float(counts[2])]
+            self.extents[str(name)] = [
+                lo,
+                [lo[0] + st[0] * n[0], lo[1] + st[1] * n[1], lo[2] + st[2] * n[2]],
+            ]
+        except (TypeError, ValueError, IndexError):
+            pass
+
+    def get_symmetry(self, object="", state: int = 1):
+        stored = self.symmetries.get(str(object))
+        if stored:
+            return list(stored)
+        return [1.0, 1.0, 1.0, 90.0, 90.0, 90.0, "P1"]
+
+    def set_symmetry(self, selection, a, b, c, alpha=90.0, beta=90.0, gamma=90.0, spacegroup="P1"):
+        self.symmetries[str(selection)] = [
+            float(a), float(b), float(c), float(alpha), float(beta), float(gamma), str(spacegroup or "P1"),
+        ]
+
+    def get_object_state(self, name: str) -> int:
+        return int(self.state)
+
+    def volume_ramp_new(self, name: str, values) -> None:
+        self.objects[str(name)] = list(values or [])
+        self.object_types[str(name)] = "object:ramp"
+
+    def volume_color(self, name, ramp) -> None:
+        info = self.objects.get(str(name))
+        if not isinstance(info, dict):
+            raise KeyError(name)
+        info["ramp"] = ramp if isinstance(ramp, str) else list(ramp)
+
+    def ramp_new(self, name, map_name, range=None, color=None, state=1, **_kwargs) -> None:
+        self.objects[str(name)] = {
+            "map": str(map_name),
+            "range": list(range or []),
+            "color": color,
+            "state": int(state or 1),
+        }
+        self.object_types[str(name)] = "object:ramp"
+
+    def volume(self, name, map_name, ramp="", selection="", carve=None, state=1, **_kwargs) -> None:
+        self.objects[str(name)] = {"map": str(map_name), "ramp": str(ramp)}
+        self.object_types[str(name)] = "object:volume"
+
+    def isosurface(self, name, map_name, level=1.0, selection="", carve=None, side=1, **_kwargs) -> None:
+        self.objects[str(name)] = {"map": str(map_name), "level": float(level)}
+        self.object_types[str(name)] = "object:isosurface"
+
+    def isomesh(self, name, map_name, level=1.0, selection="", carve=None, **_kwargs) -> None:
+        self.objects[str(name)] = {"map": str(map_name), "level": float(level)}
+        self.object_types[str(name)] = "object:mesh"
+
+    def set_color(self, name: str, rgb) -> None:
+        self.settings.setdefault(str(name), {})["rgb"] = list(rgb)
+
+    def color(self, color, selection="") -> None:
+        self.settings.setdefault(str(selection), {})["color"] = str(color)
 
     def set_name(self, old: str, new: str) -> None:
         old, new = str(old), str(new)
@@ -223,16 +332,69 @@ class FakeCmd:
             self.disabled.discard(old)
             self.disabled.add(new)
 
-    def get_names(self, typ: str = "objects", enabled_only: int = 0, selection: str = "") -> List[str]:
+    def get_unused_name(self, prefix: str = "tmp", alwaysnumber: int = 0) -> str:
+        prefix = str(prefix)
+        names = set(self.objects) | set(self.selections)
+        if not alwaysnumber and prefix not in names:
+            return prefix
+        index = 1
+        while True:
+            candidate = "%s_%d" % (prefix, index)
+            if candidate not in names:
+                return candidate
+            index += 1
+
+    def get_names(self, type="objects", enabled_only=0, selection=""):
+        """Match PyMOL ``cmd.get_names(type, enabled_only, selection)``.
+
+        ``count_atoms("sele")`` is independent of this: disabling a selection
+        removes it from ``type="selections", enabled_only=1`` (and from
+        ``type="enabled"``) but does not clear its atoms.
+        """
+        typ = str(type)
         if typ == "objects":
             names = list(self.objects.keys())
         elif typ == "selections":
             names = list(self.selections.keys())
+        elif typ == "all":
+            names = list(self.objects.keys()) + list(self.selections.keys())
+        elif typ == "enabled":
+            names = [
+                name
+                for name in list(self.objects.keys()) + list(self.selections.keys())
+                if name not in self.disabled
+            ]
+            return names
         else:
             names = []
         if enabled_only:
             names = [name for name in names if name not in self.disabled]
         return names
+
+    def get_type(self, name: str) -> str:
+        return str(self.object_types.get(str(name), "object:molecule"))
+
+    def get_names_of_type(self, kind: str) -> List[str]:
+        wanted = str(kind)
+        return [name for name, typ in self.object_types.items() if typ == wanted]
+
+    def get_volume_field(self, name: str):
+        return self.volume_fields.get(str(name))
+
+    def get_extent(self, sele_expr: str, state: int = 1):
+        stored = self.extents.get(str(sele_expr))
+        if stored:
+            return stored
+        atoms = self._resolve_selection(sele_expr)
+        if not atoms:
+            return [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+        xs = [atom.x for atom in atoms]
+        ys = [atom.y for atom in atoms]
+        zs = [atom.z for atom in atoms]
+        return [
+            [min(xs), min(ys), min(zs)],
+            [max(xs), max(ys), max(zs)],
+        ]
 
     def set_object_ttt(self, name: str, matrix) -> None:
         self.objects.setdefault(str(name), [])
@@ -270,18 +432,6 @@ class FakeCmd:
         tz = r20 * t0 + r21 * t1 + r22 * t2 + p2
         return [r00, r01, r02, tx, r10, r11, r12, ty, r20, r21, r22, tz, 0.0, 0.0, 0.0, 1.0]
 
-    def get_extent(self, sele_expr: str, state: int = 1):
-        atoms = self._resolve_selection(sele_expr)
-        if not atoms:
-            return [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
-        xs = [atom.x for atom in atoms]
-        ys = [atom.y for atom in atoms]
-        zs = [atom.z for atom in atoms]
-        return [
-            [min(xs), min(ys), min(zs)],
-            [max(xs), max(ys), max(zs)],
-        ]
-
     def enable(self, name: str) -> None:
         self.disabled.discard(str(name))
 
@@ -292,9 +442,10 @@ class FakeCmd:
         return (640.0, 480.0)
 
     def get(self, key: str, name: str = ""):
-        if name:
-            return self.settings.get(str(name), {}).get(str(key), 0.0)
-        return 0.0
+        return self.settings.get(str(name), {}).get(str(key), 0.0)
+
+    def set(self, key: str, value, name: str = "", quiet=1) -> None:
+        self.settings.setdefault(str(name), {})[str(key)] = value
 
     def get_coords(self, sele_expr: str, state: int = 1):
         atoms = self._resolve_selection(sele_expr)
@@ -311,15 +462,70 @@ class FakeCmd:
     def get_state(self) -> int:
         return self.state
 
-    def set(self, key: str, value, name: str = "") -> None:
-        if name:
-            self.settings.setdefault(str(name), {})[str(key)] = float(value)
+    def set(self, key: str, value, name: str = "", quiet=1) -> None:
+        self.settings.setdefault(str(name), {})[str(key)] = value
 
     def get_view(self) -> list:
         return list(self._view)
 
     def set_view(self, view, animate=0) -> None:
         self._view = list(view)
+
+    def hide(self, representation: str = "everything", selection: str = "all") -> None:
+        self._hidden.add((str(representation), str(selection)))
+
+    def show(self, representation: str = "everything", selection: str = "all") -> None:
+        self._shown.add((str(representation), str(selection)))
+
+    def drag(self, selection=None, wizard=1, edit=1, quiet=1, mode=-1) -> None:
+        if selection is None or selection == "":
+            self._drag_selection = ""
+            self._drag_mode = -1
+            return
+        self._drag_selection = str(selection)
+        self._drag_mode = int(mode)
+        self._drag_wizard = int(wizard)
+        if int(edit):
+            self._edit_mode = 1
+            self.set("button_mode", 1)
+
+    def get_drag_object_name(self) -> str:
+        return self._drag_selection
+
+    def get_editor_scheme(self) -> int:
+        return 3 if self._drag_selection else 0
+
+    def get_object_list(self, sele_expr: str):
+        atoms = self._resolve_selection(sele_expr)
+        names = []
+        seen = set()
+        for atom in atoms:
+            if atom.model not in seen:
+                seen.add(atom.model)
+                names.append(atom.model)
+        if not names and str(sele_expr) in self.objects:
+            names.append(str(sele_expr))
+        return names
+
+    def edit_mode(self, value=1) -> None:
+        self._edit_mode = int(value)
+
+    def mouse(self) -> None:
+        pass
+
+    def origin(self, selection="(all)", object=None, position=None, state=0, **_kwargs) -> None:
+        if position is not None:
+            self._origin = [float(position[0]), float(position[1]), float(position[2])]
+            return
+        atoms = self._resolve_selection(selection)
+        if not atoms:
+            return
+        n = float(len(atoms))
+        self._origin = [
+            sum(atom.x for atom in atoms) / n,
+            sum(atom.y for atom in atoms) / n,
+            sum(atom.z for atom in atoms) / n,
+        ]
 
     def unpick(self) -> None:
         pass
@@ -337,10 +543,13 @@ class FakeCmd:
             atom.y += float(dy)
             atom.z += float(dz)
 
-    def pseudoatom(self, name: str, pos=None, **_kwargs) -> None:
+    def pseudoatom(self, name: str, pos=None, **kwargs) -> None:
         pos = pos or [0.0, 0.0, 0.0]
         obj = str(name)
         self.objects[obj] = [float(pos[0]), float(pos[1]), float(pos[2])]
+        label = kwargs.get("label")
+        if label:
+            self.settings.setdefault(obj, {})["label"] = str(label)
         self.add_atom(FakeAtom(obj, 1, float(pos[0]), float(pos[1]), float(pos[2]), name="PSD"))
 
     def zoom(self, sele_expr: str, animate: int = -1, buffer: float = 0) -> None:

@@ -56,6 +56,18 @@ def test_sphere_collection_roundtrip():
     assert restored.id == "coll001"
     assert len(restored) == 1
     assert isinstance(restored[0], Sphere)
+    assert restored.specular is True
+
+
+def test_collection_specular_off_roundtrip():
+    sphere = Sphere((0.0, 0.0, 0.0), 1.0, bypass_colormap=True, obj_id="abc123")
+    collection = CGOCollection(
+        [sphere], name="pmv_spheres", obj_id="collSpec", specular=False,
+    )
+    data = displayable_to_dict(collection)
+    assert data["specular"] is False
+    restored = displayable_from_dict(data)
+    assert restored.specular is False
 
 
 def test_session_document_roundtrip():
@@ -99,6 +111,30 @@ def test_arrows_independent_heads_roundtrip():
     assert got.end_head == "Arrow"
 
 
+def test_arrows_independent_margins_roundtrip():
+    from pymolviz.meshes.Arrows import Arrows
+    from pymolviz.util.line_style import LineStyle
+
+    arrows = Arrows(
+        starts=[FixedPoint((0.0, 0.0, 0.0))],
+        ends=[FixedPoint((1.0, 0.0, 0.0))],
+        color=[(0.2, 0.4, 0.8)],
+        bypass_colormap=True,
+        line_style=LineStyle(start_margin=1.25, end_margin=0.4),
+        use_styled_cgo=True,
+        obj_id="arr002",
+    )
+    collection = CGOCollection([arrows], name="pmv_arrows", obj_id="collB")
+    data = displayable_to_dict(collection)
+    style = data["objects"][0]["line_style"]
+    assert style["start_margin"] == 1.25
+    assert style["end_margin"] == 0.4
+    restored = displayable_from_dict(data)
+    got = restored[0].line_style
+    assert got.start_margin == 1.25
+    assert got.end_margin == 0.4
+
+
 def test_surface_collection_roundtrip():
     from pymolviz.meshes.Surface import Surface
 
@@ -106,7 +142,7 @@ def test_surface_collection_roundtrip():
         [FixedPoint((0.0, 0.0, 0.0)), FixedPoint((2.0, 0.0, 0.0))],
         atom_radius=1.2,
         probe_radius=1.4,
-        algorithm="ASA",
+        algorithm="GAUSS",
         quality=1,
         radius_mode="vdw",
         vdw_scale=0.8,
@@ -121,7 +157,7 @@ def test_surface_collection_roundtrip():
     json.dumps(data)
     child = data["objects"][0]
     assert child["type"] == "Surface"
-    assert child["algorithm"] == "ASA"
+    assert child["algorithm"] == "GAUSS"
     assert child["probe_radius"] == pytest.approx(1.4)
     assert child["atom_radius"] == pytest.approx(1.2)
     assert child["radius_mode"] == "vdw"
@@ -132,7 +168,7 @@ def test_surface_collection_roundtrip():
     restored = displayable_from_dict(data)
     got = restored[0]
     assert isinstance(got, Surface)
-    assert got.algorithm == "ASA"
+    assert got.algorithm == "GAUSS"
     assert got.probe_radius == pytest.approx(1.4)
     assert got.radius_mode == "vdw"
     assert got.vdw_scale == pytest.approx(0.8)
@@ -147,7 +183,7 @@ def test_surface_clip_planes_roundtrip():
     planes = [{"origin": [0.0, 0.0, 0.5], "normal": [0.0, 0.0, 1.0], "scale": 7.0}]
     surface = Surface(
         [FixedPoint((0.0, 0.0, 0.0))],
-        algorithm="ASA",
+        algorithm="GAUSS",
         quality=1,
         clip_planes=planes,
         bypass_colormap=True,
@@ -164,4 +200,294 @@ def test_surface_clip_planes_roundtrip():
     got = restored[0]
     assert got.clip_planes[0]["scale"] == pytest.approx(7.0)
     assert np.all(np.asarray(got.vertices)[:, 2] >= 0.5 - 1e-5)
+
+
+def test_field_coloring_roundtrip():
+    from pymolviz.util.field_sample import _NATIVE_GRIDS, paint_mesh_by_field
+    from pymolviz.volumetric.GridData import GridData
+
+    _NATIVE_GRIDS.clear()
+    values = np.linspace(0.0, 1.0, 8).reshape(2, 2, 2)
+    grid = GridData(
+        values.reshape(-1),
+        step_sizes=(1.0, 1.0, 1.0),
+        step_counts=(1, 1, 1),
+        origin=(0.0, 0.0, 0.0),
+        name="density",
+    )
+    _NATIVE_GRIDS[grid.id] = grid
+    sphere = Sphere(
+        FixedPoint((0.5, 0.5, 0.5)), 0.4,
+        color=(1.0, 0.0, 0.0), bypass_colormap=True, frequency=2, obj_id="fldsph",
+    )
+    assert paint_mesh_by_field(sphere, grid.id, colormap="viridis", refine=False)
+    collection = CGOCollection([sphere], name="pmv_spheres", obj_id="collF")
+    data = displayable_to_dict(collection)
+    assert_plain(data)
+    json.dumps(data)
+    child = data["objects"][0]
+    assert child["field_id"] == str(grid.id)
+    assert child["field_colormap"] == "viridis"
+    restored = displayable_from_dict(data)
+    got = restored[0]
+    assert got.field_id == str(grid.id)
+    assert got.field_colormap == "viridis"
+    colors = np.asarray(got.color, dtype=float).reshape(-1, 3)
+    assert colors.shape[0] == got.vertices.shape[0]
+    assert len({tuple(np.round(row, 4)) for row in colors}) > 1
+
+
+def test_field_colormap_spec_roundtrip():
+    from pymolviz.util.colormap_spec import ColorStop, ColormapDefinition
+    from pymolviz.util.field_sample import _NATIVE_GRIDS, paint_mesh_by_field
+    from pymolviz.volumetric.GridData import GridData
+
+    _NATIVE_GRIDS.clear()
+    values = np.linspace(0.0, 1.0, 8).reshape(2, 2, 2)
+    grid = GridData(
+        values.reshape(-1),
+        step_sizes=(1.0, 1.0, 1.0),
+        step_counts=(1, 1, 1),
+        origin=(0.0, 0.0, 0.0),
+        name="density_spec",
+    )
+    _NATIVE_GRIDS[grid.id] = grid
+    spec = ColormapDefinition(
+        preset="custom",
+        stops=(
+            ColorStop(0.0, (0.0, 0.0, 1.0, 1.0)),
+            ColorStop(1.0, (1.0, 0.0, 0.0, 1.0)),
+        ),
+        customized=True,
+    ).to_dict()
+    sphere = Sphere(
+        FixedPoint((0.5, 0.5, 0.5)), 0.4,
+        color=(1.0, 0.0, 0.0), bypass_colormap=True, frequency=2, obj_id="fldspec",
+    )
+    assert paint_mesh_by_field(
+        sphere, grid.id, colormap="custom", colormap_spec=spec, refine=False,
+    )
+    collection = CGOCollection([sphere], name="pmv_spheres", obj_id="collSpec")
+    data = displayable_to_dict(collection)
+    assert_plain(data)
+    child = data["objects"][0]
+    assert child["field_colormap_spec"]["customized"] is True
+    restored = displayable_from_dict(data)
+    got = restored[0]
+    assert got.field_colormap_spec["customized"] is True
+    colors = np.asarray(got.color, dtype=float).reshape(-1, 3)
+    assert colors.shape[0] == got.vertices.shape[0]
+
+
+def test_sphere_enabled_and_clip_roundtrip():
+    planes = [{"origin": [0.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0], "scale": 4.0}]
+    sphere = Sphere(
+        FixedPoint((0.0, 0.0, 0.0)), 1.0,
+        color=(1.0, 0.0, 0.0), bypass_colormap=True,
+        clip_planes=planes, enabled=False, frequency=2, obj_id="sphclip",
+    )
+    collection = CGOCollection([sphere], name="pmv_spheres", obj_id="collClip")
+    data = displayable_to_dict(collection)
+    child = data["objects"][0]
+    assert child["enabled"] is False
+    assert child["clip_planes"][0]["normal"] == pytest.approx([0.0, 0.0, 1.0])
+    restored = displayable_from_dict(data)
+    got = restored[0]
+    assert got.enabled is False
+    assert got.clip_planes[0]["scale"] == pytest.approx(4.0)
+
+
+def test_surface_point_enabled_roundtrip():
+    from pymolviz.meshes.Surface import Surface
+
+    surface = Surface(
+        [FixedPoint((0.0, 0.0, 0.0)), FixedPoint((2.0, 0.0, 0.0))],
+        algorithm="GAUSS", quality=1, bypass_colormap=True,
+        point_enabled=[True, False], obj_id="surfen",
+    )
+    collection = CGOCollection([surface], name="pmv_surface", obj_id="collEn")
+    data = displayable_to_dict(collection)
+    child = data["objects"][0]
+    assert child["point_enabled"] == [True, False]
+    restored = displayable_from_dict(data)
+    got = restored[0]
+    assert got.point_enabled == [True, False]
+    assert len(got.point_sources) == 2
+
+
+def test_surface_point_colors_roundtrip():
+    from pymolviz.meshes.Surface import Surface
+    from pymolviz.wizards.builders.preview import apply_surface_color_to_mesh
+    from pymolviz.wizards.builders.points import VisualPoint
+
+    surface = Surface(
+        [FixedPoint((0.0, 0.0, 0.0)), FixedPoint((6.0, 0.0, 0.0))],
+        algorithm="GAUSS", quality=1, bypass_colormap=True, obj_id="surfpc",
+    )
+    points = [
+        VisualPoint("a", "manual", 0, 0, 0, color=(1.0, 0.0, 0.0), point_source=FixedPoint((0.0, 0.0, 0.0))),
+        VisualPoint("b", "manual", 6, 0, 0, color=(0.0, 0.0, 1.0), point_source=FixedPoint((6.0, 0.0, 0.0))),
+    ]
+    apply_surface_color_to_mesh(surface, points)
+    collection = CGOCollection([surface], name="pmv_surface", obj_id="collPC")
+    data = displayable_to_dict(collection)
+    child = data["objects"][0]
+    assert child["point_colors"][0] == pytest.approx([1.0, 0.0, 0.0])
+    assert child["point_colors"][1] == pytest.approx([0.0, 0.0, 1.0])
+    restored = displayable_from_dict(data)
+    got = restored[0]
+    assert got.point_colors[0] == pytest.approx((1.0, 0.0, 0.0))
+    assert got.point_colors[1] == pytest.approx((0.0, 0.0, 1.0))
+    colors = np.asarray(got.color, dtype=float).reshape(-1, 3)
+    assert colors.shape[0] == got.vertices.shape[0]
+    assert len({tuple(np.round(row, 3)) for row in colors}) > 1
+
+
+def test_arrows_clip_and_head_radius_roundtrip():
+    from pymolviz.meshes.Arrows import Arrows
+
+    planes = [{"origin": [0.0, 0.0, 0.0], "normal": [1.0, 0.0, 0.0], "scale": 5.0}]
+    arrows = Arrows(
+        starts=[FixedPoint((0.0, 0.0, 0.0))],
+        ends=[FixedPoint((1.0, 0.0, 0.0))],
+        color=[(0.2, 0.4, 0.8)],
+        bypass_colormap=True,
+        head_radius=0.12,
+        clip_planes=planes,
+        obj_id="arrclip",
+    )
+    collection = CGOCollection([arrows], name="pmv_arrows", obj_id="collArrClip")
+    data = displayable_to_dict(collection)
+    child = data["objects"][0]
+    assert child["head_radius"] == pytest.approx(0.12)
+    assert child["clip_planes"][0]["normal"] == pytest.approx([1.0, 0.0, 0.0])
+    restored = displayable_from_dict(data)
+    got = restored[0]
+    assert got.head_radius == pytest.approx(0.12)
+    assert got.clip_planes[0]["scale"] == pytest.approx(5.0)
+
+
+def test_field_recipe_and_visual_refs_roundtrip():
+    from pymolviz.fields import Domain, Field, ensure_brick
+    from pymolviz.fields.domain import BOUNDS_AROUND_SELECTION
+    from pymolviz.fields.identity import GEN_DISTANCE
+    from pymolviz.runtime import session as session_mod
+    from pymolviz.wizards.builders.field_visual import make_field_visual
+
+    session_mod.clear()
+    field = Field(
+        name="dist",
+        units="Å",
+        generator={
+            "type": GEN_DISTANCE,
+            "atoms": [{"xyz": [0.0, 0.0, 0.0], "elem": "C"}],
+        },
+        domain=Domain(bounds_mode=BOUNDS_AROUND_SELECTION, padding=1.0, spacing=1.0),
+        obj_id="fld-dist",
+    )
+    ensure_brick(field)
+    visual = make_field_visual(
+        "IsoSurface",
+        field,
+        "iso",
+        level=0.5,
+        geometry_field_id=field.id,
+        isovalues=[{"value": 0.5, "side": 1, "enabled": True}],
+        clip_aabb=[[-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]],
+        obj_id="iso-ref",
+    )
+    doc = session_document([field, visual])
+    assert_plain(doc)
+    json.dumps(doc)
+    assert doc["objects"][0]["type"] == "Field"
+    assert doc["objects"][0]["generator"]["type"] == GEN_DISTANCE
+    assert "brick" not in doc["objects"][0]
+    vis = doc["objects"][1]
+    assert vis["geometry_field_id"] == str(field.id)
+    assert vis["isovalues"][0]["value"] == pytest.approx(0.5)
+    assert vis["clip_aabb"] is not None
+    restored = session_from_document(doc)
+    kinds = [type(obj).__name__ for obj in restored]
+    assert kinds[0] == "Field"
+    assert kinds[1] == "IsoSurface"
+    assert restored[1].geometry_field_id == str(field.id)
+    session_mod.clear()
+
+
+def test_converted_surface_provenance_roundtrip():
+    from pymolviz.meshes.Surface import Surface
+
+    verts = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=float)
+    faces = np.array([[0, 1, 2]], dtype=int)
+    normals = np.array([[0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]], dtype=float)
+    surface = Surface(
+        [],
+        color=(0.2, 0.6, 0.9),
+        bypass_colormap=True,
+        created_from={"field_id": "fld-1", "isovalue": 0.4},
+        source_vertices=verts,
+        source_normals=normals,
+        source_faces=faces,
+        obj_id="surf-from",
+    )
+    collection = CGOCollection([surface], name="pmv_surface", obj_id="collFrom")
+    data = displayable_to_dict(collection)
+    child = data["objects"][0]
+    assert child["created_from"]["field_id"] == "fld-1"
+    assert child["created_from"]["isovalue"] == pytest.approx(0.4)
+    restored = displayable_from_dict(data)
+    got = restored[0]
+    assert got.created_from["field_id"] == "fld-1"
+    assert np.asarray(got.vertices).shape[0] == 3
+
+
+def test_color_field_recipe_and_default_id_roundtrip():
+    from pymolviz.fields import Domain, KIND_SCALAR
+    from pymolviz.fields.identity import GEN_DISTANCE, GEN_SIGNED_VDW
+    from pymolviz.runtime import session as session_mod
+    from pymolviz.wizards.builders.load_field import (
+        default_color_field_id,
+        field_from_selection,
+        remember_default_color_field,
+    )
+    from pymolviz.wizards.builders.points import AtomRef, VisualPoint
+    from tests.fakes.cmd import FakeCmd
+
+    session_mod.clear()
+    pts = [
+        VisualPoint(
+            "C1", "manual", 0.0, 0.0, 0.0,
+            color=(1.0, 0.0, 0.0),
+            point_source=FixedPoint((0.0, 0.0, 0.0)),
+            atom_ref=AtomRef("m", 1, elem="C"),
+        ),
+        VisualPoint(
+            "O1", "manual", 1.5, 0.0, 0.0,
+            color=(0.0, 0.0, 1.0),
+            point_source=FixedPoint((1.5, 0.0, 0.0)),
+            atom_ref=AtomRef("m", 2, elem="O"),
+        ),
+    ]
+    cmd = FakeCmd()
+    domain = Domain(padding=1.0, spacing=1.0)
+    geom = field_from_selection(cmd, pts, "dist", algorithm=GEN_DISTANCE, domain=domain)
+    color = field_from_selection(
+        cmd, pts, "vdw_color", algorithm=GEN_SIGNED_VDW, domain=domain,
+    )
+    remember_default_color_field(geom, color)
+    doc = session_document([geom, color])
+    assert_plain(doc)
+    json.dumps(doc)
+    color_dump = next(row for row in doc["objects"] if row["generator"]["type"] == GEN_SIGNED_VDW)
+    assert color_dump["kind"] == KIND_SCALAR
+    assert "brick" not in color_dump
+    geom_dump = next(row for row in doc["objects"] if row["id"] == str(geom.id))
+    assert geom_dump["default_color_field_id"] == str(color.id)
+    restored = session_from_document(doc)
+    geom_r = next(obj for obj in restored if obj.id == geom.id)
+    color_r = next(obj for obj in restored if obj.id == color.id)
+    assert default_color_field_id(geom_r) == str(color_r.id)
+    assert color_r.kind == KIND_SCALAR
+    session_mod.clear()
+
 

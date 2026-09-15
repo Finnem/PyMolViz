@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import types
 
-from ..serialization import SCHEMA_VERSION, displayable_from_dict, displayable_to_dict
+from ..serialization import SCHEMA_VERSION, displayable_from_dict, displayable_to_dict, session_document
 
 PREVIEW_ID_PREFIX = "preview_"
 PREVIEW_NAME_PREFIX = "_pmv_prev_"
@@ -38,10 +38,7 @@ def get(model_id):
 
 def persist():
     sess = session_ns()
-    sess.pymolviz = {
-        "schema": SCHEMA_VERSION,
-        "objects": [displayable_to_dict(obj) for obj in _live.values()],
-    }
+    sess.pymolviz = session_document(_live.values())
     return sess.pymolviz
 
 
@@ -81,6 +78,9 @@ def remove(obj):
 
 def clear():
     _live.clear()
+    from ..fields.field import clear_wraps
+
+    clear_wraps()
     from .follow import invalidate_watchlist
     invalidate_watchlist()
 
@@ -96,6 +96,9 @@ def read_blob():
 def restore_from_session():
     data = read_blob()
     _live.clear()
+    from ..serialization import _INFLIGHT
+
+    _INFLIGHT.clear()
     for item in data.get("objects", []):
         if not isinstance(item, dict):
             continue

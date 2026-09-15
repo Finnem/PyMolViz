@@ -126,3 +126,18 @@ def test_offset_real_pymol_float_opcodes_alias_vertex_and_triangles(monkeypatch)
     assert content[24:26] == [10.0, 2.0]
     assert content[26:28] == [2.0, 1.0]
     assert content[28:32] == [4.0, pytest.approx(18.0), pytest.approx(9.0), pytest.approx(10.0)]
+
+
+def test_line_wireframe_box_cgo_is_twelve_line_edges():
+    from pymol.cgo import CYLINDER
+
+    from pymolviz.util.cgo import line_wireframe_box_cgo
+
+    tokens = line_wireframe_box_cgo((0.0, 0.0, 0.0), (0.7, 0.7, 0.7), (1.0, 0.85, 0.15))
+    assert tokens.count("LINEWIDTH") == 1
+    assert tokens.count("BEGIN") == 1
+    assert tokens.count("LINES") == 1
+    assert tokens.count("VERTEX") == 24
+    assert tokens.count("END") == 1
+    assert CYLINDER not in tokens
+    assert "CYLINDER" not in tokens

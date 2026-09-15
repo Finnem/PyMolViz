@@ -13,7 +13,10 @@ from .pairs import (
 )
 from ..pick import qt_modules
 from ..tooltips import apply_required_tooltips, warn_missing_setting_tooltips
+from ..widgets.ascii_locale import apply_ascii_float_locale
+from ..widgets.scrolling import apply_expanding_list_policy
 from ..widgets.sticky_add import StickyAddOverlay
+from ..widgets.theme import INK, SELECTED, rgb_css, swatch_button_css
 
 ADD_ARROW_TIP = (
     "Add an arrow. If two atoms are already selected, uses them immediately; "
@@ -26,14 +29,14 @@ PICK_END_TIP = "Pick a new end atom or point in the viewer."
 FOCUS_ENDPOINT_TIP = "Select and center this atom (or frame this point) in PyMOL."
 CAMERA_ENDPOINT_TIP = (
     "Set this endpoint to the camera-center marker. "
-    "With Snap to atom, uses a visible atom within 2 Å of that marker."
+    "With Snap new points to atoms, uses a visible atom within 2 Å of that marker."
 )
 SWAP_ARROW_TIP = "Swap the start and end of this arrow."
 COLOR_ARROW_TIP = "Choose the color (and opacity) of this arrow."
 WIDTH_ARROW_TIP = "Shaft radius in Ångströms. Arrowhead length follows width."
 NAME_ARROW_TIP = "Optional label shown in the list instead of the endpoints."
-ANCHOR_START_TIP = "When checked, the start follows this atom after Create or Update."
-ANCHOR_END_TIP = "When checked, the end follows this atom after Create or Update."
+ANCHOR_START_TIP = "When checked, the start stays attached to this atom and follows if it moves."
+ANCHOR_END_TIP = "When checked, the end stays attached to this atom and follows if it moves."
 
 
 class ArrowPairEditor:
@@ -56,6 +59,8 @@ class ArrowPairEditor:
         self._rows.setSpacing(0)
         self._rows.addStretch(1)
         self._scroll.setWidget(self._inner)
+        apply_expanding_list_policy(self._box, QtWidgets)
+        apply_expanding_list_policy(self._scroll, QtWidgets)
         layout.addWidget(self._scroll, stretch=1)
 
         self._camera_btn = QtWidgets.QPushButton("Camera")
@@ -71,6 +76,7 @@ class ArrowPairEditor:
             row_height=self._row_height,
             extra=self._camera_btn,
             context="ArrowPairEditor",
+            empty_hint="No arrows yet.",
         )
         self._sticky_add.attach()
         apply_required_tooltips(
@@ -152,7 +158,7 @@ class ArrowPairEditor:
         row.setFrameShape(QtWidgets.QFrame.NoFrame)
         row.setCursor(QtCore.Qt.PointingHandCursor)
         if selected:
-            row.setStyleSheet("QFrame { background: rgba(80, 140, 210, 55); }")
+            row.setStyleSheet("QFrame { background: %s; }" % rgb_css(SELECTED))
         else:
             row.setStyleSheet("QFrame { background: transparent; }")
 
@@ -173,7 +179,7 @@ class ArrowPairEditor:
         title = (pair.title or "").strip()
         if title:
             name = QtWidgets.QLabel(title)
-            name.setStyleSheet("font-weight: 600;")
+            name.setStyleSheet("font-weight: 600; color: %s;" % rgb_css(INK))
             layout.addWidget(name, stretch=1)
         else:
             start = _flat_label_button(
@@ -238,10 +244,7 @@ class ArrowPairEditor:
         color_btn = QtWidgets.QPushButton()
         color_btn.setFixedSize(18, 16)
         color_btn.setFlat(True)
-        color_btn.setStyleSheet(
-            "QPushButton { background-color: %s; border: 1px solid #666; }"
-            % rgb_to_css(pair.color)
-        )
+        color_btn.setStyleSheet(swatch_button_css(rgb_to_css(pair.color)))
         color_btn.clicked.connect(lambda _=False, i=pid: host.edit_color(i))
         ends.addWidget(color_btn)
         layout.addLayout(ends)
@@ -252,6 +255,8 @@ class ArrowPairEditor:
         width.setRange(0.01, 2.0)
         width.setSingleStep(0.01)
         width.setDecimals(3)
+        width.setSuffix(" Å")
+        apply_ascii_float_locale(width, QtCore)
         width.setValue(float(pair.width))
         width.setMaximumWidth(72)
         width.valueChanged.connect(lambda value, i=pid: host.set_arrow_width(i, value))

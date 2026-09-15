@@ -22,6 +22,7 @@ from pymolviz.wizards.builders.preview import (
     SpherePreview,
     SurfacePreview,
     persist_live_preview,
+    retarget_arrow_collection,
     retarget_point_collection,
 )
 
@@ -285,6 +286,44 @@ def test_arrow_preview_skips_incomplete_pair(preview_runtime):
     assert preview.collection[0].vertices.reshape(-1, 2, 3).shape[0] == 1
 
 
+def test_persist_arrow_width_reloads_pymol_cgo(preview_runtime, monkeypatch):
+    from dataclasses import replace
+
+    monkeypatch.setattr("pymolviz.runtime.integration.install", lambda *_a, **_k: None)
+    style = LineStyle()
+    thin = [_pair((0.0, 0.0, 0.0), (10.0, 0.0, 0.0))]
+    preview = ArrowPreview(preview_runtime)
+    preview.update(thin, 3, style, head_radius=None)
+    persist_live_preview(
+        preview_runtime,
+        preview,
+        "pmv_arrows",
+        retarget=lambda coll: retarget_arrow_collection(coll, thin, head_radius=None),
+        fallback=lambda: pytest.fail("should reuse preview meshes"),
+    )
+    stored = pmv_session.all_objects()[0]
+    before = list(preview_runtime.objects["pmv_arrows"])
+    assert stored[0].pair_radii[0] == pytest.approx(0.045)
+
+    fat = [replace(thin[0], width=0.2)]
+    preview = ArrowPreview(preview_runtime)
+    preview.adopt(stored)
+    preview.update(fat, 3, style, head_radius=None)
+    persist_live_preview(
+        preview_runtime,
+        preview,
+        "pmv_arrows",
+        obj_id=stored.id,
+        retarget=lambda coll: retarget_arrow_collection(coll, fat, head_radius=None),
+        fallback=lambda: pytest.fail("should reuse preview meshes"),
+    )
+    updated = pmv_session.get(stored.id)
+    after = list(preview_runtime.objects["pmv_arrows"])
+    assert updated[0].pair_radii[0] == pytest.approx(0.2)
+    assert updated[0].head_radius is None
+    assert after != before
+
+
 def test_surface_preview_adopt_does_not_remesh(preview_runtime, monkeypatch):
     from pymolviz.meshes.Surface import Surface
 
@@ -296,7 +335,7 @@ def test_surface_preview_adopt_does_not_remesh(preview_runtime, monkeypatch):
         return orig(self, *args, **kwargs)
 
     monkeypatch.setattr(Surface, "__init__", wrapped)
-    mesh = Surface([(0.0, 0.0, 0.0)], quality=1, algorithm="ASA", bypass_colormap=True)
+    mesh = Surface([(0.0, 0.0, 0.0)], quality=1, algorithm="GAUSS", bypass_colormap=True)
     mesh._create_CGO_list()
     built = n["init"]
     preview = SurfacePreview(preview_runtime)
@@ -318,11 +357,11 @@ def test_surface_preview_update_remeshes(preview_runtime, monkeypatch):
         return orig(self, *args, **kwargs)
 
     monkeypatch.setattr(Surface, "__init__", wrapped)
-    mesh = Surface([(0.0, 0.0, 0.0)], quality=1, algorithm="ASA", bypass_colormap=True)
+    mesh = Surface([(0.0, 0.0, 0.0)], quality=1, algorithm="GAUSS", bypass_colormap=True)
     preview = SurfacePreview(preview_runtime)
     preview.adopt(CGOCollection([mesh], name="src"))
     built = n["init"]
-    preview.update([_point("a", (0.0, 0.0, 0.0))], 1.5, 1.4, "ASA", 1, False)
+    preview.update([_point("a", (0.0, 0.0, 0.0))], 1.5, 1.4, "GAUSS", 1, False)
     assert n["init"] > built
     assert PREVIEW_SURFACE_NAME in preview_runtime.objects
 
@@ -341,10 +380,10 @@ def test_surface_preview_reuses_mesh_for_wireframe_and_color(preview_runtime, mo
     monkeypatch.setattr(Surface, "__init__", wrapped)
     preview = SurfacePreview(preview_runtime)
     pt = _point("a", (0.0, 0.0, 0.0), color=(1.0, 0.0, 0.0))
-    preview.update([pt], DEFAULT_ATOM_RADIUS, DEFAULT_PROBE_RADIUS, "SAS", 1, False)
+    preview.update([pt], DEFAULT_ATOM_RADIUS, DEFAULT_PROBE_RADIUS, "SASA", 1, False)
     built = n["init"]
     mesh = preview.collection[0]
-    preview.update([pt], DEFAULT_ATOM_RADIUS, DEFAULT_PROBE_RADIUS, "SAS", 1, True)
+    preview.update([pt], DEFAULT_ATOM_RADIUS, DEFAULT_PROBE_RADIUS, "SASA", 1, True)
     assert n["init"] == built
     assert preview.collection[0] is mesh
     assert mesh.wireframe is True
@@ -352,7 +391,7 @@ def test_surface_preview_reuses_mesh_for_wireframe_and_color(preview_runtime, mo
     assert "CONE" in kinds
     assert "TRIANGLES" not in kinds
     recolored = _point("a", (0.0, 0.0, 0.0), color=(0.0, 1.0, 0.0))
-    preview.update([recolored], DEFAULT_ATOM_RADIUS, DEFAULT_PROBE_RADIUS, "SAS", 1, True)
+    preview.update([recolored], DEFAULT_ATOM_RADIUS, DEFAULT_PROBE_RADIUS, "SASA", 1, True)
     assert n["init"] == built
     assert np.allclose(
         np.asarray(preview.collection[0].color, dtype=float).reshape(-1)[:3],
@@ -361,6 +400,7 @@ def test_surface_preview_reuses_mesh_for_wireframe_and_color(preview_runtime, mo
 
 
 def test_surface_preview_gizmos_are_separate_from_mesh(preview_runtime):
+    from pymolviz.util.clip_drag import CLIP_DRAG_NAME
     from pymolviz.util.solvent_surface import DEFAULT_ATOM_RADIUS, DEFAULT_PROBE_RADIUS
 
     preview = SurfacePreview(preview_runtime)
@@ -372,7 +412,7 @@ def test_surface_preview_gizmos_are_separate_from_mesh(preview_runtime):
         "committed": False,
     }]
     preview.update(
-        [pt], DEFAULT_ATOM_RADIUS, DEFAULT_PROBE_RADIUS, "ASA", 1, False,
+        [pt], DEFAULT_ATOM_RADIUS, DEFAULT_PROBE_RADIUS, "GAUSS", 1, False,
         gizmo_planes=planes, gizmo_selected=0,
     )
     assert len(preview.collection) == 1
@@ -381,4 +421,84 @@ def test_surface_preview_gizmos_are_separate_from_mesh(preview_runtime):
     assert PREVIEW_SURFACE_CLIP_NAME in preview_runtime.objects
     preview.cleanup()
     assert PREVIEW_SURFACE_CLIP_NAME not in preview_runtime.objects
+    assert CLIP_DRAG_NAME not in preview_runtime.objects
+    assert preview_runtime.get_drag_object_name() == ""
+
+
+def test_surface_preview_attaches_native_drag_widget(preview_runtime):
+    from pymolviz.util.clip_drag import CLIP_DRAG_NAME
+    from pymolviz.util.solvent_surface import DEFAULT_ATOM_RADIUS, DEFAULT_PROBE_RADIUS
+    from pymolviz.util.view import translation_ttt
+
+    preview = SurfacePreview(preview_runtime)
+    pt = _point("a", (0.0, 0.0, 0.0))
+    planes = [{
+        "origin": [0.0, 0.0, 0.0],
+        "normal": [0.0, 0.0, 1.0],
+        "scale": 5.0,
+        "committed": False,
+    }]
+    preview.update(
+        [pt], DEFAULT_ATOM_RADIUS, DEFAULT_PROBE_RADIUS, "GAUSS", 1, False,
+        gizmo_planes=planes, gizmo_selected=0,
+    )
+    assert CLIP_DRAG_NAME in preview_runtime.objects
+    assert preview_runtime.get_drag_object_name() == CLIP_DRAG_NAME
+    assert preview.poll_clip_drag() is None
+    preview_runtime.set_object_ttt(CLIP_DRAG_NAME, translation_ttt((0.0, 0.0, 2.0)))
+    pose = preview.poll_clip_drag()
+    assert pose is not None
+    origin, normal = pose
+    assert origin[2] == pytest.approx(2.0)
+    assert normal == pytest.approx([0.0, 0.0, 1.0])
+    preview.cleanup()
+    assert CLIP_DRAG_NAME not in preview_runtime.objects
+    assert preview_runtime.get_drag_object_name() == ""
+    assert preview_runtime.get("button_mode") == 0
+
+
+def test_surface_preview_keeps_drag_matrix_during_live_update(preview_runtime):
+    from pymolviz.util.clip_drag import CLIP_DRAG_NAME
+    from pymolviz.util.solvent_surface import DEFAULT_ATOM_RADIUS, DEFAULT_PROBE_RADIUS
+    from pymolviz.util.view import translation_ttt
+
+    preview = SurfacePreview(preview_runtime)
+    pt = _point("a", (0.0, 0.0, 0.0))
+    planes = [{
+        "origin": [0.0, 0.0, 0.0],
+        "normal": [0.0, 0.0, 1.0],
+        "scale": 5.0,
+        "committed": False,
+    }]
+    preview.update(
+        [pt], DEFAULT_ATOM_RADIUS, DEFAULT_PROBE_RADIUS, "GAUSS", 1, False,
+        gizmo_planes=planes, gizmo_selected=0,
+    )
+    preview_runtime.set_object_ttt(CLIP_DRAG_NAME, translation_ttt((0.0, 0.0, 2.0)))
+    moved = [{
+        "origin": [0.0, 0.0, 2.0],
+        "normal": [0.0, 0.0, 1.0],
+        "scale": 5.0,
+        "committed": False,
+    }]
+    preview.update(
+        [pt], DEFAULT_ATOM_RADIUS, DEFAULT_PROBE_RADIUS, "GAUSS", 1, False,
+        gizmo_planes=moved, gizmo_selected=0,
+    )
+    assert preview_runtime.get_drag_object_name() == CLIP_DRAG_NAME
+    pose = preview.poll_clip_drag()
+    assert pose is not None
+    origin, _normal = pose
+    assert origin[2] == pytest.approx(2.0)
+    preview.set_gizmos(moved, selected_index=0, attach_drag=True)
+    rest = preview._gizmos._clip_drag_rest
+    assert rest is not None
+    assert rest["origin"][2] == pytest.approx(0.0)
+    preview._gizmos._clip_drag_matrix = None
+    pose = preview.poll_clip_drag()
+    assert pose is not None
+    origin, _normal = pose
+    assert origin[2] == pytest.approx(2.0)
+    preview.cleanup()
+    assert preview_runtime.get("button_mode") == 0
 

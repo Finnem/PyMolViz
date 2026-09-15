@@ -13,10 +13,12 @@ from .runtime_helper import build_arrow_collection
 DEFAULT_SHAFT_RADIUS = 0.045
 
 
-def arrow_cgo(start, end, color, quality, style, alpha=1.0, radius=DEFAULT_SHAFT_RADIUS, head_length=None):
+def arrow_cgo(start, end, color, quality, style, alpha=1.0, radius=DEFAULT_SHAFT_RADIUS, head_length=None, head_radius=None):
     kwargs = dict(alpha=alpha, radius=radius)
     if head_length is not None:
         kwargs["head_length"] = head_length
+    if head_radius is not None:
+        kwargs["head_radius"] = head_radius
     return build_styled_arrow_cgo(start, end, color, quality, style, **kwargs)
 
 

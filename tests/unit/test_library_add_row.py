@@ -123,7 +123,11 @@ def test_unused_object_name_keep_allows_current():
 
 
 def test_add_object_types_are_plural_without_lines():
-    from pymolviz.wizards.add_visual import MESH_TYPES
+    from pymolviz.wizards.add_visual import (
+        ADD_VISUAL_BUTTON,
+        ADD_VISUAL_LABEL,
+        MESH_TYPES,
+    )
 
     names = [entry[0] for entry in MESH_TYPES]
     assert names == ["Spheres", "Boxes", "Surface", "Arrows"]
@@ -133,3 +137,130 @@ def test_add_object_types_are_plural_without_lines():
     assert kind_by_name["Boxes"] == "Box"
     assert kind_by_name["Surface"] == "Surface"
     assert kind_by_name["Arrows"] == "Arrows"
+    icons = [entry[3] for entry in MESH_TYPES]
+    assert icons == ["sphere", "cube", "surface", "arrow"]
+    hints = {entry[0]: entry[2] for entry in MESH_TYPES}
+    assert "solid or wireframe" in hints["Spheres"].lower()
+    assert "line" in hints["Arrows"].lower()
+    assert "dash" in hints["Arrows"].lower()
+    assert ADD_VISUAL_LABEL == "Add Visual"
+    assert ADD_VISUAL_BUTTON == "+ Add Visual"
+
+
+def test_type_icon_pixmap_skips_without_qt():
+    from pymolviz.wizards.widgets.type_icons import type_icon_pixmap
+
+    assert type_icon_pixmap("sphere", None, None) is None
+    from pymolviz.wizards.widgets.type_icons import action_icon_pixmap, source_icon_pixmap
+
+    assert source_icon_pixmap("camera", None, None) is None
+    assert action_icon_pixmap("trash", None, None) is None
+
+
+def test_library_empty_state_copy():
+    from pymolviz.wizards.add_visual import (
+        EMPTY_LIBRARY_HINT,
+        EMPTY_LIBRARY_TITLE,
+        library_shows_empty_state,
+    )
+
+    assert library_shows_empty_state(0) is True
+    assert library_shows_empty_state(1) is False
+    assert EMPTY_LIBRARY_TITLE == "No visual objects yet"
+    assert "spheres" in EMPTY_LIBRARY_HINT.lower()
+    assert "boxes" in EMPTY_LIBRARY_HINT.lower()
+    assert "surfaces" in EMPTY_LIBRARY_HINT.lower()
+    assert "arrows" in EMPTY_LIBRARY_HINT.lower()
+
+
+def test_library_list_columns_are_actionable():
+    from pymolviz.wizards.add_visual import OBJECT_COLUMNS
+
+    assert OBJECT_COLUMNS == ("Name", "Type", "Visible", "Actions")
+
+
+def test_field_visuals_library_copy_and_types():
+    from pymolviz.wizards.field_visuals import (
+        ADD_FIELD_BUTTON,
+        ADD_FIELD_LABEL,
+        ADD_VISUAL_BUTTON,
+        EMPTY_LIBRARY_HINT,
+        EMPTY_LIBRARY_TITLE,
+        FIELD_ADD_VISUAL_SPAN,
+        FIELD_COLUMNS,
+        FIELD_SOURCES,
+        FIELD_VISUAL_TYPES,
+        LIBRARY_ROW_MIN_HEIGHT,
+        library_shows_empty_state,
+    )
+
+    assert library_shows_empty_state(0) is True
+    assert library_shows_empty_state(1) is False
+    assert EMPTY_LIBRARY_TITLE == "No fields yet"
+    assert "pymol" in EMPTY_LIBRARY_HINT.lower()
+    assert FIELD_COLUMNS == (
+        "Name",
+        "Kind",
+        "Used by / Geometry",
+        "Visible",
+        "Edit",
+        "Delete",
+    )
+    assert FIELD_ADD_VISUAL_SPAN == 3
+    assert LIBRARY_ROW_MIN_HEIGHT >= 32
+    assert ADD_FIELD_LABEL == "Add Field"
+    assert ADD_FIELD_BUTTON == "+ Add Field"
+    assert ADD_VISUAL_BUTTON == "+ Add Visual"
+    from pymolviz.wizards.widgets.catalog_chrome import (
+        ADD_FIELD_STYLE,
+        ADD_VISUAL_STYLE,
+        CATALOG_PRIMARY,
+        CATALOG_SELECTED,
+        library_row_fill,
+    )
+    from pymolviz.wizards.catalog import KIND_FIELD, KIND_VISUAL, NEST_LINE_RGB
+
+    assert CATALOG_PRIMARY == (42, 130, 236)
+    assert "42, 130, 236" in ADD_FIELD_STYLE
+    assert "dashed" in ADD_VISUAL_STYLE
+    assert library_row_fill(KIND_FIELD, selected=True) == CATALOG_SELECTED
+    assert library_row_fill(KIND_FIELD, selected=False) == (255, 255, 255)
+    assert library_row_fill(KIND_VISUAL, selected=True) == (255, 255, 255)
+    assert abs(NEST_LINE_RGB[0] - NEST_LINE_RGB[1]) < 20
+    assert NEST_LINE_RGB[2] < 220
+    sources = [entry[1] for entry in FIELD_SOURCES]
+    assert sources == ["from_selection", "map", "xyz", "orca", "mtz", "derived"]
+    from pymolviz.wizards.field_visuals import DISABLED_FIELD_SOURCES
+    assert "derived" in DISABLED_FIELD_SOURCES
+    kinds = [entry[1] for entry in FIELD_VISUAL_TYPES]
+    assert kinds == ["Volume", "IsoVolume", "IsoSurface", "IsoMesh"]
+    icons = [entry[3] for entry in FIELD_VISUAL_TYPES]
+    assert "volume" in icons
+    assert "isomesh" in icons
+
+
+def test_field_breadcrumb_paths():
+    from pymolviz.wizards.widgets.breadcrumb import (
+        CRUMB_ADD_FIELD,
+        CRUMB_ADD_OBJECT,
+        CRUMB_FIELDS,
+        CRUMB_FROM_SELECTION,
+        CRUMB_VOLUME,
+        breadcrumb_text,
+        create_field_crumbs,
+        create_field_visual_crumbs,
+        edit_field_crumbs,
+    )
+
+    assert CRUMB_FIELDS == "Fields"
+    assert CRUMB_ADD_FIELD == "Add Field"
+    assert CRUMB_FROM_SELECTION == "From Selection"
+    assert breadcrumb_text(create_field_crumbs(CRUMB_FROM_SELECTION)) == (
+        "%s › %s › %s" % (CRUMB_FIELDS, CRUMB_ADD_FIELD, CRUMB_FROM_SELECTION)
+    )
+    assert breadcrumb_text(create_field_visual_crumbs(CRUMB_VOLUME)) == (
+        "%s › %s › %s" % (CRUMB_FIELDS, CRUMB_ADD_OBJECT, CRUMB_VOLUME)
+    )
+    assert breadcrumb_text(edit_field_crumbs("density", CRUMB_VOLUME)) == (
+        "%s › %s › %s" % (CRUMB_FIELDS, "density", CRUMB_VOLUME)
+    )

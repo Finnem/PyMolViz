@@ -3,6 +3,8 @@ from ..Displayable import Displayable
 from ..meshes.Points import Points
 
 class GridData(Displayable):
+    renders_cgo = False
+
     def __init__(self, values, positions = None, step_sizes = None, step_counts = None, origin = None, name = None):
         """ Represents regular 3-dimensional data. Either positions or step_size and step_count must be given.
 
@@ -289,13 +291,17 @@ cmd.set_object_ttt("{self.name}", {list(self.A_to.flatten())})
 """
         return result
 
-    def load(self):
-        from pymol import cmd
-        from chempy.brick import Brick
+    def load(self, cmd=None):
+        if cmd is None:
+            from pymol import cmd
         if not self.is_loaded:
             cmd.delete(self.name)
             values = self.values.reshape(self.step_counts.astype(int) + 1)
-            brick = Brick.from_numpy(values, self.step_sizes, origin=self.origin)
+            try:
+                from chempy.brick import Brick
+                brick = Brick.from_numpy(values, self.step_sizes, origin=self.origin)
+            except Exception:
+                brick = self
             cmd.load_brick(brick, self.name)
             cmd.set("volume_mode", 0)
             cmd.set_object_ttt(self.name, list(self.A_to.flatten()))

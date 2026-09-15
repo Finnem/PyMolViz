@@ -123,6 +123,22 @@ def test_points_from_pair_rows_skips_pending_end():
     assert len(pts) == 1
 
 
+def test_take_selection_endpoints_ignores_pk1_when_interactive_only(fake_cmd):
+    from pymolviz.wizards.builders.pairs import take_selection_endpoints
+    from tests.fakes.cmd import FakeAtom
+
+    fake_cmd.add_atom(FakeAtom("prot", 1, 0.0, 0.0, 0.0, chain="A", resi="42", name="CA"))
+    fake_cmd.select("pk1", 'object "prot" and id 1')
+    fake_cmd.select("sele", "none")
+
+    start, end, status = take_selection_endpoints(fake_cmd, interactive_only=True)
+    assert status == "empty"
+    assert start is None and end is None
+
+    start, end, status = take_selection_endpoints(fake_cmd, interactive_only=False)
+    assert status == "one"
+
+
 def test_take_selection_endpoints_counts(fake_cmd):
     fake_cmd.add_atom(FakeAtom("prot", 1, 0.0, 0.0, 0.0, chain="A", resi="42", name="CA", elem="CA"))
     fake_cmd.add_atom(FakeAtom("prot", 2, 1.0, 0.0, 0.0, chain="A", resi="87", name="CA", elem="CA"))

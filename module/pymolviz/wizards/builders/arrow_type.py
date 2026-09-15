@@ -7,16 +7,18 @@ from typing import Callable, Optional, Tuple
 from ...util.line_style import DASH_PRESETS, HEAD_STYLES, LineStyle, MAX_ARROW_MARGIN
 from ..pick import qt_modules
 from ..tooltips import apply_required_tooltips
+from ..widgets.theme import INK, PRIMARY, ROW, SELECTED, qcolor
 
 ARROW_TYPE_TIP = (
-    "Collection style. Drag the ticks to inset both ends, click the shaft to "
+    "Collection style. Drag each tick to inset that end, click the shaft to "
     "choose a dash, click a head to choose that end's cap."
 )
-CIRCLE_TIP = "Start point. The ticks slide away from the endpoints as margin grows."
+CIRCLE_TIP = "Start point. The nearby tick slides inward as that end's margin grows."
 SHAFT_TIP = "Click to choose a solid or dashed shaft."
 HEAD_START_TIP = "Click to choose the start cap: none, arrow, or circle."
 HEAD_END_TIP = "Click to choose the end cap: none, arrow, or circle."
-TICK_TIP = "Drag to inset the arrow from both endpoints (margin)."
+TICK0_TIP = "Drag to inset the start of the arrow (Å)."
+TICK1_TIP = "Drag to inset the end of the arrow (Å)."
 
 _PAD = 6.0
 _CIRCLE_R = 5.5
@@ -30,12 +32,14 @@ _HEAD_CIRCLE = 4.0
 _MIN_SHAFT = 4.0
 
 
-def arrow_type_geometry(width, height, margin, max_margin=MAX_ARROW_MARGIN):
+def arrow_type_geometry(
+    width, height, margin, max_margin=MAX_ARROW_MARGIN, end_margin=None,
+):
     """Pixel layout for the stylized ``o---->`` control.
 
     Circles at the ends are the *points* and stay put. Both head slots are
-    always reserved so each side is clickable. Ticks at the head tips slide
-    inward as margin grows.
+    always reserved so each side is clickable. Each tick slides inward with
+    that end's margin.
     """
     width = max(float(width), 1.0)
     height = max(float(height), 1.0)
@@ -51,10 +55,14 @@ def arrow_type_geometry(width, height, margin, max_margin=MAX_ARROW_MARGIN):
     )
     usable = max(inner, 1.0)
     cap = max(float(max_margin), 1e-9)
-    t = min(max(float(margin) / cap, 0.0), 1.0)
-    inset = t * usable * _MAX_INSET_FRAC
-    start_tip = circle_x + _CIRCLE_R + _END_GAP + inset
-    end_tip = end_x - _CIRCLE_R - _END_GAP - inset
+    start_m = float(margin)
+    end_m = start_m if end_margin is None else float(end_margin)
+    t0 = min(max(start_m / cap, 0.0), 1.0)
+    t1 = min(max(end_m / cap, 0.0), 1.0)
+    inset0 = t0 * usable * _MAX_INSET_FRAC
+    inset1 = t1 * usable * _MAX_INSET_FRAC
+    start_tip = circle_x + _CIRCLE_R + _END_GAP + inset0
+    end_tip = end_x - _CIRCLE_R - _END_GAP - inset1
     start_base = start_tip + _HEAD_LEN
     end_base = end_tip - _HEAD_LEN
     if end_base < start_base + _MIN_SHAFT:
@@ -98,10 +106,10 @@ def _near_tick(x, y, tx, tick_top, tick_bottom):
 
 
 def hit_arrow_type_part(
-    x, y, width, height, margin, max_margin=MAX_ARROW_MARGIN,
+    x, y, width, height, margin, max_margin=MAX_ARROW_MARGIN, end_margin=None,
 ) -> str:
     """Return ``tick0``, ``tick1``, ``circle``, ``shaft``, ``head_start``, ``head_end``, or empty."""
-    g = arrow_type_geometry(width, height, margin, max_margin)
+    g = arrow_type_geometry(width, height, margin, max_margin, end_margin=end_margin)
     y0 = g["y"]
     r_hit = g["circle_r"] + 1.5
     dx = float(x) - g["circle_x"]
@@ -229,16 +237,18 @@ class ArrowTypeControl:
         self._style = style.copy()
         self._widget.update()
 
-    def set_margin(self, margin: float):
-        self._style = self._style.updated(
-            margin=min(max(float(margin), 0.0), self._max_margin),
-        )
+    def set_margin(self, margin: float, end_margin=None):
+        start = min(max(float(margin), 0.0), self._max_margin)
+        end = start if end_margin is None else min(max(float(end_margin), 0.0), self._max_margin)
+        self._style = self._style.updated(start_margin=start, end_margin=end)
         self._widget.update()
 
     def set_max_margin(self, value: float):
         self._max_margin = max(float(value), 1e-9)
-        if self._style.margin > self._max_margin:
-            self._style = self._style.updated(margin=self._max_margin)
+        start = min(self._style.start_margin, self._max_margin)
+        end = min(self._style.end_margin, self._max_margin)
+        if start != self._style.start_margin or end != self._style.end_margin:
+            self._style = self._style.updated(start_margin=start, end_margin=end)
         self._widget.update()
 
     def _emit(self):
@@ -249,18 +259,22 @@ class ArrowTypeControl:
     def _geometry(self):
         rect = self._widget.rect()
         return arrow_type_geometry(
-            rect.width(), rect.height(), self._style.margin, self._max_margin,
+            rect.width(),
+            rect.height(),
+            self._style.start_margin,
+            self._max_margin,
+            end_margin=self._style.end_margin,
         )
 
     def _paint(self, event):
         QtCore, QtGui, _ = qt_modules()
         painter = QtGui.QPainter(self._widget)
         painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
-        painter.fillRect(self._widget.rect(), self._widget.palette().base())
+        painter.fillRect(self._widget.rect(), qcolor(QtGui, ROW))
         g = self._geometry()
         y = g["y"]
-        highlight = self._widget.palette().color(self._widget.palette().Highlight)
-        mid = self._widget.palette().color(self._widget.palette().Midlight)
+        highlight = qcolor(QtGui, PRIMARY)
+        mid = qcolor(QtGui, SELECTED)
         hover = self._hover
         for part, alpha in (("shaft", 28), ("head_start", 28), ("head_end", 28)):
             if hover == part:
@@ -272,7 +286,7 @@ class ArrowTypeControl:
             r, gch, b = self._color
             ink = QtGui.QColor(int(r * 255), int(gch * 255), int(b * 255))
         else:
-            ink = self._widget.palette().color(self._widget.palette().WindowText)
+            ink = qcolor(QtGui, INK)
         pen_w = max(1.6, min(4.0, self._width * 40.0))
         pen = QtGui.QPen(ink, pen_w)
         pen.setCapStyle(QtCore.Qt.FlatCap)
@@ -306,7 +320,7 @@ class ArrowTypeControl:
         for name in ("tick0", "tick1"):
             tx = g[name]
             painter.drawLine(int(tx), int(g["tick_top"] + knob), int(tx), int(min(g["y"], g["tick_bottom"])))
-            painter.setBrush(ink if hover == name else self._widget.palette().base())
+            painter.setBrush(ink if hover == name else qcolor(QtGui, ROW))
             painter.drawEllipse(QtCore.QPointF(tx, g["tick_top"] + knob), knob, knob)
 
         head_pen = QtGui.QPen(ink, 1.4)
@@ -314,7 +328,7 @@ class ArrowTypeControl:
         painter.setPen(head_pen)
         painter.setBrush(ink)
         painter.drawEllipse(QtCore.QPointF(g["circle_x"], y), g["circle_r"], g["circle_r"])
-        painter.setBrush(self._widget.palette().base())
+        painter.setBrush(qcolor(QtGui, ROW))
         painter.drawEllipse(QtCore.QPointF(g["end_circle_x"], y), g["circle_r"], g["circle_r"])
         painter.end()
 
@@ -365,7 +379,8 @@ class ArrowTypeControl:
         part = hit_arrow_type_part(
             x, y,
             self._widget.width(), self._widget.height(),
-            self._style.margin, self._max_margin,
+            self._style.start_margin, self._max_margin,
+            end_margin=self._style.end_margin,
         )
         if part in ("tick0", "tick1"):
             g = self._geometry()
@@ -393,11 +408,12 @@ class ArrowTypeControl:
         part = hit_arrow_type_part(
             x, y,
             self._widget.width(), self._widget.height(),
-            self._style.margin, self._max_margin,
+            self._style.start_margin, self._max_margin,
+            end_margin=self._style.end_margin,
         )
         tips = {
-            "tick0": TICK_TIP,
-            "tick1": TICK_TIP,
+            "tick0": TICK0_TIP,
+            "tick1": TICK1_TIP,
             "circle": CIRCLE_TIP,
             "shaft": SHAFT_TIP,
             "head_start": HEAD_START_TIP,
@@ -431,11 +447,14 @@ class ArrowTypeControl:
         args = (mapped, self._widget.width(), self._widget.height(), self._max_margin)
         if which == "tick1":
             margin = margin_from_tick1(*args)
+            if abs(margin - self._style.end_margin) < 1e-4:
+                return
+            self._style = self._style.updated(end_margin=margin)
         else:
             margin = margin_from_tick0(*args)
-        if abs(margin - self._style.margin) < 1e-4:
-            return
-        self._style = self._style.updated(margin=margin)
+            if abs(margin - self._style.start_margin) < 1e-4:
+                return
+            self._style = self._style.updated(start_margin=margin)
         self._emit()
 
     def _popup(self, event, items, on_pick, tooltip):

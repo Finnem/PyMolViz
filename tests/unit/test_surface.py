@@ -1,4 +1,4 @@
-"""SAS (Connolly), MC (marching-cubes SES), GAUSS (PyMOL Gaussian), and ASA surfaces."""
+"""SASA (Connolly), MC (marching-cubes SES), and GAUSS (PyMOL Gaussian) surfaces."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ import pytest
 from pymolviz.meshes.Surface import Surface
 from pymolviz.points import AtomPoint, FixedPoint
 from pymolviz.util.solvent_surface import (
-    ASA_FREQUENCY,
     DEFAULT_ATOM_RADIUS,
     DEFAULT_PROBE_RADIUS,
     _convex_cap_frequency,
@@ -17,14 +16,20 @@ from pymolviz.util.solvent_surface import (
     _fill_boundary_holes,
     _reduced_surface,
     _split_t_junctions,
+    _torus_n_phi_floor,
     _torus_n_theta,
     build_solvent_surface,
     edt_spacing,
     element_from_atom_name,
     expanded_radii,
+    gauss_spacing,
     normalize_algorithm,
     resolve_atom_radii,
+    sas_spacing,
     signed_distance,
+    confirm_heavy_surface_job,
+    estimate_surface_job,
+    format_heavy_surface_message,
     vdw_for_atom,
     vdw_for_element,
 )
@@ -77,8 +82,12 @@ def _triangle_cgo_corners(tokens):
 
 
 def test_normalize_algorithm():
-    assert normalize_algorithm("asa") == "ASA"
-    assert normalize_algorithm("SAS") == "SAS"
+    assert normalize_algorithm("asa") == "GAUSS"
+    assert normalize_algorithm("SAS") == "SASA"
+    assert normalize_algorithm("sasa") == "SASA"
+    assert normalize_algorithm("Solvent Accessible Surface") == "SASA"
+    assert normalize_algorithm("Gaussian Spheres") == "GAUSS"
+    assert normalize_algorithm("Marching Cubes") == "MC"
     assert normalize_algorithm("mc") == "MC"
     assert normalize_algorithm("cubes") == "MC"
     assert normalize_algorithm("marching-cubes") == "MC"
@@ -101,23 +110,10 @@ def test_empty_surface_has_no_geometry():
     assert mesh.faces.shape == (0, 3)
 
 
-def test_asa_single_sphere_verts_on_expanded_radius():
-    center = np.array([1.0, -2.0, 0.5])
-    atom_r, probe = 1.2, 1.4
-    mesh = Surface(
-        [center], atom_radius=atom_r, probe_radius=probe,
-        algorithm="ASA", quality=1, bypass_colormap=True,
-    )
-    assert mesh.vertices.shape[0] > 0
-    assert mesh.faces.shape[0] > 0
-    radii = np.linalg.norm(mesh.vertices - center, axis=1)
-    assert radii == pytest.approx(_r_exp(atom_r, probe), abs=1e-6)
-
-
 def test_sas_single_sphere_verts_on_atom_radius():
     center = np.zeros(3)
     mesh = Surface(
-        [center], algorithm="SAS", quality=1, bypass_colormap=True,
+        [center], algorithm="SASA", quality=1, bypass_colormap=True,
     )
     assert mesh.vertices.shape[0] > 0
     assert mesh.faces.shape[0] > 0
@@ -136,9 +132,9 @@ def test_sas_two_sphere_caps_use_template_icosphere():
 
     points = np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
     mesh = Surface(
-        points, algorithm="SAS", quality=3, bypass_colormap=True,
+        points, algorithm="SASA", quality=3, bypass_colormap=True,
     )
-    unit, _faces, _edges = geodesic_icosphere(_convex_cap_frequency(ASA_FREQUENCY[3]))
+    unit, _faces, _edges = geodesic_icosphere(_convex_cap_frequency(3))
     radius = DEFAULT_ATOM_RADIUS
     ico = unit * radius
     dist0 = np.linalg.norm(mesh.vertices - points[0], axis=1)
@@ -152,12 +148,96 @@ def test_sas_two_sphere_caps_use_template_icosphere():
 
 
 def test_convex_cap_frequency_ladder():
-    assert _convex_cap_frequency(2) == 12
-    assert _convex_cap_frequency(4) == 16
-    assert _convex_cap_frequency(8) == 20
-    assert _torus_n_theta(2) == 48
-    assert _torus_n_theta(4) == 64
-    assert _torus_n_theta(8) == 80
+    assert _convex_cap_frequency(1) == 4
+    assert _convex_cap_frequency(3) == 12
+    assert _convex_cap_frequency(5) == 16
+    assert _torus_n_theta(1) == 16
+    assert _torus_n_theta(3) == 48
+    assert _torus_n_theta(5) == 64
+    assert _torus_n_phi_floor(1) == 4
+    assert _torus_n_phi_floor(3) == 8
+    assert _torus_n_phi_floor(5) == 32
+    assert sas_spacing(3) == pytest.approx(0.90)
+    assert sas_spacing(5) == pytest.approx(0.45)
+    assert edt_spacing(1, DEFAULT_PROBE_RADIUS) == pytest.approx(0.325)
+    assert edt_spacing(2, DEFAULT_PROBE_RADIUS) == pytest.approx(0.225)
+    assert edt_spacing(3, DEFAULT_PROBE_RADIUS) == pytest.approx(0.16)
+    assert edt_spacing(4, DEFAULT_PROBE_RADIUS) == pytest.approx(0.11)
+    assert edt_spacing(5, DEFAULT_PROBE_RADIUS) == pytest.approx(0.075)
+    assert gauss_spacing(1) == pytest.approx(0.325)
+    assert gauss_spacing(2) == pytest.approx(0.225)
+    assert gauss_spacing(3) == pytest.approx(0.16)
+    assert gauss_spacing(4) == pytest.approx(0.11)
+    assert gauss_spacing(5) == pytest.approx(0.075)
+
+
+def test_estimate_surface_job_small_gauss_is_not_heavy():
+    points = np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
+    job = estimate_surface_job(points, "GAUSS", 1)
+    assert job["n_atoms"] == 2
+    assert job["heavy"] is False
+    action, _fp = confirm_heavy_surface_job(job)
+    assert action == "allow"
+
+
+def test_estimate_surface_job_many_atoms_fine_grid_asks_once():
+    rng = np.random.default_rng(0)
+    points = rng.uniform(0.0, 40.0, size=(800, 3))
+    job = estimate_surface_job(points, "GAUSS", 5)
+    assert job["heavy"] is True
+    assert job["voxels"] > 0
+    action, fingerprint = confirm_heavy_surface_job(job)
+    assert action == "ask"
+    assert confirm_heavy_surface_job(job, previous_ok=fingerprint)[0] == "allow"
+    assert confirm_heavy_surface_job(job, previous_denied=fingerprint)[0] == "deny"
+    text = format_heavy_surface_message(job)
+    assert "Gaussian Spheres" in text
+    assert "quality 5" in text
+    assert "800 points" in text
+    assert "Build it anyway" in text
+    assert "will not respond" in text
+
+
+def test_estimate_surface_job_large_brick_is_heavy_even_if_seconds_look_short():
+    rng = np.random.default_rng(0)
+    points = rng.uniform(0.0, 30.0, size=(200, 3))
+    job = estimate_surface_job(points, "GAUSS", 3)
+    assert job["voxels"] >= 4_000_000
+    assert job["heavy"] is True
+
+
+def test_estimate_surface_job_sasa_scales_with_quality():
+    points = np.array([[float(i), 0.0, 0.0] for i in range(80)])
+    draft = estimate_surface_job(points, "SASA", 1)
+    fine = estimate_surface_job(points, "SASA", 5)
+    assert fine["seconds"] > draft["seconds"]
+    assert fine["heavy"] is True
+    assert draft["voxels"] == 0
+
+
+def test_sas_quality_ladder_reduces_faces():
+    points = [(0.0, 0.0, 0.0), (2.0, 0.0, 0.0)]
+    n1 = Surface(points, algorithm="SASA", quality=1, bypass_colormap=True).faces.shape[0]
+    n3 = Surface(points, algorithm="SASA", quality=3, bypass_colormap=True).faces.shape[0]
+    n5 = Surface(points, algorithm="SASA", quality=5, bypass_colormap=True).faces.shape[0]
+    assert n1 * 2 <= n3
+    assert n3 <= n5
+
+
+def test_sas_quality_one_torus_is_not_overmeshed():
+    """Probe fillets must not dwarf the VDW caps at draft quality."""
+    points = np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
+    mesh = Surface(points, algorithm="SASA", quality=1, bypass_colormap=True)
+    p0 = mesh.vertices[mesh.faces[:, 0]]
+    p1 = mesh.vertices[mesh.faces[:, 1]]
+    p2 = mesh.vertices[mesh.faces[:, 2]]
+    cent = (p0 + p1 + p2) / 3.0
+    sdf = signed_distance(cent, points, np.full(2, DEFAULT_ATOM_RADIUS))
+    torus = int(np.count_nonzero(sdf > 0.05))
+    cap = int(np.count_nonzero(sdf < 0.02))
+    assert cap >= 8
+    assert torus < 4 * cap
+    assert torus < 400
 
 
 def test_msms_reduced_surface_one_two_three_spheres():
@@ -186,7 +266,7 @@ def test_msms_reduced_surface_one_two_three_spheres():
 def test_sas_overlapping_verts_lie_between_vdw_and_accessible():
     points = np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
     mesh = Surface(
-        points, algorithm="SAS", quality=1, bypass_colormap=True,
+        points, algorithm="SASA", quality=1, bypass_colormap=True,
     )
     sas_r = expanded_radii(DEFAULT_ATOM_RADIUS, 2, DEFAULT_PROBE_RADIUS)
     vdw_r = sas_r - DEFAULT_PROBE_RADIUS
@@ -345,19 +425,19 @@ def test_drop_overcovered_edge_faces_keeps_two_largest():
 def test_sas_overlapping_mesh_has_no_small_boundary_holes():
     two = Surface(
         [(0.0, 0.0, 0.0), (2.0, 0.0, 0.0)],
-        algorithm="SAS", quality=1, bypass_colormap=True,
+        algorithm="SASA", quality=1, bypass_colormap=True,
     )
     assert two.faces.shape[0] > 0
     assert _boundary_edge_count(two.faces) == 0
     two_hi = Surface(
         [(0.0, 0.0, 0.0), (2.0, 0.0, 0.0)],
-        algorithm="SAS", quality=3, bypass_colormap=True,
+        algorithm="SASA", quality=3, bypass_colormap=True,
     )
     assert two_hi.faces.shape[0] > 0
     assert _boundary_edge_count(two_hi.faces) == 0
     three = Surface(
         [(0.0, 0.0, 0.0), (2.0, 0.0, 0.0), (1.0, float(np.sqrt(3.0)), 0.0)],
-        algorithm="SAS", quality=1, bypass_colormap=True,
+        algorithm="SASA", quality=1, bypass_colormap=True,
     )
     assert three.faces.shape[0] > 0
     assert _boundary_edge_count(three.faces) == 0
@@ -372,7 +452,7 @@ def test_sas_overlapping_mesh_is_manifold_without_duplicate_faces():
     )
     for points, quality in samples:
         mesh = Surface(
-            points, algorithm="SAS", quality=quality, bypass_colormap=True,
+            points, algorithm="SASA", quality=quality, bypass_colormap=True,
         )
         assert mesh.faces.shape[0] > 0
         keys = np.sort(np.asarray(mesh.faces, dtype=int), axis=1)
@@ -389,7 +469,7 @@ def test_sas_cluster_is_watertight_without_interior_chords():
         [5.6, 2.3, 0.1], [3.0, -0.9, 0.4],
     ])
     mesh = Surface(
-        points, algorithm="SAS", quality=3, bypass_colormap=True,
+        points, algorithm="SASA", quality=3, bypass_colormap=True,
         atom_radius=1.7, probe_radius=1.4, radius_mode="uniform",
     )
     assert mesh.faces.shape[0] > 200
@@ -444,7 +524,7 @@ def _adjacent_face_normal_dots(verts, faces):
 def test_sas_triangles_are_not_extremely_skinny():
     mesh = Surface(
         [(0.0, 0.0, 0.0), (2.0, 0.0, 0.0), (1.0, float(np.sqrt(3.0)), 0.0)],
-        algorithm="SAS", quality=3, bypass_colormap=True,
+        algorithm="SASA", quality=3, bypass_colormap=True,
     )
     p0 = mesh.vertices[mesh.faces[:, 0]]
     p1 = mesh.vertices[mesh.faces[:, 1]]
@@ -465,7 +545,7 @@ def test_sas_contact_band_has_bounded_valence():
     """Cap/torus density jump must not create a high-valence Phong knot."""
     mesh = Surface(
         [(0.0, 0.0, 0.0), (2.0, 0.0, 0.0)],
-        algorithm="SAS", quality=3, bypass_colormap=True,
+        algorithm="SASA", quality=3, bypass_colormap=True,
     )
     val = _vertex_face_valence(mesh.faces, len(mesh.vertices))
     assert int(val.max()) <= 12
@@ -475,7 +555,7 @@ def test_sas_vdw_cap_is_not_folded():
     """A two-sphere VDW cap must not crumple (opposite adjacent face normals)."""
     points = np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
     mesh = Surface(
-        points, algorithm="SAS", quality=3, bypass_colormap=True,
+        points, algorithm="SASA", quality=3, bypass_colormap=True,
     )
     dots, mids = _adjacent_face_normal_dots(mesh.vertices, mesh.faces)
     assert dots.size
@@ -508,7 +588,7 @@ def test_split_t_junctions_uses_hanging_vertex():
 def test_sas_mesh_has_no_t_junctions():
     mesh = Surface(
         [(0.0, 0.0, 0.0), (2.0, 0.0, 0.0), (1.0, float(np.sqrt(3.0)), 0.0)],
-        algorithm="SAS", quality=3, bypass_colormap=True,
+        algorithm="SASA", quality=3, bypass_colormap=True,
     )
     again_v, again_f = _split_t_junctions(mesh.vertices, mesh.faces)
     assert len(again_f) == len(mesh.faces)
@@ -522,7 +602,7 @@ def test_sas_contact_circle_has_no_spike_faces():
         [5.6, 2.3, 0.1], [3.0, -0.9, 0.4],
     ])
     mesh = Surface(
-        points, algorithm="SAS", quality=3, bypass_colormap=True,
+        points, algorithm="SASA", quality=5, bypass_colormap=True,
         atom_radius=1.7, probe_radius=1.4, radius_mode="uniform",
     )
     verts = np.asarray(mesh.vertices, dtype=float)
@@ -544,7 +624,7 @@ def test_sas_contact_circle_has_no_spike_faces():
         if len(fis) != 2:
             continue
         s0, s1 = float(sdf[fis[0]]), float(sdf[fis[1]])
-        if abs(s0 - s1) < 0.02:
+        if abs(s0 - s1) < 0.004:
             continue
         if min(s0, s1) > 0.05 or max(s0, s1) < 0.0:
             continue
@@ -616,7 +696,7 @@ def test_sas_faces_have_consistent_outward_winding():
     )
     for points, quality, point_radii in samples:
         mesh = Surface(
-            points, algorithm="SAS", quality=quality, bypass_colormap=True,
+            points, algorithm="SASA", quality=quality, bypass_colormap=True,
             point_radii=point_radii, atom_radius=1.0,
         )
         assert mesh.faces.shape[0] > 0
@@ -639,7 +719,7 @@ def test_sas_faces_have_consistent_outward_winding():
 def test_sas_cgo_normals_match_triangle_winding():
     mesh = Surface(
         [(0.0, 0.0, 0.0), (2.0, 0.0, 0.0), (1.0, 1.7, 0.0)],
-        algorithm="SAS", quality=1, bypass_colormap=True,
+        algorithm="SASA", quality=1, bypass_colormap=True,
         point_radii=[1.70, 1.55, 1.52], atom_radius=1.0,
     )
     tokens = mesh._create_CGO_list()
@@ -665,7 +745,7 @@ def test_sas_cgo_normals_match_triangle_winding():
 def test_sas_normals_follow_rolling_ball():
     points = np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
     mesh = Surface(
-        points, algorithm="SAS", quality=3, bypass_colormap=True,
+        points, algorithm="SASA", quality=5, bypass_colormap=True,
     )
     sas_r = expanded_radii(DEFAULT_ATOM_RADIUS, 2, DEFAULT_PROBE_RADIUS)
     vdw_r = sas_r - DEFAULT_PROBE_RADIUS
@@ -706,7 +786,7 @@ def test_sas_normals_follow_rolling_ball():
 def test_sas_cap_triangle_normals_are_smooth_not_faceted():
     mesh = Surface(
         [(0.0, 0.0, 0.0), (2.0, 0.0, 0.0)],
-        algorithm="SAS", quality=3, bypass_colormap=True,
+        algorithm="SASA", quality=5, bypass_colormap=True,
     )
     points = np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
     sdf = signed_distance(mesh.vertices, points, np.full(2, DEFAULT_ATOM_RADIUS))
@@ -768,13 +848,13 @@ def test_sas_phong_interpolation_stays_in_lobe():
         [5.6, 2.3, 0.1], [3.0, -0.9, 0.4],
     ]
     samples = (
-        ([(0.0, 0.0, 0.0), (2.0, 0.0, 0.0)], 3, {}),
-        ([(0.0, 0.0, 0.0), (2.0, 0.0, 0.0), (1.0, float(np.sqrt(3.0)), 0.0)], 3, {}),
-        (cluster, 3, {"atom_radius": 1.7, "radius_mode": "uniform"}),
+        ([(0.0, 0.0, 0.0), (2.0, 0.0, 0.0)], 5, {}),
+        ([(0.0, 0.0, 0.0), (2.0, 0.0, 0.0), (1.0, float(np.sqrt(3.0)), 0.0)], 5, {}),
+        (cluster, 5, {"atom_radius": 1.7, "radius_mode": "uniform"}),
     )
     for points, quality, extra in samples:
         mesh = Surface(
-            points, algorithm="SAS", quality=quality, bypass_colormap=True,
+            points, algorithm="SASA", quality=quality, bypass_colormap=True,
             **extra,
         )
         dots = _min_face_normal_dots(mesh)
@@ -801,7 +881,7 @@ def test_sas_contact_circle_normals_follow_curvature():
     """
     mesh = Surface(
         [(0.0, 0.0, 0.0), (2.0, 0.0, 0.0)],
-        algorithm="SAS", quality=3, bypass_colormap=True,
+        algorithm="SASA", quality=5, bypass_colormap=True,
     )
     points = np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
     vdw = np.full(2, DEFAULT_ATOM_RADIUS)
@@ -845,7 +925,7 @@ def test_sas_two_sphere_contact_rim_has_no_near_duplicates():
 
     points = np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
     mesh = Surface(
-        points, algorithm="SAS", quality=3, bypass_colormap=True,
+        points, algorithm="SASA", quality=3, bypass_colormap=True,
     )
     sdf = signed_distance(
         mesh.vertices, points, np.full(2, DEFAULT_ATOM_RADIUS),
@@ -861,7 +941,7 @@ def test_sas_unequal_radii_vertices_lie_between_vdw_and_accessible():
     point_radii = [1.70, 1.55, 1.52]
     probe = 1.4
     mesh = Surface(
-        points, algorithm="SAS", quality=1, bypass_colormap=True,
+        points, algorithm="SASA", quality=1, bypass_colormap=True,
         point_radii=point_radii, atom_radius=1.0, probe_radius=probe,
     )
     sas_r = np.asarray(point_radii, dtype=float) + probe
@@ -876,7 +956,7 @@ def test_sas_unequal_radii_vertices_lie_between_vdw_and_accessible():
 def test_sas_two_sphere_saddle_is_probe_torus():
     points = np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
     mesh = Surface(
-        points, algorithm="SAS", quality=1, bypass_colormap=True,
+        points, algorithm="SASA", quality=1, bypass_colormap=True,
     )
     sas_r = expanded_radii(DEFAULT_ATOM_RADIUS, 2, DEFAULT_PROBE_RADIUS)
     vdw_r = sas_r - DEFAULT_PROBE_RADIUS
@@ -892,13 +972,37 @@ def test_sas_two_sphere_saddle_is_probe_torus():
     assert float(np.median(np.abs(dist_circle - DEFAULT_PROBE_RADIUS))) < 0.12
 
 
+def test_sas_overlapping_saddle_is_not_a_vdw_crease():
+    """A rolling probe must leave a torus fillet, not the VDW sphere-sphere crease.
+
+    Laplacian smoothing that froze only the caps used to chord that fillet
+    into a V-groove Phong draws as a dark saddle stitch.
+    """
+    points = np.array([[0.0, 0.0, 0.0], [2.2, 0.0, 0.0]])
+    atom_r = 1.7
+    probe = 1.4
+    mesh = Surface(
+        points, algorithm="SASA", quality=3, bypass_colormap=True,
+        atom_radius=atom_r, probe_radius=probe, radius_mode="uniform",
+    )
+    vdw = np.full(2, atom_r)
+    sdf = signed_distance(mesh.vertices, points, vdw)
+    assert float(np.max(sdf)) > 0.10
+    mid = 1.1
+    band = np.abs(mesh.vertices[:, 0] - mid) < 0.15
+    assert int(np.count_nonzero(band)) >= 4
+    r_band = np.linalg.norm(np.asarray(mesh.vertices, dtype=float)[band][:, 1:3], axis=1)
+    vdw_crease_r = float(np.sqrt(max(atom_r * atom_r - mid * mid, 0.0)))
+    assert float(np.median(r_band)) > vdw_crease_r + 0.10
+
+
 def test_sas_three_sphere_valley_is_probe_sphere():
     points = np.array([
         [0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [1.0, float(np.sqrt(3.0)), 0.0],
     ])
     probe = DEFAULT_PROBE_RADIUS
     mesh = Surface(
-        points, algorithm="SAS", quality=3, bypass_colormap=True,
+        points, algorithm="SASA", quality=3, bypass_colormap=True,
     )
     sas_r = expanded_radii(DEFAULT_ATOM_RADIUS, 3, probe)
     vdw_r = sas_r - probe
@@ -926,7 +1030,7 @@ def test_sas_cluster_wraps_each_atom():
         [5.6, 2.3, 0.1], [3.0, -0.9, 0.4],
     ])
     mesh = Surface(
-        points, algorithm="SAS", quality=1, bypass_colormap=True,
+        points, algorithm="SASA", quality=1, bypass_colormap=True,
         atom_radius=1.7, probe_radius=1.4, radius_mode="uniform",
     )
     assert mesh.faces.shape[0] > 200
@@ -944,58 +1048,15 @@ def test_sas_overlapping_vertices_are_uniquely_welded():
     )
     for points, quality in samples:
         mesh = Surface(
-            points, algorithm="SAS", quality=quality, bypass_colormap=True,
+            points, algorithm="SASA", quality=quality, bypass_colormap=True,
         )
         keys = np.round(np.asarray(mesh.vertices, dtype=float), 5)
         assert len(np.unique(keys, axis=0)) == len(mesh.vertices)
 
 
-def test_asa_overlapping_spheres_meet_at_intersection():
-    c0 = np.array([0.0, 0.0, 0.0])
-    c1 = np.array([2.0, 0.0, 0.0])
-    radius = _r_exp()
-    isolated = Surface(
-        [c0], algorithm="ASA", quality=1, bypass_colormap=True,
-    )
-    mesh = Surface(
-        [c0, c1], algorithm="ASA", quality=1, bypass_colormap=True,
-    )
-    assert mesh.vertices.shape[0] < 2 * isolated.vertices.shape[0]
-    dist0 = np.linalg.norm(mesh.vertices - c0, axis=1)
-    dist1 = np.linalg.norm(mesh.vertices - c1, axis=1)
-    assert np.all(dist0 >= radius - 1e-3)
-    assert np.all(dist1 >= radius - 1e-3)
-    circle_center = np.array([1.0, 0.0, 0.0])
-    circle_radius = float(np.sqrt(radius * radius - 1.0))
-    on_plane = np.abs(mesh.vertices[:, 0] - 1.0) < 0.04
-    on_ring = np.abs(np.linalg.norm(mesh.vertices - circle_center, axis=1) - circle_radius) < 0.04
-    assert int(np.count_nonzero(on_plane & on_ring)) >= 6
-    assert mesh.faces.shape[0] > isolated.faces.shape[0] // 2
-
-
-def test_asa_triple_intersection_keeps_junction():
-    radius = _r_exp()
-    c0 = np.zeros(3)
-    c1 = np.array([2.0, 0.0, 0.0])
-    c2 = np.array([1.0, np.sqrt(3.0), 0.0])
-    mesh = Surface(
-        [c0, c1, c2], algorithm="ASA", quality=2, bypass_colormap=True,
-    )
-    assert mesh.vertices.shape[0] > 0
-    assert mesh.faces.shape[0] > 12
-    for center in (c0, c1, c2):
-        assert np.all(np.linalg.norm(mesh.vertices - center, axis=1) >= radius - 1e-3)
-    centroid = (c0 + c1 + c2) / 3.0
-    height = float(np.sqrt(radius * radius - np.dot(centroid - c0, centroid - c0)))
-    for sign in (1.0, -1.0):
-        triple = centroid + np.array([0.0, 0.0, sign * height])
-        nearest = float(np.min(np.linalg.norm(mesh.vertices - triple, axis=1)))
-        assert nearest < 0.35
-
-
 def test_surface_cgo_is_triangle_mesh():
     mesh = Surface(
-        [(0.0, 0.0, 0.0)], algorithm="ASA", quality=1, bypass_colormap=True,
+        [(0.0, 0.0, 0.0)], algorithm="GAUSS", quality=1, bypass_colormap=True,
     )
     tokens = mesh._create_CGO_list()
     kinds = [t for t in tokens if isinstance(t, str)]
@@ -1015,7 +1076,7 @@ def test_sas_wireframe_cgo_uses_unique_cones():
     from pymolviz.meshes.Mesh import _unique_undirected_edges
 
     mesh = Surface(
-        [(0.0, 0.0, 0.0)], algorithm="SAS", quality=1,
+        [(0.0, 0.0, 0.0)], algorithm="SASA", quality=1,
         color=(0.2, 0.6, 0.9), bypass_colormap=True, wireframe=True,
     )
     tokens = mesh._create_CGO_list()
@@ -1029,7 +1090,7 @@ def test_sas_wireframe_cgo_uses_unique_cones():
 
 def test_build_surface_collection_wireframe():
     pts = [_point("a", (0.0, 0.0, 0.0))]
-    coll = build_surface_collection(pts, 1.5, 1.4, "SAS", 1, True, "pmv_surface")
+    coll = build_surface_collection(pts, 1.5, 1.4, "SASA", 1, True, "pmv_surface")
     tokens = coll._create_CGO_list()
     kinds = [t for t in tokens if isinstance(t, str)]
     assert "CONE" in kinds
@@ -1039,7 +1100,7 @@ def test_build_surface_collection_wireframe():
 def test_surface_rebuild_follows_fixed_and_atom_points():
     mesh = Surface(
         [FixedPoint((0.0, 0.0, 0.0))],
-        algorithm="ASA", quality=1, bypass_colormap=True,
+        algorithm="GAUSS", quality=1, bypass_colormap=True,
     )
     before = np.array(mesh.vertices, copy=True)
     mesh.point_sources = [FixedPoint((5.0, 0.0, 0.0))]
@@ -1056,22 +1117,22 @@ def test_surface_rebuild_follows_fixed_and_atom_points():
 def test_retarget_surface_collection_rejects_algorithm_change():
     points = [_point("a", (0.0, 0.0, 0.0))]
     coll = build_surface_collection(
-        points, 1.5, 1.4, "SAS", 1, False, "pmv_surface",
+        points, 1.5, 1.4, "SASA", 1, False, "pmv_surface",
     )
-    assert retarget_surface_collection(coll, points, 1.5, 1.4, "SAS", 1, False)
-    assert not retarget_surface_collection(coll, points, 1.5, 1.4, "ASA", 1, False)
+    assert retarget_surface_collection(coll, points, 1.5, 1.4, "SASA", 1, False)
+    assert not retarget_surface_collection(coll, points, 1.5, 1.4, "MC", 1, False)
     moved = [_point("a", (4.0, 0.0, 0.0))]
-    assert not retarget_surface_collection(coll, moved, 1.5, 1.4, "SAS", 1, False)
+    assert not retarget_surface_collection(coll, moved, 1.5, 1.4, "SASA", 1, False)
     custom = [_point("a", (0.0, 0.0, 0.0))]
     custom[0] = custom[0].with_radius(2.0)
-    assert not retarget_surface_collection(coll, custom, 1.5, 1.4, "SAS", 1, False)
+    assert not retarget_surface_collection(coll, custom, 1.5, 1.4, "SASA", 1, False)
     recolored = [_point("a", (0.0, 0.0, 0.0), color=(0.0, 1.0, 0.0))]
     coll[0]._create_CGO_list()
     assert coll[0]._cached_cgo is not None
-    assert retarget_surface_collection(coll, recolored, 1.5, 1.4, "SAS", 1, False)
+    assert retarget_surface_collection(coll, recolored, 1.5, 1.4, "SASA", 1, False)
     assert np.allclose(np.asarray(coll[0].color, dtype=float).reshape(-1)[:3], (0.0, 1.0, 0.0))
     assert coll[0]._cached_cgo is None
-    assert retarget_surface_collection(coll, recolored, 1.5, 1.4, "SAS", 1, True)
+    assert retarget_surface_collection(coll, recolored, 1.5, 1.4, "SASA", 1, True)
     assert coll[0].wireframe is True
     kinds = [t for t in coll[0]._create_CGO_list() if isinstance(t, str)]
     assert "CONE" in kinds
@@ -1112,31 +1173,82 @@ def test_resolve_atom_radii_uniform_vdw_and_override():
     assert custom[2] == pytest.approx(1.5)
 
 
-def test_asa_per_point_radii_use_expanded_spheres():
-    mesh = Surface(
-        [(0.0, 0.0, 0.0), (8.0, 0.0, 0.0)],
-        atom_radius=1.5,
-        probe_radius=1.4,
-        point_radii=[1.0, 2.0],
-        algorithm="ASA",
-        quality=1,
-        bypass_colormap=True,
-    )
-    r0 = 1.0 + 1.4
-    r1 = 2.0 + 1.4
-    dist0 = np.linalg.norm(mesh.vertices - np.array([0.0, 0.0, 0.0]), axis=1)
-    dist1 = np.linalg.norm(mesh.vertices - np.array([8.0, 0.0, 0.0]), axis=1)
-    assert np.any(np.abs(dist0 - r0) < 1e-3)
-    assert np.any(np.abs(dist1 - r1) < 1e-3)
-    assert np.all((np.abs(dist0 - r0) < 1e-3) | (np.abs(dist1 - r1) < 1e-3))
-
 
 def test_vdw_mode_single_atom_uses_element_radius():
     src = AtomPoint("prot", 1, name="O", elem="O", last_xyz=(0.0, 0.0, 0.0))
     mesh = Surface(
         [src], atom_radius=1.5, probe_radius=1.4,
         radius_mode="vdw", vdw_scale=1.0,
-        algorithm="ASA", quality=1, bypass_colormap=True,
+        algorithm="SASA", quality=1, bypass_colormap=True,
     )
     radii = np.linalg.norm(mesh.vertices - np.zeros(3), axis=1)
-    assert radii == pytest.approx(vdw_for_element("O") + 1.4, abs=1e-6)
+    assert radii == pytest.approx(vdw_for_element("O"), abs=0.05)
+
+
+def test_build_surface_collection_per_point_colors():
+    pts = [
+        _point("a", (0.0, 0.0, 0.0), color=(1.0, 0.0, 0.0)),
+        _point("b", (6.0, 0.0, 0.0), color=(0.0, 0.0, 1.0)),
+    ]
+    coll = build_surface_collection(pts, 1.5, 1.4, "GAUSS", 1, False, "pmv_surface")
+    mesh = coll[0]
+    colors = np.asarray(mesh.color, dtype=float).reshape(-1, 3)
+    assert colors.shape[0] == mesh.vertices.shape[0]
+    unique = {tuple(np.round(row, 3)) for row in colors}
+    assert len(unique) > 1
+    verts = np.asarray(mesh.vertices, dtype=float)
+    dist_a = np.linalg.norm(verts - np.array([0.0, 0.0, 0.0]), axis=1)
+    dist_b = np.linalg.norm(verts - np.array([6.0, 0.0, 0.0]), axis=1)
+    mask_a = dist_a < dist_b
+    mask_b = dist_b < dist_a
+    if np.any(mask_a) and np.any(mask_b):
+        mean_a = colors[mask_a].mean(axis=0)
+        mean_b = colors[mask_b].mean(axis=0)
+        assert mean_a[0] > mean_b[0]
+        assert mean_b[2] > mean_a[2]
+    assert mesh.point_colors == [(1.0, 0.0, 0.0), (0.0, 0.0, 1.0)]
+
+
+def test_surface_rebuild_repaints_per_point_colors():
+    pts = [
+        _point("a", (0.0, 0.0, 0.0), color=(1.0, 0.0, 0.0)),
+        _point("b", (6.0, 0.0, 0.0), color=(0.0, 0.0, 1.0)),
+    ]
+    coll = build_surface_collection(pts, 1.5, 1.4, "GAUSS", 1, False, "pmv_surface")
+    mesh = coll[0]
+    mesh.rebuild(None)
+    colors = np.asarray(mesh.color, dtype=float).reshape(-1, 3)
+    assert colors.shape[0] == mesh.vertices.shape[0]
+    assert len({tuple(np.round(row, 3)) for row in colors}) > 1
+
+
+def test_retarget_surface_collection_updates_per_point_colors():
+    pts = [
+        _point("a", (0.0, 0.0, 0.0), color=(1.0, 0.0, 0.0)),
+        _point("b", (6.0, 0.0, 0.0), color=(0.0, 0.0, 1.0)),
+    ]
+    coll = build_surface_collection(pts, 1.5, 1.4, "GAUSS", 1, False, "pmv_surface")
+    recolored = [
+        _point("a", (0.0, 0.0, 0.0), color=(0.0, 1.0, 0.0)),
+        _point("b", (6.0, 0.0, 0.0), color=(0.0, 0.0, 1.0)),
+    ]
+    assert retarget_surface_collection(coll, recolored, 1.5, 1.4, "GAUSS", 1, False)
+    colors = np.asarray(coll[0].color, dtype=float).reshape(-1, 3)
+    verts = np.asarray(coll[0].vertices, dtype=float)
+    near_a = verts[np.linalg.norm(verts, axis=1) < 3.0]
+    if near_a.shape[0]:
+        idx = np.linalg.norm(verts, axis=1) < 3.0
+        assert colors[idx, 1].mean() > colors[idx, 2].mean()
+
+
+def test_retarget_surface_skips_paint_when_colors_unchanged():
+    pts = [
+        _point("a", (0.0, 0.0, 0.0), color=(1.0, 0.0, 0.0)),
+        _point("b", (6.0, 0.0, 0.0), color=(0.0, 0.0, 1.0)),
+    ]
+    coll = build_surface_collection(pts, 1.5, 1.4, "GAUSS", 1, False, "pmv_surface")
+    coll[0]._create_CGO_list()
+    assert coll[0]._cached_cgo is not None
+    assert retarget_surface_collection(coll, pts, 1.5, 1.4, "GAUSS", 1, False)
+    assert coll[0]._cached_cgo is not None
+    assert getattr(coll, "_preview_dirty", True) is False

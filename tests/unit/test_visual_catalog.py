@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import pytest
+
 from pymolviz.meshes.CenteredBox import CenteredBox
 from pymolviz.meshes.CGOCollection import CGOCollection
 from pymolviz.meshes.Sphere import Sphere
 from pymolviz.points import AtomPoint, FixedPoint
 from pymolviz.wizards.catalog import (
+    accent_rgb,
     editor_kind,
     object_row,
     object_rows,
@@ -34,6 +37,8 @@ def test_object_row_sphere_collection():
     assert row["n_points"] == 1
     assert row["com"] == "1.00, 2.00, 3.00"
     assert row["editor"] == "Sphere"
+    assert row["color"] is not None
+    assert len(row["color"]) == 3
 
 
 def test_object_rows_skips_fields():
@@ -69,7 +74,7 @@ def test_object_row_surface_collection():
             AtomPoint("prot", 1, last_xyz=(1.0, 2.0, 3.0)),
             AtomPoint("prot", 2, last_xyz=(3.0, 2.0, 3.0)),
         ],
-        algorithm="ASA",
+        algorithm="GAUSS",
         quality=1,
         bypass_colormap=True,
         obj_id="surf1",
@@ -82,4 +87,18 @@ def test_object_row_surface_collection():
     assert row["n_points"] == 2
     assert row["com"] == "2.00, 2.00, 3.00"
     assert row["editor"] == "Surface"
+
+
+def test_accent_rgb_uses_explicit_bypass_color():
+    sphere = Sphere(
+        FixedPoint((0.0, 0.0, 0.0)),
+        0.5,
+        color=(0.2, 0.4, 0.8),
+        bypass_colormap=True,
+        obj_id="sph_color",
+    )
+    coll = CGOCollection([sphere], name="pmv_blue", obj_id="coll_color")
+    rgb = accent_rgb(coll)
+    assert rgb is not None
+    assert rgb == pytest.approx((0.2, 0.4, 0.8))
 

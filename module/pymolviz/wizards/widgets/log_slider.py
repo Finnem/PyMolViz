@@ -1,6 +1,7 @@
 """Piecewise-linear radius control: [0,1], [1,10], [10,100]."""
 
 from ..pick import qt_modules
+from .ascii_locale import apply_ascii_float_locale
 
 SLIDER_MAX = 300
 SEGMENTS = (
@@ -37,7 +38,7 @@ class LogSegmentRadiusWidget:
 
     valueChanged = None
 
-    def __init__(self, parent=None, initial=1.0):
+    def __init__(self, parent=None, initial=1.0, suffix=" Å"):
         QtCore, _, QtWidgets = qt_modules()
         if QtWidgets is None:
             raise RuntimeError("PyMOL Qt UI required")
@@ -53,6 +54,9 @@ class LogSegmentRadiusWidget:
         self._spin.setMinimum(0.0)
         self._spin.setMaximum(100.0)
         self._spin.setSingleStep(0.1)
+        apply_ascii_float_locale(self._spin, QtCore)
+        if suffix:
+            self._spin.setSuffix(str(suffix))
         layout.addWidget(self._slider, stretch=3)
         layout.addWidget(self._spin, stretch=1)
         self._slider.valueChanged.connect(self._on_slider)

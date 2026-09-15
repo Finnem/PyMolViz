@@ -176,9 +176,12 @@ def install(cmd=None):
 
     from .runtime import get_runtime
     from .session import restore_from_session
+    from ..util.array_backend import announce_cuda
+
     objects = restore_from_session()
     if objects:
         get_runtime(cmd).reconcile(objects)
+    announce_cuda(cmd)
 
 
 def uninstall(cmd=None):

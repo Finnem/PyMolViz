@@ -8,6 +8,74 @@ import matplotlib.cm
 from matplotlib.colors import LinearSegmentedColormap
 from .Displayable import Displayable
 
+RANGE_MODE_AUTO = "auto"
+RANGE_MODE_CUSTOM = "custom"
+RANGE_MODE_SYMMETRIC = "symmetric"
+RANGE_MODES = (RANGE_MODE_AUTO, RANGE_MODE_CUSTOM, RANGE_MODE_SYMMETRIC)
+
+
+def normalize_range_mode(mode):
+    text = str(mode or "").strip().lower().replace("-", "_")
+    if text in ("custom", "manual"):
+        return RANGE_MODE_CUSTOM
+    if text in ("symmetric", "sym", "about_zero", "aboutzero"):
+        return RANGE_MODE_SYMMETRIC
+    return RANGE_MODE_AUTO
+
+
+def apply_colormap_reverse(name, reverse=False):
+    """XOR a matplotlib ``_r`` suffix onto a preset name."""
+    text = str(name or "RdYlBu_r")
+    if not reverse:
+        return text
+    if text.endswith("_r") and len(text) > 2:
+        return text[:-2]
+    return text + "_r"
+
+
+def parse_colormap_reverse(name, presets=None):
+    """``(preset, reverse)`` so a Reverse checkbox can XOR ``_r``."""
+    text = str(name or "RdYlBu_r")
+    names = tuple(presets) if presets is not None else None
+    if names is not None and text in names:
+        return text, False
+    if text.endswith("_r") and len(text) > 2:
+        base = text[:-2]
+        if names is None or base in names:
+            return base, True
+    flipped = text + "_r" if not text.endswith("_r") else text[:-2]
+    if names is None or flipped in names:
+        return flipped, True
+    return text, False
+
+
+def resolve_colormap_clims(mode, values, custom=None):
+    """Auto → min/max; custom → ``custom``; symmetric → ±abs max."""
+    mode = normalize_range_mode(mode)
+    if mode == RANGE_MODE_CUSTOM:
+        from .fields.isovalues import clim_range
+        return clim_range("custom", values, custom=custom)
+    if mode == RANGE_MODE_SYMMETRIC:
+        from .fields.isovalues import clim_range
+        return clim_range("symmetric", values, custom=custom)
+    arr = np.asarray(values, dtype=float).reshape(-1)
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return None
+    return [float(np.min(finite)), float(np.max(finite))]
+
+
+def preview_ramp_rgba(name, reverse=False, n=64):
+    """Nx4 RGBA samples along a named ramp (thin preview strip)."""
+    cmap = ColorMap(
+        [0.0, 1.0],
+        apply_colormap_reverse(name, reverse),
+        values_are_single_color=False,
+    )
+    samples = np.linspace(0.0, 1.0, max(2, int(n)))
+    return np.asarray(cmap.get_color(samples), dtype=float)
+
+
 class ColorMap(Displayable):
     """
     Creates a colormap from a list of values.
@@ -20,7 +88,7 @@ class ColorMap(Displayable):
         state (int): Optional. Defaults to 1. The state of the object.
     """
 
-    def __init__(self, values, colormap = "RdYlBu_r", values_are_single_color = None, name = None, state = 1):
+    def __init__(self, values, colormap = "RdYlBu_r", values_are_single_color = None, name = None, state = 1, range_mode="auto", reverse=False, clims=None):
         
 
         # get colormap
@@ -109,6 +177,21 @@ class ColorMap(Displayable):
                         self._color_type = "segmented_inferred"
         if self.colormap is None:
             raise ValueError("Could not infer a colormap from the given values.")
+        self.preset = colormap if np.issubdtype(type(colormap), np.str_) else None
+        self.range_mode = normalize_range_mode(range_mode)
+        self.reverse = bool(reverse)
+        if self.reverse:
+            rev = getattr(self.colormap, "reversed", None)
+            if callable(rev):
+                self.colormap = rev()
+        if self.range_mode != RANGE_MODE_AUTO:
+            try:
+                resolved = resolve_colormap_clims(self.range_mode, values, custom=clims)
+            except (TypeError, ValueError):
+                resolved = None
+            if resolved is not None:
+                self.clims = list(resolved)
+                self._norm = matplotlib.colors.Normalize(vmin = self.clims[0], vmax = self.clims[1])
         self._mappable = matplotlib.cm.ScalarMappable(norm = self._norm, cmap = self.colormap)
         super().__init__(name = name)
 

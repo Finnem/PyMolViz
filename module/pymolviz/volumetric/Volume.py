@@ -5,8 +5,52 @@ from ..Displayable import Displayable
 from ..ColorMap import ColorMap
 from ..util.colors import _convert_string_color
 
+VOLUME_RAMP_SAMPLES = 33
+
+
+def _expand_range_to_volume_clims(min_val, max_val, samples=VOLUME_RAMP_SAMPLES):
+    """Paired bin edges so density alphas and colormap RGB are sampled densely."""
+    lo, hi = float(min_val), float(max_val)
+    if hi < lo:
+        lo, hi = hi, lo
+    if abs(hi - lo) < 1e-15:
+        hi = lo + 1.0
+    edges = np.linspace(lo, hi, max(2, int(samples)))
+    paired = np.vstack([edges[:-1], edges[1:]]).T.flatten()
+    return np.hstack([paired, paired[-1]])
+
+
+def _rgb_from_colormap(colormap, value):
+    rgba = np.asarray(colormap.get_color(value), dtype=float).reshape(-1)
+    return [float(rgba[0]), float(rgba[1]), float(rgba[2])]
+
+
+def _volume_object_names(cmd):
+    try:
+        return [str(n) for n in cmd.get_names("objects")]
+    except Exception:
+        return []
+
+
+def _apply_volume_ramp(cmd, volume_name, ramp_name, flat_list):
+    volume_color = getattr(cmd, "volume_color", None)
+    if not callable(volume_color):
+        return False
+    for argument in (ramp_name, flat_list):
+        try:
+            volume_color(volume_name, argument)
+            return True
+        except TypeError:
+            continue
+        except Exception:
+            return False
+    return False
+
+
 class Volume(Displayable):
-    def __init__(self, grid_data : GridData, name = None, colormap = "RdYlBu_r", alphas = None, clims = None, selection = None, carve = None, state = 1, use_min_max = False):
+    renders_cgo = False
+
+    def __init__(self, grid_data : GridData, name = None, colormap = "RdYlBu_r", alphas = None, clims = None, selection = None, carve = None, state = 1, use_min_max = False, geometry_field_id=None, color_field_id=None, clip_aabb=None, transfer_stops=None):
         """ 
         Computes and collects pymol commands to load in regular data and display it volumetrically.
 
@@ -27,6 +71,10 @@ class Volume(Displayable):
         self.state = state
         self.is_loaded = False
         self.A_to = np.array([[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]])
+        self.geometry_field_id = str(geometry_field_id) if geometry_field_id else None
+        self.color_field_id = str(color_field_id) if color_field_id else None
+        from ..fields.clip import normalize_clip_aabb
+        self.clip_aabb = normalize_clip_aabb(clip_aabb)
 
         super().__init__(name = name)
         
@@ -37,12 +85,14 @@ class Volume(Displayable):
             else:
                 min_val = max([np.min(grid_data.values), -np.std(grid_data.values) * 5 + np.mean(grid_data.values)])
                 max_val = min([np.max(grid_data.values), np.std(grid_data.values) * 5 + np.mean(grid_data.values)])
-            self.clims = np.linspace(min_val, max_val, 33)
-            # getting number of values within each bin
-            self.clims = np.vstack([self.clims[:-1], self.clims[1:]]).T.flatten()
-            self.clims = np.hstack([self.clims, self.clims[-1]])
+            self.clims = _expand_range_to_volume_clims(min_val, max_val)
         else:
-            self.clims = clims
+            clim_arr = np.asarray(clims, dtype=float).reshape(-1)
+            # Wizard range is [vmin, vmax]; a two-knot ramp would ignore middle colormap stops.
+            if clim_arr.size == 2 and alphas is None:
+                self.clims = _expand_range_to_volume_clims(clim_arr[0], clim_arr[1])
+            else:
+                self.clims = clim_arr
 
         if not issubclass(type(colormap), ColorMap):
             colormap = ColorMap(self.clims, colormap, state = state, name = f"{self.name}_colormap")
@@ -62,6 +112,13 @@ class Volume(Displayable):
             self.alphas = np.array(alphas)
         if len(self.alphas) != len(self.clims):
             raise Exception("Alphas and clims must have the same length.")
+
+        if transfer_stops is not None:
+            from ..fields.isovalues import normalize_transfer_stops
+            self.transfer_stops = normalize_transfer_stops(transfer_stops)
+        else:
+            from ..fields.isovalues import stops_from_volume_ramp
+            self.transfer_stops = stops_from_volume_ramp(self.clims, self.alphas)
         
         self.dependencies.extend([self.grid_data])
 
@@ -94,7 +151,6 @@ class Volume(Displayable):
         Returns:
             str: The script.
         """
-
         optional_arguments = []
         if not(self.selection is None):
             optional_arguments.append(f"selection = \"{self.selection}\"")
@@ -108,23 +164,23 @@ class Volume(Displayable):
                 raise ValueError("The number of volume alphas must be equal to the number of clims.")
         string_list = [f"""cmd.volume_ramp_new("{self.name}_volume_color_ramp", [\\"""]
         for i, c in enumerate(self.clims):
-            string_list.append(f"""    {self.clims[i]}, {",".join([str(v) for v in self.colormap.get_color(c)[:3]])}, {self.alphas[i]},\\""")
+            string_list.append(f"""    {self.clims[i]}, {",".join([str(v) for v in _rgb_from_colormap(self.colormap, c)])}, {self.alphas[i]},\\""")
         string_list.append("])")
         string_list.append(f"""
 cmd.volume("{self.name}", "{self.grid_data.name}", "{self.name}_volume_color_ramp", {" , ".join(optional_arguments)}{"," if len(optional_arguments) > 0 else ""} state={self.state})
 cmd.set("volume_mode", 0)
-cmd.set_object_ttt("{self.name}", {list(self.A_to.flatten())})
         """)
 
         result = "\n".join(string_list)
         return result
 
-    def load(self):
-        from pymol import cmd
+    def load(self, cmd=None):
+        if cmd is None:
+            from pymol import cmd
         
         if len(self.alphas) != len(self.clims):
                 raise ValueError("The number of volume alphas must be equal to the number of clims.")
-        params_list = [[self.clims[i],[v for v in self.colormap.get_color(c)[:3]], self.alphas[i]] for i,c in enumerate(self.clims)]
+        params_list = [[self.clims[i], _rgb_from_colormap(self.colormap, c), self.alphas[i]] for i, c in enumerate(self.clims)]
         flat_list = []
         for sublist in params_list:
             for item in sublist:
@@ -133,16 +189,49 @@ cmd.set_object_ttt("{self.name}", {list(self.A_to.flatten())})
                         flat_list.append(float(list_item))
                 else:
                     flat_list.append(float(item))
-        self.grid_data.load()
-        if self.name in cmd.get_names("objects") and cmd.get_object_state(self.name) == self.state:
-            import logging
-            logging.warning(f"The volume could not be created because a volume with the name {self.name} and state {self.state} already exists.")
-        else:
-            cmd.volume_ramp_new("{self.name}_volume_color_ramp", flat_list)
-            cmd.volume(self.name, self.grid_data.name, ramp = "{self.name}_volume_color_ramp",selection=self.selection, carve=self.carve, state=self.state)
-            cmd.set("volume_mode", 0)
-            cmd.set_object_ttt(self.name, list(self.A_to.flatten()))
-            self.is_loaded = True
+        from ..wizards.builders.field_visual import load_geometry_map, sync_visual_grid_from_field
+
+        sync_visual_grid_from_field(self, cmd)
+        map_name, rebuilt = load_geometry_map(cmd, self.grid_data, self.clip_aabb)
+        if not map_name:
+            return
+        ramp_name = "%s_volume_color_ramp" % self.name
+        cmd.volume_ramp_new(ramp_name, flat_list)
+        exists = self.name in _volume_object_names(cmd)
+        if exists and not rebuilt:
+            state_ok = True
+            getter = getattr(cmd, "get_object_state", None)
+            if callable(getter):
+                try:
+                    state_ok = int(getter(self.name)) == int(self.state)
+                except Exception:
+                    state_ok = True
+            if state_ok and _apply_volume_ramp(cmd, self.name, ramp_name, flat_list):
+                cmd.set("volume_mode", 0)
+                self.is_loaded = True
+                return
+        if exists:
+            try:
+                cmd.delete(self.name)
+            except Exception:
+                pass
+            exists = self.name in _volume_object_names(cmd)
+        if exists:
+            logging.warning(
+                "The volume could not be updated because %s (state %s) already exists."
+                % (self.name, self.state)
+            )
+            return
+        cmd.volume(
+            self.name,
+            map_name,
+            ramp=ramp_name,
+            selection=self.selection,
+            carve=self.carve,
+            state=self.state,
+        )
+        cmd.set("volume_mode", 0)
+        self.is_loaded = True
 
     def to_script(self, state = 0):
         """ Creates a pymolviz script to create a volume representation of the given regular data.

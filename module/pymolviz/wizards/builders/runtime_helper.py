@@ -46,8 +46,8 @@ def build_box_collection(
     return collection
 
 
-def build_arrow_collection(pairs, quality, style, name, *, draft=False, obj_id=None):
-    collection = _build_arrows(pairs, quality, style, name)
+def build_arrow_collection(pairs, quality, style, name, *, draft=False, obj_id=None, clip_planes=None, head_radius=None):
+    collection = _build_arrows(pairs, quality, style, name, clip_planes=clip_planes, head_radius=head_radius)
     if obj_id:
         collection.id = obj_id
     return collection

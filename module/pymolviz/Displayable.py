@@ -96,3 +96,14 @@ class Displayable():
 
     def write(self, filename):
         self.to_script().write(filename)
+
+
+def call_load(obj, cmd=None):
+    """Invoke ``obj.load``, with or without a ``cmd`` argument."""
+    loader = getattr(obj, "load", None)
+    if not callable(loader):
+        return
+    try:
+        loader(cmd)
+    except TypeError:
+        loader()

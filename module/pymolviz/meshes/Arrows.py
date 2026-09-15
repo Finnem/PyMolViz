@@ -9,14 +9,29 @@ from ..util.line_style import (
     LineStyle,
     absolute_head_length,
     apply_margin,
+    arrow_cone_segments,
     dash_on_segments,
     default_head_length,
+    style_margins,
 )
 from ..util.math import get_perp
+from ..util.mesh_clip import clip_segment_by_planes, normalize_clip_planes
 
 DEFAULT_SHAFT_RADIUS = 0.045
 HEAD_WIDTH = 2.4
 HEAD_LENGTH = default_head_length(DEFAULT_SHAFT_RADIUS)
+# Quality-0 LINEWIDTH is pixels; keep the default shaft looking like width 2.4.
+_LINE_WIDTH_PER_ANGSTROM = 2.4 / DEFAULT_SHAFT_RADIUS
+
+
+def default_head_radius(shaft_radius: float) -> float:
+    return float(shaft_radius) * HEAD_WIDTH
+
+
+def head_radius_follows_shaft(shaft_radius, head_radius, *, tol=1e-4) -> bool:
+    if head_radius is None:
+        return True
+    return abs(float(head_radius) - default_head_radius(shaft_radius)) < tol
 
 
 def _direction(p0, p1):
@@ -75,18 +90,21 @@ def build_styled_arrow_cgo(
     alpha: float = 1.0,
     radius: float = DEFAULT_SHAFT_RADIUS,
     head_length: float = None,
+    head_radius: float = None,
 ) -> list:
     head_end, head_start, circle_start, circle_end = _arrow_heads(style)
     n_heads = int(head_end) + int(head_start)
     wanted_head = (
         default_head_length(radius) if head_length is None else max(float(head_length), 0.0)
     )
+    start_pad, end_pad = style_margins(style)
     p0, p1 = apply_margin(
         start,
         end,
-        style.margin,
         head_length=wanted_head if n_heads else 0.0,
         double_head=bool(head_start and head_end),
+        start_margin=start_pad,
+        end_margin=end_pad,
     )
     direction, length = _direction(p0, p1)
     if length < 1e-8:
@@ -105,7 +123,8 @@ def build_styled_arrow_cgo(
     if quality == 0:
         if shaft_len >= 1e-8:
             segs = dash_on_segments(shaft0, shaft1, style.pattern(), style.dash_scale)
-            obj.extend(lines_cgo(segs, color, width=2.4, alpha=alpha))
+            line_w = max(1.0, float(radius) * _LINE_WIDTH_PER_ANGSTROM)
+            obj.extend(lines_cgo(segs, color, width=line_w, alpha=alpha))
         if head_end:
             obj.extend(_line_arrowhead(p1, direction, color, alpha, size=max(head_len, 0.02)))
         if head_start:
@@ -126,9 +145,8 @@ def build_styled_arrow_cgo(
         segs = dash_on_segments(shaft0, shaft1, style.pattern(), style.dash_scale)
         for a, b in segs:
             obj.extend(mesh_cylinder_cgo(a, b, radius, color, n_seg=n_seg, alpha=alpha, caps=True))
-    head_r = radius * HEAD_WIDTH
-    # Wider cone needs more azimuth samples so facets match the thinner shaft.
-    cone_seg = max(n_seg, int(round(n_seg * HEAD_WIDTH)))
+    head_r = float(head_radius) if head_radius is not None else radius * HEAD_WIDTH
+    cone_seg = arrow_cone_segments(n_seg, radius, head_r)
     if head_end and head_len > 1e-8:
         obj.extend(mesh_cone_cgo(shaft1, p1, head_r, color, n_seg=cone_seg, alpha=alpha, cap_base=True))
     if head_start and head_len > 1e-8:
@@ -169,18 +187,22 @@ class Arrows(Lines):
         ends_style="Arrow",
         shaft_radius=DEFAULT_SHAFT_RADIUS,
         use_styled_cgo=False,
+        head_radius=None,
+        clip_planes=None,
         *args,
         **kwargs,
     ) -> None:
         self.original_color = color
         self.head_length = head_length
         self.head_width = head_width
+        self.head_radius = None if head_radius is None else float(head_radius)
         self.quality = int(quality)
         self.shaft_radius = float(shaft_radius)
         self.pair_radii = None
         self.pair_heads = None
         self.pair_styles = None
         self.use_styled_cgo = bool(use_styled_cgo)
+        self.clip_planes = normalize_clip_planes(clip_planes)
         if line_style is not None:
             self.line_style = line_style
         else:
@@ -286,8 +308,12 @@ class Arrows(Lines):
         ends_arr = np.array([resolve_xyz(s, context) for s in self._end_sources])
         if self.use_styled_cgo:
             self.vertices = np.hstack([starts_arr, ends_arr]).reshape(-1, 3)
+            from ..util.field_sample import paint_mesh_by_field
+            paint_mesh_by_field(self)
             return
         self.vertices = self._expand_heads(starts_arr, ends_arr)
+        from ..util.field_sample import paint_mesh_by_field
+        paint_mesh_by_field(self)
 
     def from_start_end(
         starts,
@@ -351,11 +377,18 @@ class Arrows(Lines):
                 radius = float(radii[i]) if i < len(radii) else self.shaft_radius
                 style = styles[i] if i < len(styles) else self.line_style
                 head = float(heads[i]) if i < len(heads) else default_head_length(radius)
+                clipped = clip_segment_by_planes(
+                    start, end, getattr(self, "clip_planes", None),
+                )
+                if clipped is None:
+                    continue
+                start, end = clipped
                 chunk_start = len(merged)
                 merged.extend(
                     build_styled_arrow_cgo(
                         start, end, color, self.quality, style,
                         alpha=alpha, radius=radius, head_length=head,
+                        head_radius=getattr(self, "head_radius", None),
                     )
                 )
                 spans.append((chunk_start, len(merged)))

@@ -31,24 +31,37 @@ def get_distinct_colors(n_colors = 20, repeats = None):
 
 def get_colormap(colormap):
 	""" Infers a colormap from the given data."""
-	from matplotlib import cm
+	if not np.issubdtype(type(colormap), np.str_):
+		return colormap
+	name = str(colormap)
+	if name == "onwhite":
+		from matplotlib.colors import LinearSegmentedColormap
+		colors = list(reversed([np.array([165, 0, 38]), np.array([215, 48, 39]), np.array([244, 109, 67]), np.array([116, 173, 209]), np.array([69, 117, 180]), np.array([49, 54, 149])]))
+		colors = np.array(colors) / 255
+		colors = [(i / (len(colors) - 1), c) for i, c in enumerate(colors)]
+		return LinearSegmentedColormap.from_list("onwhite", colors)
+	if name == "onwhite_r":
+		from matplotlib.colors import LinearSegmentedColormap
+		colors = [np.array([165, 0, 38]), np.array([215, 48, 39]), np.array([244, 109, 67]), np.array([116, 173, 209]), np.array([69, 117, 180]), np.array([49, 54, 149])]
+		colors = np.array(colors) / 255
+		colors = [(i / (len(colors) - 1), c) for i, c in enumerate(colors)]
+		return LinearSegmentedColormap.from_list("onwhite_r", colors)
+	try:
+		from .colormap_spec import custom_preset_definition, mpl_colormap, reverse_definition
 
-	if np.issubdtype(type(colormap), np.str_):
-		if colormap == "onwhite":
-			from matplotlib.colors import LinearSegmentedColormap
-			colors = list(reversed([np.array([165, 0, 38]), np.array([215, 48, 39]), np.array([244, 109, 67]), np.array([116, 173, 209]), np.array([69, 117, 180]), np.array([49, 54, 149])]))
-			colors = np.array(colors) / 255
-			colors = [(i / (len(colors) - 1), c) for i, c in enumerate(colors)]
-			colormap = LinearSegmentedColormap.from_list("onwhite", colors)
-		elif colormap == "onwhite_r":
-			from matplotlib.colors import LinearSegmentedColormap
-			colors = [np.array([165, 0, 38]), np.array([215, 48, 39]), np.array([244, 109, 67]), np.array([116, 173, 209]), np.array([69, 117, 180]), np.array([49, 54, 149])]
-			colors = np.array(colors) / 255
-			colors = [(i / (len(colors) - 1), c) for i, c in enumerate(colors)]
-			colormap = LinearSegmentedColormap.from_list("onwhite_r", colors)
-		else:
-			colormap = cmap.Colormap(colormap).to_mpl()
-	return colormap
+		defn = custom_preset_definition(name)
+		if defn is None and name.endswith("_r") and len(name) > 2:
+			base = custom_preset_definition(name[:-2])
+			if base is not None:
+				defn = reverse_definition(base)
+		if defn is not None:
+			return mpl_colormap(defn)
+	except Exception:
+		pass
+	try:
+		return cmap.Colormap(name).to_mpl()
+	except Exception:
+		return cmap.Colormap("RdYlBu_r").to_mpl()
 
 
 def get_pymol_color(color_name):

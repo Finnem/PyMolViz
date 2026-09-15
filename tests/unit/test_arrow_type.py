@@ -39,6 +39,17 @@ def test_circles_stay_put_ticks_move_with_margin():
     assert g["head_tip"] < g0["head_tip"]
 
 
+def test_ticks_move_independently():
+    width, height = 200.0, 32.0
+    g0 = arrow_type_geometry(width, height, 0.0, end_margin=0.0)
+    g_start = arrow_type_geometry(width, height, 4.0, end_margin=0.0)
+    g_end = arrow_type_geometry(width, height, 0.0, end_margin=4.0)
+    assert g_start["tick0"] > g0["tick0"]
+    assert abs(g_start["tick1"] - g0["tick1"]) < 0.05
+    assert g_end["tick1"] < g0["tick1"]
+    assert abs(g_end["tick0"] - g0["tick0"]) < 0.05
+
+
 def test_margin_round_trip_from_ticks():
     width, height = 200.0, 32.0
     g0 = arrow_type_geometry(width, height, 0.0)
@@ -47,6 +58,9 @@ def test_margin_round_trip_from_ticks():
     g = arrow_type_geometry(width, height, 4.0)
     assert abs(margin_from_tick0(g["tick0"], width, height) - 4.0) < 0.05
     assert abs(margin_from_tick1(g["tick1"], width, height) - 4.0) < 0.05
+    g_split = arrow_type_geometry(width, height, 2.0, end_margin=6.0)
+    assert abs(margin_from_tick0(g_split["tick0"], width, height) - 2.0) < 0.05
+    assert abs(margin_from_tick1(g_split["tick1"], width, height) - 6.0) < 0.05
 
 
 def test_section_highlights_are_distinct():

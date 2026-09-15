@@ -28,7 +28,39 @@ def _colors_are_uniform(colors, atol=1e-5) -> bool:
     return bool(np.allclose(colors, colors[0], atol=atol, rtol=0.0))
 
 
-def _lit_triangle_cgo(vertices, colors, normals):
+_MATTE_AMBIENT = 0.28
+_MATTE_DIFFUSE = 0.72
+
+
+def _view_rotation_or_none():
+    """3×3 model-to-camera rotation from ``cmd.get_view``, or None."""
+    try:
+        from pymol import cmd
+        getter = getattr(cmd, "get_view", None)
+        if getter is None:
+            return None
+        view = getter()
+        vals = [float(x) for x in list(view)[:9]]
+        if len(vals) < 9:
+            return None
+        return np.array(vals, dtype=float).reshape(3, 3)
+    except Exception:
+        return None
+
+
+def _lambert_weights(normals, rotation=None):
+    """Hemisphere shade in camera space (headlight along +Z)."""
+    n = np.asarray(normals, dtype=float).reshape(-1, 3)
+    ln = np.linalg.norm(n, axis=1, keepdims=True)
+    n = n / np.maximum(ln, 1e-18)
+    if rotation is not None:
+        r = np.asarray(rotation, dtype=float).reshape(3, 3)
+        n = n @ r.T
+    nz = n[:, 2]
+    return np.clip(_MATTE_AMBIENT + _MATTE_DIFFUSE * np.maximum(nz, 0.0), 0.0, 1.0)
+
+
+def _lit_triangle_cgo(vertices, colors, normals, specular=True):
     """Triangle soup with lighting state and a NORMAL on every corner.
 
     PyMOL's default shader interpolates vertex normals in the fragment stage.
@@ -37,19 +69,30 @@ def _lit_triangle_cgo(vertices, colors, normals):
     writes one face normal per triangle — faceted speculars. COLOR once when
     the mesh is uniform, then NORMAL immediately before VERTEX (same order as
     ``pymol.cgo.torus``).
+
+    When ``specular`` is false, lighting is disabled in the CGO and a Lambert
+    term is baked into vertex colors so the object stays matte without using
+    the global ``specular`` setting.
     """
-    cgo_list = ["ENABLE", "LIGHTING", "BEGIN", "TRIANGLES"]
     vertices = np.asarray(vertices, dtype=float).reshape(-1, 3)
     n = int(vertices.shape[0])
-    if n == 0:
-        cgo_list.append("END")
-        return cgo_list
     colors = np.asarray(colors, dtype=float).reshape(-1, 3)
     normals = np.asarray(normals, dtype=float).reshape(-1, 3)
     ln = np.linalg.norm(normals, axis=1, keepdims=True)
     ln = np.maximum(ln, 1e-18)
     normals = normals / ln
-    if _colors_are_uniform(colors):
+    if n == 0:
+        return ["ENABLE" if specular else "DISABLE", "LIGHTING", "BEGIN", "TRIANGLES", "END"]
+    if not specular:
+        weights = _lambert_weights(normals, _view_rotation_or_none())
+        colors = np.clip(colors * weights[:, None], 0.0, 1.0)
+        header = ["DISABLE", "LIGHTING", "BEGIN", "TRIANGLES"]
+        uniform = False
+    else:
+        header = ["ENABLE", "LIGHTING", "BEGIN", "TRIANGLES"]
+        uniform = _colors_are_uniform(colors)
+    cgo_list = list(header)
+    if uniform:
         r, g, b = (float(colors[0, 0]), float(colors[0, 1]), float(colors[0, 2]))
         cgo_list.extend(["COLOR", r, g, b])
         block = np.empty((n, 8), dtype=object)
@@ -139,16 +182,20 @@ class Mesh(Points):
         Returns:
             None
         """
+        if not getattr(self, "enabled", True):
+            return []
 
-
+        spec = bool(getattr(self, "specular", True))
         cached = getattr(self, "_cached_cgo", None)
-        if cached is not None:
+        if cached is not None and bool(getattr(self, "_cached_cgo_specular", True)) == spec:
             return cached
+        self._cached_resolved = None
 
         if getattr(self, "wireframe", False):
             wire = self.to_wireframe(render_as="cylinders", linewidth=0.012)
             cgo_list = list(wire._create_CGO_list())
             self._cached_cgo = cgo_list
+            self._cached_cgo_specular = spec
             return cgo_list
 
         if getattr(self, "bypass_colormap", False):
@@ -170,8 +217,11 @@ class Mesh(Points):
         else:
             cgo_normals = self.normals[self.faces].reshape(-1, 3)
 
-        cgo_list = _lit_triangle_cgo(cgo_triangles, cgo_colors, cgo_normals)
+        cgo_list = _lit_triangle_cgo(
+            cgo_triangles, cgo_colors, cgo_normals, specular=spec,
+        )
         self._cached_cgo = cgo_list
+        self._cached_cgo_specular = spec
         return cgo_list
 
          

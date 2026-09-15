@@ -62,6 +62,19 @@ def set_cgo_transparency(cmd_, name, alpha=1.0):
         pass
 
 
+def set_cgo_specular(cmd_, name, enabled=True):
+    """Per-object lighting: ``cgo_lighting`` is the only CGO-level switch.
+
+    PyMOL's ``specular`` / ``spec_reflect`` settings are session-wide and warn
+    if applied to an object. ``cgo_lighting`` is object-level. Off is unlit;
+    triangle meshes bake a Lambert term into vertex colors so shape remains.
+    """
+    try:
+        cmd_.set("cgo_lighting", 1 if enabled else 0, name)
+    except Exception:
+        pass
+
+
 CAMERA_CENTER_NAME = "pmv_camera_center"
 WIZARD_EPHEMERAL_NAMES = (
     CAMERA_CENTER_NAME,

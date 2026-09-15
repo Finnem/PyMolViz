@@ -67,6 +67,24 @@ def test_mesh_cgo_smooth_lighting_layout():
     assert float(np.dot(n1, n2)) < 0.999
 
 
+def test_matte_triangle_cgo_bakes_lambert_and_disables_lighting():
+    sphere = Sphere(
+        (0.0, 0.0, 0.0), 1.0, color=(1.0, 0.0, 0.0),
+        bypass_colormap=True, frequency=2,
+    )
+    sphere.specular = False
+    tokens = sphere._create_CGO_list()
+    assert tokens[:4] == ["DISABLE", "LIGHTING", "BEGIN", "TRIANGLES"]
+    assert tokens.count("COLOR") == tokens.count("VERTEX")
+    assert tokens.count("NORMAL") == tokens.count("VERTEX")
+    reds = []
+    for i, kind in enumerate(tokens):
+        if kind == "COLOR":
+            reds.append(float(tokens[i + 1]))
+    assert len(reds) > 1
+    assert max(reds) - min(reds) > 0.05
+
+
 def test_sphere_wireframe_cgo_uses_unique_cones():
     from pymolviz.meshes.Mesh import _unique_undirected_edges
 
@@ -141,8 +159,8 @@ def test_sphere_shift_vertices_patches_resolved_float_cgo(monkeypatch):
 
     sphere = Sphere((0.0, 0.0, 0.0), 1.0, bypass_colormap=True)
     resolved = resolved_cgo_tokens(sphere, None)
-    assert resolved[0] == 2.0
-    assert resolved[1] == 4.0
+    begin_at = next(i for i, tok in enumerate(resolved) if tok == 2.0)
+    assert resolved[begin_at + 1] == 4.0
     vertex_xs = []
     i = 0
     n = len(resolved)
@@ -198,7 +216,6 @@ def test_sphere_shift_vertices_patches_resolved_float_cgo(monkeypatch):
         i += 1
     x1_mean = sum(vertex_xs_after) / len(vertex_xs_after)
     assert x1_mean == pytest.approx(x0_mean + 5.0)
-    assert resolved[1] == 4.0
 
 
 def test_clone_baked_shares_faces_and_isolates_vertices():
@@ -326,6 +343,124 @@ def test_dashed_arrow_keeps_head():
     assert squeezed_arrow.count("VERTEX") > squeezed_none.count("VERTEX")
 
 
+def test_thin_shaft_wide_head_does_not_explode_cone():
+    from pymolviz.meshes.Arrows import build_styled_arrow_cgo
+    from pymolviz.util.line_style import LineStyle
+
+    color = (1.0, 0.0, 0.0)
+    start, end = (0.0, 0.0, 0.0), (10.0, 0.0, 0.0)
+    style = LineStyle(ends="Arrow")
+    normal = build_styled_arrow_cgo(
+        start, end, color, 3, style, radius=0.045, head_radius=0.108,
+    )
+    skinny = build_styled_arrow_cgo(
+        start, end, color, 3, style, radius=0.001, head_radius=0.108,
+    )
+    assert skinny.count("VERTEX") < normal.count("VERTEX") * 2
+
+
+def _vertex_radial_max(tokens):
+    verts = []
+    i = 0
+    n = len(tokens)
+    while i < n:
+        if tokens[i] == "VERTEX" and i + 3 < n:
+            verts.append((float(tokens[i + 1]), float(tokens[i + 2]), float(tokens[i + 3])))
+            i += 4
+            continue
+        i += 1
+    assert verts
+    return max((v[1] ** 2 + v[2] ** 2) ** 0.5 for v in verts)
+
+
+def test_head_radius_follows_shaft_helper():
+    from pymolviz.meshes.Arrows import default_head_radius, head_radius_follows_shaft
+
+    assert default_head_radius(0.045) == pytest.approx(0.108)
+    assert head_radius_follows_shaft(0.045, None)
+    assert head_radius_follows_shaft(0.045, 0.108)
+    assert not head_radius_follows_shaft(0.045, 0.2)
+
+
+def test_styled_arrow_cone_scales_with_shaft_when_head_radius_unset():
+    from pymolviz.meshes.Arrows import HEAD_WIDTH, build_styled_arrow_cgo
+    from pymolviz.util.line_style import LineStyle
+
+    color = (1.0, 0.0, 0.0)
+    start, end = (0.0, 0.0, 0.0), (10.0, 0.0, 0.0)
+    style = LineStyle(ends="Arrow")
+    thin = build_styled_arrow_cgo(start, end, color, 3, style, radius=0.045)
+    fat = build_styled_arrow_cgo(start, end, color, 3, style, radius=0.2)
+    r_thin = _vertex_radial_max(thin)
+    r_fat = _vertex_radial_max(fat)
+    assert r_thin == pytest.approx(0.045 * HEAD_WIDTH, rel=0.15)
+    assert r_fat == pytest.approx(0.2 * HEAD_WIDTH, rel=0.15)
+    assert r_fat > r_thin * 2
+
+
+def test_fixed_head_radius_masks_small_shaft_change():
+    from pymolviz.meshes.Arrows import build_styled_arrow_cgo
+    from pymolviz.util.line_style import LineStyle
+
+    color = (1.0, 0.0, 0.0)
+    start, end = (0.0, 0.0, 0.0), (10.0, 0.0, 0.0)
+    style = LineStyle(ends="Arrow")
+    thin = build_styled_arrow_cgo(
+        start, end, color, 3, style, radius=0.045, head_radius=0.108,
+    )
+    slightly = build_styled_arrow_cgo(
+        start, end, color, 3, style, radius=0.08, head_radius=0.108,
+    )
+    assert _vertex_radial_max(thin) == pytest.approx(0.108, rel=0.15)
+    assert _vertex_radial_max(slightly) == pytest.approx(0.108, rel=0.15)
+
+
+def test_quality0_arrow_linewidth_tracks_radius():
+    from pymolviz.meshes.Arrows import build_styled_arrow_cgo
+    from pymolviz.util.line_style import LineStyle
+
+    color = (1.0, 0.0, 0.0)
+    start, end = (0.0, 0.0, 0.0), (10.0, 0.0, 0.0)
+    style = LineStyle(ends="Arrow")
+    thin = build_styled_arrow_cgo(start, end, color, 0, style, radius=0.045)
+    fat = build_styled_arrow_cgo(start, end, color, 0, style, radius=0.2)
+
+    def linewidths(tokens):
+        return [float(tokens[i + 1]) for i, tok in enumerate(tokens) if tok == "LINEWIDTH"]
+
+    assert linewidths(fat)[0] > linewidths(thin)[0]
+
+
+def test_retarget_arrow_width_rebuilds_cgo():
+    from dataclasses import replace
+
+    from pymolviz.points import FixedPoint
+    from pymolviz.util.line_style import LineStyle
+    from pymolviz.wizards.builders.pairs import VisualPair
+    from pymolviz.wizards.builders.points import VisualPoint
+    from pymolviz.wizards.builders.preview import (
+        build_arrow_collection,
+        retarget_arrow_collection,
+    )
+
+    def pt(xyz):
+        return VisualPoint(
+            "p", "manual", xyz[0], xyz[1], xyz[2], point_source=FixedPoint(xyz),
+        )
+
+    pair = VisualPair(pt((0.0, 0.0, 0.0)), pt((10.0, 0.0, 0.0)), width=0.045)
+    coll = build_arrow_collection([pair], 3, LineStyle(), "a", head_radius=None)
+    before = coll[0]._create_CGO_list()
+    fat = replace(pair, width=0.2)
+    assert retarget_arrow_collection(coll, [fat], head_radius=None) is True
+    after = coll[0]._create_CGO_list()
+    assert coll[0].pair_radii[0] == pytest.approx(0.2)
+    assert len(coll[0].pair_radii) == 1
+    assert coll[0].shaft_radius == pytest.approx(0.2)
+    assert coll[0].head_radius is None
+    assert _vertex_radial_max(after) > _vertex_radial_max(before) * 2
+
+
 def test_independent_heads_cgo():
     from pymolviz.meshes.Arrows import build_styled_arrow_cgo
     from pymolviz.util.line_style import LineStyle
@@ -355,7 +490,7 @@ def test_surface_rebuild_and_cgo_tokens():
     from pymolviz.meshes.Surface import Surface
 
     mesh = Surface(
-        [(0.0, 0.0, 0.0)], algorithm="ASA", quality=1, bypass_colormap=True,
+        [(0.0, 0.0, 0.0)], algorithm="GAUSS", quality=1, bypass_colormap=True,
     )
     tokens = mesh._create_CGO_list()
     kinds = [t for t in tokens if isinstance(t, str)]
@@ -387,4 +522,66 @@ def test_clip_gizmo_cgo_has_rectangle_and_eye():
     )
     wide_tokens = wide._create_CGO_list()
     assert [t for t in wide_tokens if isinstance(t, str)].count("VERTEX") == 12
+
+
+def _box_face_geom_normals(box):
+    verts = np.asarray(box.vertices, dtype=float)
+    faces = np.asarray(box.faces, dtype=int)
+    out = []
+    for i0, i1, i2 in faces:
+        n = np.cross(verts[i1] - verts[i0], verts[i2] - verts[i0])
+        ln = float(np.linalg.norm(n))
+        out.append(n / ln if ln > 1e-12 else n)
+    return np.asarray(out, dtype=float)
+
+
+def test_centered_box_face_winding_is_outward():
+    from pymolviz.meshes.CenteredBox import CenteredBox
+
+    box = CenteredBox((0.0, 0.0, 0.0), (2.0, 4.0, 6.0), bypass_colormap=True)
+    verts = np.asarray(box.vertices, dtype=float)
+    for face, normal in zip(box.faces, _box_face_geom_normals(box)):
+        centroid = verts[face].mean(axis=0) - np.array((0.0, 0.0, 0.0))
+        assert float(np.dot(normal, centroid)) > 0.0
+    flipped = CenteredBox((1.0, -2.0, 3.0), (-2.0, 4.0, -6.0), bypass_colormap=True)
+    origin = np.array((1.0, -2.0, 3.0))
+    verts = np.asarray(flipped.vertices, dtype=float)
+    for face, normal in zip(flipped.faces, _box_face_geom_normals(flipped)):
+        centroid = verts[face].mean(axis=0) - origin
+        assert float(np.dot(normal, centroid)) > 0.0
+
+
+def test_centered_box_cgo_uses_outward_face_normals():
+    from pymolviz.meshes.CenteredBox import CenteredBox
+
+    box = CenteredBox(
+        (0.0, 0.0, 0.0), (2.0, 2.0, 2.0),
+        color=(1.0, 0.0, 0.0), bypass_colormap=True,
+    )
+    tokens = box._create_CGO_list()
+    assert tokens.count("NORMAL") == tokens.count("VERTEX") == 36
+    i = 0
+    while i < len(tokens):
+        if tokens[i] != "NORMAL":
+            i += 1
+            continue
+        n = np.array([float(tokens[i + 1]), float(tokens[i + 2]), float(tokens[i + 3])])
+        assert tokens[i + 4] == "VERTEX"
+        v = np.array([float(tokens[i + 5]), float(tokens[i + 6]), float(tokens[i + 7])])
+        axis = int(np.argmax(np.abs(n)))
+        assert abs(abs(n[axis]) - 1.0) < 1e-6
+        assert abs(float(v[axis] - np.sign(n[axis]))) < 1e-6
+        i += 8
+
+
+def test_solid_box_cgo_normals_match_winding():
+    from pymolviz.util.cgo import _BOX_FACES, _box_corners
+
+    corners = np.asarray(_box_corners((0.0, 0.0, 0.0), (2.0, 2.0, 2.0)), dtype=float)
+    for face, expected in _BOX_FACES:
+        v0, v1, v2 = corners[list(face)]
+        geom = np.cross(v1 - v0, v2 - v0)
+        geom = geom / float(np.linalg.norm(geom))
+        assert float(np.dot(geom, expected)) > 0.99
+
 

@@ -13,11 +13,21 @@ from ...meshes.CGOCollection import CGOCollection
 from ...meshes.ClipGizmo import ClipGizmo
 from ...meshes.Sphere import Sphere
 from ...meshes.Surface import Surface
+from ...util.clip_drag import (
+    CLIP_DRAG_NAME,
+    apply_axis_drag_matrix,
+    apply_drag_matrix,
+    matrix_changed,
+    read_object_matrix,
+    start_clip_drag,
+    stop_clip_drag,
+)
+from ...util.clip_gizmo import fit_plane_rectangle
 from ...util.mesh_clip import clip_planes_match, normalize_clip_planes
 from ...util.pymol_helpers import purge_objects
-from ...util.solvent_surface import DEFAULT_RADIUS_MODE, DEFAULT_VDW_SCALE
+from ...util.solvent_surface import DEFAULT_RADIUS_MODE, DEFAULT_VDW_SCALE, normalize_point_enabled
 from .pairs import complete_pairs
-from .points import VisualPoint
+from .points import VisualPoint, enabled_points
 from .wireframe_quality import effective_wireframe_quality
 
 PREVIEW_SPHERE_NAME = "_pmv_prev_spheres"
@@ -26,6 +36,12 @@ PREVIEW_ARROW_NAME = "_pmv_prev_arrows"
 PREVIEW_ARROW_PENDING = "_pmv_prev_arr_pend"
 PREVIEW_SURFACE_NAME = "_pmv_prev_surface"
 PREVIEW_SURFACE_CLIP_NAME = "_pmv_prev_surface_clip"
+PREVIEW_FIELD_ISO_NAME = "_pmv_prev_field_iso"
+PREVIEW_FIELD_VISUAL_NAME = "_pmv_prev_field_visual"
+PREVIEW_FIELD_VOLUME_NAME = "_pmv_prev_field_volume"
+PREVIEW_FIELD_CLIP_NAME = "_pmv_prev_field_clip"
+PREVIEW_DOMAIN_NAME = "_pmv_prev_domain"
+PREVIEW_CLIP_NAME = PREVIEW_SURFACE_CLIP_NAME
 
 PREVIEW_SPHERE_PREFIX = "_pmv_sph_"
 PREVIEW_BOX_PREFIX = "_pmv_box_"
@@ -35,6 +51,28 @@ PREVIEW_ARROW_PREFIX = "_pmv_arr_"
 PREVIEW_ARROW_MARKER_PREFIX = "_pmv_arr_mk_"
 
 _SHIFT_EPS2 = 1e-16
+
+
+def _enabled_vertex_span(obj):
+    if obj is None:
+        return None
+    children = _mesh_children(obj)
+    if not children:
+        children = [obj]
+    chunks = []
+    for child in children:
+        if not getattr(child, "enabled", True):
+            continue
+        src = getattr(child, "_source_vertices", None)
+        verts = src if src is not None else getattr(child, "vertices", None)
+        if verts is None:
+            continue
+        arr = np.asarray(verts, dtype=float).reshape(-1, 3)
+        if arr.size:
+            chunks.append(arr)
+    if not chunks:
+        return None
+    return np.vstack(chunks)
 
 
 def _runtime(cmd_):
@@ -57,13 +95,9 @@ def _clone_collection(source, name: str) -> CGOCollection:
             children.append(child)
     collection = CGOCollection(children, name=name)
     collection.transparency = getattr(source, "transparency", 0)
+    collection.specular = bool(getattr(source, "specular", True))
     collection.state = getattr(source, "state", 1)
     return collection
-
-
-def _rgb3(color) -> tuple:
-    arr = np.asarray(color, dtype=float).reshape(-1)
-    return (float(arr[0]), float(arr[1]), float(arr[2]))
 
 
 def _mesh_xyz(mesh) -> np.ndarray:
@@ -78,34 +112,138 @@ def _set_anchor(mesh, source) -> None:
         mesh.center = source
 
 
-def _scalar_transparency(mesh) -> float:
-    t = getattr(mesh, "transparency", 0)
-    try:
-        t[0]
-        return float(min(t))
-    except (TypeError, IndexError):
-        try:
-            return float(t)
-        except (TypeError, ValueError):
-            return 0.0
-
-
 def _retarget_point_mesh(mesh, pt: VisualPoint) -> None:
     """Reuse ``mesh``: retarget its PointSource and shift baked vertices."""
     _set_anchor(mesh, pt.point_source)
     delta = np.asarray(pt.xyz(), dtype=float) - _mesh_xyz(mesh)
     if float(np.dot(delta, delta)) > _SHIFT_EPS2:
         mesh.shift_vertices(delta)
-    recolor = False
-    if not np.allclose(_rgb3(mesh.color), pt.color, atol=1e-5):
-        mesh.color = np.array(pt.color, dtype=float)
-        recolor = True
-    new_t = 1.0 - float(pt.alpha)
-    if abs(_scalar_transparency(mesh) - new_t) > 1e-5:
-        mesh.transparency = new_t
-        recolor = True
-    if recolor:
+    apply_point_color_to_mesh(mesh, pt)
+
+
+def apply_point_color_to_mesh(mesh, pt: VisualPoint) -> None:
+    """Apply the point's RGB (solid or already sampled from a field) onto a baked mesh."""
+    from ...util.field_sample import clear_mesh_field, paint_mesh_by_field, sample_rgb_at
+
+    mesh.transparency = 1.0 - float(pt.alpha)
+    rgb = pt.color
+    field_id = getattr(pt, "field_id", None)
+    if field_id:
+        painted = paint_mesh_by_field(
+            mesh,
+            field_id,
+            colormap=getattr(pt, "field_colormap", None),
+            clims=getattr(pt, "field_clims", None),
+            colormap_spec=getattr(pt, "field_colormap_spec", None),
+            clim_mode=getattr(pt, "field_clim_mode", None),
+        )
+        if painted:
+            return
+        sampled = sample_rgb_at(
+            pt.xyz(), field_id,
+            colormap=getattr(pt, "field_colormap_spec", None) or getattr(pt, "field_colormap", None),
+            clims=getattr(pt, "field_clims", None),
+        )
+        if sampled is not None:
+            rgb = sampled
+        mesh.field_id = str(field_id)
+        mesh.field_colormap = getattr(pt, "field_colormap", None)
+        mesh.field_colormap_spec = getattr(pt, "field_colormap_spec", None)
+        mesh.field_clims = getattr(pt, "field_clims", None)
+        mesh.field_clim_mode = getattr(pt, "field_clim_mode", None)
+        mesh.color = np.array(rgb, dtype=float)
+        mesh.bypass_colormap = True
+        if hasattr(mesh, "invalidate_cgo_cache"):
+            mesh.invalidate_cgo_cache()
+        return
+    clear_mesh_field(mesh)
+    mesh.color = np.array(rgb, dtype=float)
+    if hasattr(mesh, "invalidate_cgo_cache"):
         mesh.invalidate_cgo_cache()
+
+
+def apply_surface_color_to_mesh(mesh, points: Sequence[VisualPoint]) -> bool:
+    """Blend each point's RGB onto the solvent surface (field RGB is already sampled).
+
+    Color-only updates retarget this mesh; they must not rebuild the surface.
+    Returns False when colors/centers/alpha are unchanged.
+    """
+    from ...points import resolve_xyz
+    from ...util.field_sample import clear_mesh_field, paint_mesh_by_field, paint_mesh_by_point_colors
+    from ...util.solvent_surface import normalize_point_enabled, normalize_point_radii, resolve_atom_radii
+    from .points import enabled_points, infer_color_mode, _colors_equal
+    from .surface_params import COLOR_MODE_FIELD
+
+    active = enabled_points(points)
+    if not active:
+        return False
+    alpha = 1.0 - min(float(pt.alpha) for pt in active)
+    mesh.transparency = alpha
+    if infer_color_mode(points) == COLOR_MODE_FIELD:
+        pt0 = active[0]
+        painted = paint_mesh_by_field(
+            mesh,
+            pt0.field_id,
+            colormap=pt0.field_colormap,
+            clims=pt0.field_clims,
+            colormap_spec=getattr(pt0, "field_colormap_spec", None),
+            clim_mode=getattr(pt0, "field_clim_mode", None),
+        )
+        mesh.point_colors = [tuple(float(c) for c in pt.color[:3]) for pt in points]
+        return painted
+    point_colors = [tuple(float(c) for c in pt.color[:3]) for pt in points]
+    mesh.point_colors = point_colors
+    flags = normalize_point_enabled([getattr(pt, "enabled", True) for pt in points], len(points))
+    if flags is None:
+        flags = [True] * len(points)
+    radii_all = normalize_point_radii(getattr(mesh, "point_radii", None), len(points))
+    centers = []
+    colors = []
+    active_sources = []
+    active_radii = []
+    for i, pt in enumerate(points):
+        if not flags[i]:
+            continue
+        centers.append(tuple(float(v) for v in resolve_xyz(pt.point_source)))
+        colors.append(pt.color[:3])
+        active_sources.append(pt.point_source)
+        active_radii.append(radii_all[i] if radii_all is not None else getattr(pt, "radius", None))
+    verts = np.asarray(getattr(mesh, "vertices", []), dtype=float).reshape(-1, 3)
+    vmean = tuple(np.round(verts.mean(axis=0), 5).tolist()) if verts.size else ()
+    key = (
+        int(verts.shape[0]),
+        vmean,
+        tuple(centers),
+        tuple(tuple(float(c) for c in rgb[:3]) for rgb in colors),
+        round(float(alpha), 5),
+        tuple(bool(f) for f in flags),
+    )
+    if getattr(mesh, "_surface_color_key", None) == key:
+        return False
+    clear_mesh_field(mesh)
+    if not centers:
+        mesh._surface_color_key = key
+        return False
+    if len(colors) == 1 or all(_colors_equal(colors[0], rgb) for rgb in colors):
+        mesh.color = np.array(colors[0], dtype=float)
+        mesh._surface_color_key = key
+        if hasattr(mesh, "invalidate_cgo_cache"):
+            mesh.invalidate_cgo_cache()
+        return True
+    atom_radii = resolve_atom_radii(
+        active_sources,
+        len(active_sources),
+        float(getattr(mesh, "atom_radius", 1.5)),
+        getattr(mesh, "radius_mode", "uniform"),
+        float(getattr(mesh, "vdw_scale", 1.0) or 1.0),
+        active_radii,
+        None,
+    )
+    probe = float(getattr(mesh, "probe_radius", 1.4))
+    influence = [float(r) + probe for r in atom_radii]
+    painted = paint_mesh_by_point_colors(mesh, centers, colors, influence)
+    mesh._surface_color_key = key
+    return painted
 
 
 def _sphere_can_reuse(mesh, radius: float, wireframe: bool, frequency: int) -> bool:
@@ -141,7 +279,8 @@ def _style_close(a, b) -> bool:
         and getattr(a, "end_head", None) == getattr(b, "end_head", None)
         and getattr(a, "ends", None) == getattr(b, "ends", None)
         and abs(float(getattr(a, "dash_scale", 0.0)) - float(getattr(b, "dash_scale", 0.0))) < 1e-7
-        and abs(float(getattr(a, "margin", 0.0)) - float(getattr(b, "margin", 0.0))) < 1e-7
+        and abs(float(getattr(a, "start_margin", getattr(a, "margin", 0.0))) - float(getattr(b, "start_margin", getattr(b, "margin", 0.0)))) < 1e-7
+        and abs(float(getattr(a, "end_margin", getattr(a, "margin", 0.0))) - float(getattr(b, "end_margin", getattr(b, "margin", 0.0)))) < 1e-7
     )
 
 
@@ -202,26 +341,60 @@ def _style_pair_mesh(mesh, pairs) -> None:
     mesh.pair_heads = [float(pair.head) for pair in pairs]
     mesh.pair_styles = [_style_copy(getattr(pair, "style", None)) for pair in pairs]
     if pairs:
-        mesh.shaft_radius = float(pairs[0].width)
+        width = float(pairs[0].width)
+        mesh.shaft_radius = width
+        mesh.linewidth = width
         mesh.line_style = _style_copy(getattr(pairs[0], "style", None))
+
+
+def _arrow_pair_color(pair) -> tuple:
+    choice = pair.color_choice()
+    if not choice.field_id:
+        return pair.color
+    from ...util.field_sample import sample_rgb_at
+    start = np.asarray(pair.start.xyz(), dtype=float)
+    end = np.asarray(pair.end.xyz(), dtype=float) if pair.end is not None else start
+    mid = 0.5 * (start + end)
+    sampled = sample_rgb_at(mid, choice.field_id, choice.colormap, choice.clims, smooth=0.0)
+    return sampled or pair.color
+
+
+def _apply_arrow_field_color(mesh, pairs) -> None:
+    from ...util.field_sample import clear_mesh_field, paint_mesh_by_field
+
+    field_ids = {getattr(pair.start, "field_id", None) for pair in pairs}
+    if len(field_ids) == 1:
+        field_id = next(iter(field_ids))
+        if field_id:
+            paint_mesh_by_field(
+                mesh,
+                field_id,
+                colormap=pairs[0].start.field_colormap,
+                clims=pairs[0].start.field_clims,
+                refine=False,
+                colormap_spec=getattr(pairs[0].start, "field_colormap_spec", None),
+                clim_mode=getattr(pairs[0].start, "field_clim_mode", None),
+            )
+            return
+    clear_mesh_field(mesh)
+    mesh.color = np.array([_arrow_pair_color(pair) for pair in pairs], dtype=float)
+    if hasattr(mesh, "invalidate_cgo_cache"):
+        mesh.invalidate_cgo_cache()
 
 
 def _retarget_arrows(mesh, pairs) -> None:
     mesh._start_sources = [pair.start.point_source for pair in pairs]
     mesh._end_sources = [pair.end.point_source for pair in pairs]
     verts = []
-    colors = []
     trans = []
     for pair in pairs:
         verts.append(pair.start.xyz())
         verts.append(pair.end.xyz())
-        colors.append(pair.color)
         trans.append(1.0 - float(pair.alpha))
     mesh.vertices = np.array(verts, dtype=float)
-    mesh.color = np.array(colors, dtype=float)
     mesh.transparency = trans
     _style_pair_mesh(mesh, pairs)
-    mesh.invalidate_cgo_cache()
+    _apply_arrow_field_color(mesh, pairs)
     mesh._pair_spans = None
 
 
@@ -298,6 +471,7 @@ class RuntimeCollectionPreview:
         self.cmd = cmd_
         self.name = name
         self._obj = None
+        self.specular = True
 
     def adopt(self, collection: CGOCollection):
         """Materialize already-baked meshes without calling ``rebuild``."""
@@ -305,6 +479,7 @@ class RuntimeCollectionPreview:
             self.cleanup()
             return
         collection.name = self.name
+        self.specular = bool(getattr(collection, "specular", True))
         runtime = _runtime(self.cmd)
         if self._obj is not None:
             try:
@@ -320,6 +495,7 @@ class RuntimeCollectionPreview:
             self.cleanup()
             return
         collection.name = self.name
+        collection.specular = bool(self.specular)
         runtime = _runtime(self.cmd)
         if self._obj is None:
             collection.id = "preview_" + uuid.uuid4().hex
@@ -336,9 +512,23 @@ class RuntimeCollectionPreview:
         self._obj = None
         return obj
 
+    def set_specular(self, enabled: bool) -> None:
+        self.specular = bool(enabled)
+        if self._obj is None:
+            return
+        self._obj.specular = self.specular
+        for child in self._obj:
+            child.specular = self.specular
+            if hasattr(child, "invalidate_cgo_cache"):
+                child.invalidate_cgo_cache()
+        if hasattr(self._obj, "invalidate_merged_cache"):
+            self._obj.invalidate_merged_cache()
+        self.push_tokens()
+
     def push_tokens(self):
         if self._obj is None:
             return
+        self._obj.specular = bool(self.specular)
         _runtime(self.cmd).replace_cgo(self._obj)
 
     def set_children(self, children, transparency=0):
@@ -348,11 +538,13 @@ class RuntimeCollectionPreview:
         if self._obj is None:
             collection = CGOCollection(children, name=self.name)
             collection.transparency = transparency
+            collection.specular = bool(self.specular)
             self.update_collection(collection)
             return
         self._obj.clear()
         self._obj.extend(children)
         self._obj.transparency = transparency
+        self._obj.specular = bool(self.specular)
         _invalidate_merged(self._obj)
         self.push_tokens()
 
@@ -361,12 +553,14 @@ class RuntimeCollectionPreview:
             collection = CGOCollection([mesh], name=self.name)
             if transparency is not None:
                 collection.transparency = transparency
+            collection.specular = bool(self.specular)
             self.update_collection(collection)
             return
         self._obj.append(mesh)
         _invalidate_merged(self._obj)
         if transparency is not None:
             self._obj.transparency = transparency
+        self._obj.specular = bool(self.specular)
         if push:
             self.push_tokens()
 
@@ -401,9 +595,12 @@ def build_cgo_collection(
     name: str,
     color=None,
     wireframe_quality: int = 3,
+    clip_planes=None,
 ) -> CGOCollection:
-    quality = effective_wireframe_quality(wireframe_quality, len(points), wireframe=wireframe)
+    active = enabled_points(points)
+    quality = effective_wireframe_quality(wireframe_quality, len(active), wireframe=wireframe)
     meshes = []
+    clips = normalize_clip_planes(clip_planes)
     for pt in points:
         sphere = Sphere(
             pt.point_source,
@@ -411,13 +608,16 @@ def build_cgo_collection(
             color=pt.color,
             frequency=quality.frequency,
             wireframe=wireframe,
+            clip_planes=clips,
+            enabled=bool(getattr(pt, "enabled", True)),
             bypass_colormap=True,
             transparency=1.0 - float(pt.alpha),
         )
+        apply_point_color_to_mesh(sphere, pt)
         meshes.append(sphere)
     collection = CGOCollection(meshes, name=name)
-    if points:
-        collection.transparency = 1.0 - min(float(pt.alpha) for pt in points)
+    if active:
+        collection.transparency = 1.0 - min(float(pt.alpha) for pt in active)
     return collection
 
 
@@ -426,32 +626,38 @@ def build_box_cgo_collection(
     extent: Sequence[float],
     wireframe: bool,
     name: str,
+    clip_planes=None,
 ) -> CGOCollection:
+    active = enabled_points(points)
     meshes = []
+    clips = normalize_clip_planes(clip_planes)
     for pt in points:
         box = CenteredBox(
             pt.point_source,
             extent,
             color=pt.color,
             wireframe=wireframe,
+            clip_planes=clips,
+            enabled=bool(getattr(pt, "enabled", True)),
             bypass_colormap=True,
             transparency=1.0 - float(pt.alpha),
         )
+        apply_point_color_to_mesh(box, pt)
         meshes.append(box)
     collection = CGOCollection(meshes, name=name)
-    if points:
-        collection.transparency = 1.0 - min(float(pt.alpha) for pt in points)
+    if active:
+        collection.transparency = 1.0 - min(float(pt.alpha) for pt in active)
     return collection
 
 
-def build_arrow_collection(pairs, quality: int, style, name: str) -> CGOCollection:
+def build_arrow_collection(pairs, quality: int, style, name: str, clip_planes=None, head_radius=None) -> CGOCollection:
     ready = complete_pairs(pairs)
     if not ready:
         return CGOCollection([], name=name)
     arrows = Arrows(
         starts=[pair.start.point_source for pair in ready],
         ends=[pair.end.point_source for pair in ready],
-        color=[pair.color for pair in ready],
+        color=[_arrow_pair_color(pair) for pair in ready],
         transparency=[1.0 - float(pair.alpha) for pair in ready],
         quality=int(quality),
         line_style=style or getattr(ready[0], "style", None),
@@ -459,8 +665,11 @@ def build_arrow_collection(pairs, quality: int, style, name: str) -> CGOCollecti
         use_styled_cgo=True,
         bypass_colormap=True,
         name=name,
+        clip_planes=clip_planes,
+        head_radius=head_radius,
     )
     _style_pair_mesh(arrows, ready)
+    _apply_arrow_field_color(arrows, ready)
     collection = CGOCollection([arrows], name=name)
     collection.transparency = 1.0 - min(float(pair.alpha) for pair in ready)
     return collection
@@ -478,25 +687,28 @@ def build_surface_collection(
     vdw_scale: float = DEFAULT_VDW_SCALE,
     clip_planes=None,
 ) -> CGOCollection:
-    if not points:
+    active = enabled_points(points)
+    if not active:
         return CGOCollection([], name=name)
-    alpha = 1.0 - min(float(pt.alpha) for pt in points)
+    alpha = 1.0 - min(float(pt.alpha) for pt in active)
     mesh = Surface(
         [pt.point_source for pt in points],
         atom_radius=float(atom_radius),
         probe_radius=float(probe_radius),
         algorithm=algorithm,
         quality=int(quality),
-        color=points[0].color,
+        color=active[0].color,
         wireframe=bool(wireframe),
         radius_mode=radius_mode,
         vdw_scale=float(vdw_scale),
         point_radii=[getattr(pt, "radius", None) for pt in points],
+        point_enabled=[getattr(pt, "enabled", True) for pt in points],
         clip_planes=clip_planes,
         bypass_colormap=True,
         transparency=alpha,
         name=name,
     )
+    apply_surface_color_to_mesh(mesh, points)
     collection = CGOCollection([mesh], name=name)
     collection.transparency = alpha
     return collection
@@ -527,7 +739,7 @@ def persist_collection(cmd_, collection: CGOCollection, obj_id=None):
 
 
 def persist_promoted(cmd_, collection: CGOCollection, name: str, obj_id=None):
-    """Move a live preview collection into the session without remeshing."""
+    """Move a live preview collection into the session and reload CGO tokens."""
     from ...runtime.bindings import PyMOLBinding
     from ...runtime.integration import install
     from ...runtime.runtime import get_runtime
@@ -578,7 +790,15 @@ def persist_promoted(cmd_, collection: CGOCollection, name: str, obj_id=None):
                     style_hash=style_hash(collection),
                 )
             )
-            runtime._apply_transparency(collection, new_pymol_name)
+            # Reload tokens into the (possibly renamed) object. Width / head
+            # radius live on the Python mesh; renaming the preview CGO is not
+            # enough if those fields changed since the last load.
+            if hasattr(collection, "invalidate_merged_cache"):
+                collection.invalidate_merged_cache()
+            for child in collection:
+                if hasattr(child, "invalidate_cgo_cache"):
+                    child.invalidate_cgo_cache()
+            runtime.replace_cgo(collection)
             try:
                 cmd_.enable(new_pymol_name)
             except Exception:
@@ -617,24 +837,41 @@ def persist_live_preview(
     preview.cleanup()
 
 
-def retarget_point_collection(collection: CGOCollection, points: Sequence[VisualPoint]) -> bool:
+def retarget_point_collection(
+    collection: CGOCollection,
+    points: Sequence[VisualPoint],
+    clip_planes=None,
+) -> bool:
     if len(collection) != len(points):
         return False
+    incoming_clips = normalize_clip_planes(clip_planes)
     for mesh, pt in zip(collection, points):
         _retarget_point_mesh(mesh, pt)
-    if points:
-        collection.transparency = 1.0 - min(float(pt.alpha) for pt in points)
+        mesh.enabled = bool(getattr(pt, "enabled", True))
+        if hasattr(mesh, "set_clip_planes"):
+            if not clip_planes_match(getattr(mesh, "clip_planes", None), incoming_clips):
+                mesh.set_clip_planes(incoming_clips)
+        elif incoming_clips:
+            mesh.clip_planes = incoming_clips
+    active = enabled_points(points)
+    if active:
+        collection.transparency = 1.0 - min(float(pt.alpha) for pt in active)
     _invalidate_merged(collection)
     return True
 
 
-def retarget_arrow_collection(collection: CGOCollection, pairs) -> bool:
+def retarget_arrow_collection(collection: CGOCollection, pairs, clip_planes=None, head_radius=None) -> bool:
     if len(collection) != 1:
         return False
     mesh = collection[0]
     if type(mesh).__name__ != "Arrows":
         return False
     _retarget_arrows(mesh, pairs)
+    incoming = normalize_clip_planes(clip_planes)
+    mesh.clip_planes = incoming
+    mesh.head_radius = None if head_radius is None else float(head_radius)
+    if hasattr(mesh, "invalidate_cgo_cache"):
+        mesh.invalidate_cgo_cache()
     if pairs:
         collection.transparency = 1.0 - min(float(pair.alpha) for pair in pairs)
     _invalidate_merged(collection)
@@ -677,6 +914,12 @@ def retarget_surface_collection(
     stored = normalize_point_radii(getattr(mesh, "point_radii", None), len(points))
     if incoming != stored:
         return False
+    incoming_en = normalize_point_enabled(
+        [getattr(pt, "enabled", True) for pt in points], len(points),
+    )
+    stored_en = normalize_point_enabled(getattr(mesh, "point_enabled", None), len(points))
+    if incoming_en != stored_en:
+        return False
     sources = list(getattr(mesh, "point_sources", None) or [])
     if len(sources) != len(points):
         return False
@@ -687,41 +930,210 @@ def retarget_surface_collection(
         if float(np.max(np.abs(old - new))) > 1e-5:
             return False
     mesh.point_sources = [pt.point_source for pt in points]
+    mesh.point_enabled = incoming_en
+    wireframe_changed = bool(getattr(mesh, "wireframe", False)) != bool(wireframe)
     mesh.wireframe = bool(wireframe)
-    if points:
-        mesh.color = np.array(points[0].color, dtype=float)
-        collection.transparency = 1.0 - min(float(pt.alpha) for pt in points)
-        mesh.transparency = collection.transparency
     incoming_clips = normalize_clip_planes(clip_planes)
-    if not clip_planes_match(getattr(mesh, "clip_planes", None), incoming_clips):
+    clips_changed = not clip_planes_match(getattr(mesh, "clip_planes", None), incoming_clips)
+    if clips_changed:
         if hasattr(mesh, "set_clip_planes"):
             mesh.set_clip_planes(incoming_clips)
         else:
             mesh.clip_planes = incoming_clips
-    if hasattr(mesh, "invalidate_cgo_cache"):
-        mesh.invalidate_cgo_cache()
-    _invalidate_merged(collection)
+    color_changed = False
+    active = enabled_points(points)
+    if active:
+        collection.transparency = 1.0 - min(float(pt.alpha) for pt in active)
+        color_changed = bool(apply_surface_color_to_mesh(mesh, points))
+        mesh.transparency = collection.transparency
+    dirty = color_changed or clips_changed or wireframe_changed
+    if dirty:
+        if hasattr(mesh, "invalidate_cgo_cache"):
+            mesh.invalidate_cgo_cache()
+        _invalidate_merged(collection)
+    collection._preview_dirty = dirty
     return True
 
 
-def set_visual_enabled(cmd_, obj, enabled: bool) -> None:
+def _pymol_binding_name(cmd_, obj):
     from ...runtime.runtime import get_runtime
 
     binding = get_runtime(cmd_).bindings.get(getattr(obj, "id", None))
     if binding is None:
+        return None
+    return binding.pymol_name
+
+
+def _pymol_object_name(cmd_, obj):
+    name = _pymol_binding_name(cmd_, obj)
+    if name:
+        return name
+    stored = getattr(obj, "_name", None)
+    if stored:
+        return str(stored)
+    return None
+
+
+def set_visual_enabled(cmd_, obj, enabled: bool) -> None:
+    name = _pymol_object_name(cmd_, obj)
+    if not name:
         return
     try:
         if enabled:
-            cmd_.enable(binding.pymol_name)
+            cmd_.enable(name)
         else:
-            cmd_.disable(binding.pymol_name)
+            cmd_.disable(name)
     except Exception:
         pass
+
+
+def visual_is_enabled(cmd_, obj) -> bool:
+    name = _pymol_object_name(cmd_, obj)
+    if not name:
+        return True
+    try:
+        names = cmd_.get_names("objects", enabled_only=1)
+        return str(name) in names
+    except TypeError:
+        try:
+            names = cmd_.get_names("objects", 1)
+            return str(name) in names
+        except Exception:
+            return True
+    except Exception:
+        return True
+
+
+def delete_visual(cmd_, obj) -> None:
+    from ...runtime.runtime import get_runtime
+    from ...runtime.session import remove as session_remove
+
+    try:
+        get_runtime(cmd_).remove(obj)
+    except Exception:
+        pass
+    session_remove(obj)
+
+
+class ClipGizmoPreview:
+    """Clip-plane rectangles + native Drag widget, shared by every mesh preview."""
+
+    def __init__(self, cmd_, name: str = PREVIEW_CLIP_NAME):
+        self.cmd = cmd_
+        self._name = name
+        self._clip_preview = RuntimeCollectionPreview(cmd_, name)
+        self._clip_drag_rest = None
+        self._clip_drag_matrix = None
+        self._clip_drag_button_mode = None
+        self._axis_lock = False
+
+    def set_gizmos(self, planes, selected_index=None, span_points=None, attach_drag=True, axis_lock=None):
+        if axis_lock is not None:
+            self._axis_lock = bool(axis_lock)
+        planes = list(planes or [])
+        if not planes:
+            self._clip_preview.cleanup()
+            self._stop_clip_drag()
+            return
+        children = []
+        for i, plane in enumerate(planes):
+            origin = plane.get("origin", (0.0, 0.0, 0.0))
+            normal = plane.get("normal", (0.0, 0.0, 1.0))
+            scale = float(plane.get("scale", 5.0) or 5.0)
+            children.append(
+                ClipGizmo(
+                    origin, normal, scale,
+                    points=span_points,
+                    selected=(selected_index is not None and i == int(selected_index)),
+                    draft=False,
+                    bypass_colormap=True,
+                )
+            )
+        collection = CGOCollection(children, name=self._name)
+        self._clip_preview.update_collection(collection)
+        if attach_drag:
+            self._sync_clip_drag(planes, selected_index, span_points)
+
+    def _clip_visual_center(self, plane, span_points):
+        origin = plane.get("origin", (0.0, 0.0, 0.0))
+        normal = plane.get("normal", (0.0, 0.0, 1.0))
+        scale = float(plane.get("scale", 5.0) or 5.0)
+        center, _n, _u, _v = fit_plane_rectangle(
+            origin, normal, points=span_points, scale=scale,
+        )
+        return (
+            [float(origin[0]), float(origin[1]), float(origin[2])],
+            [float(normal[0]), float(normal[1]), float(normal[2])],
+            [float(center[0]), float(center[1]), float(center[2])],
+        )
+
+    def drag_is_live(self) -> bool:
+        if self._clip_drag_rest is None:
+            return False
+        try:
+            active = str(self.cmd.get_drag_object_name() or "")
+        except Exception:
+            active = ""
+        return active == CLIP_DRAG_NAME
+
+    def _sync_clip_drag(self, planes, selected_index, span_points):
+        if selected_index is None or int(selected_index) < 0 or int(selected_index) >= len(planes):
+            self._stop_clip_drag()
+            return
+        idx = int(selected_index)
+        origin, normal, center = self._clip_visual_center(planes[idx], span_points)
+        rest = self._clip_drag_rest
+        if rest is not None:
+            try:
+                active = str(self.cmd.get_drag_object_name() or "")
+            except Exception:
+                active = ""
+            # Keep the rest pose + dummy TTT for the whole gesture. Restarting
+            # the dummy at the moved plane re-applies the same TTT and the
+            # plane jumps (and remeshes) every poll tick.
+            if active == CLIP_DRAG_NAME and int(rest.get("index", idx)) == idx:
+                return
+        saved_mode = self._clip_drag_button_mode
+        attached_mode = start_clip_drag(self.cmd, center)
+        self._clip_drag_button_mode = saved_mode if saved_mode is not None else attached_mode
+        self._clip_drag_rest = {
+            "origin": origin, "normal": normal, "center": center, "index": idx,
+        }
+        self._clip_drag_matrix = read_object_matrix(self.cmd, CLIP_DRAG_NAME)
+
+    def poll_clip_drag(self):
+        rest = self._clip_drag_rest
+        if rest is None:
+            return None
+        matrix = read_object_matrix(self.cmd, CLIP_DRAG_NAME)
+        if not matrix_changed(self._clip_drag_matrix, matrix):
+            return None
+        self._clip_drag_matrix = matrix
+        apply = apply_axis_drag_matrix if self._axis_lock else apply_drag_matrix
+        origin, normal, _center = apply(
+            rest["origin"], rest["normal"], rest["center"], matrix,
+        )
+        return origin, normal
+
+    def release_clip_drag(self):
+        self._stop_clip_drag()
+
+    def _stop_clip_drag(self):
+        stop_clip_drag(self.cmd, button_mode=self._clip_drag_button_mode)
+        self._clip_drag_rest = None
+        self._clip_drag_matrix = None
+        self._clip_drag_button_mode = None
+
+    def cleanup(self):
+        self._stop_clip_drag()
+        self._clip_preview.cleanup()
+        purge_objects(self.cmd, prefixes=(self._name, CLIP_DRAG_NAME))
 
 
 class SpherePreview:
     def __init__(self, cmd_):
         self._preview = RuntimeCollectionPreview(cmd_, PREVIEW_SPHERE_NAME)
+        self._gizmos = ClipGizmoPreview(cmd_)
 
     @property
     def collection(self):
@@ -734,13 +1146,35 @@ class SpherePreview:
         """Open an existing visual using its baked meshes (no icosphere rebuild)."""
         self._preview.adopt(_clone_collection(source, PREVIEW_SPHERE_NAME))
 
-    def update(self, points, radius, wireframe, wireframe_quality: int = 3):
+    def span_points(self):
+        return _enabled_vertex_span(self._preview._obj)
+
+    def set_gizmos(self, planes, selected_index=None, span_points=None, attach_drag=True):
+        if span_points is None:
+            span_points = self.span_points()
+        self._gizmos.set_gizmos(planes, selected_index, span_points, attach_drag)
+
+    def drag_is_live(self) -> bool:
+        return self._gizmos.drag_is_live()
+
+    def set_specular(self, enabled: bool) -> None:
+        self._preview.set_specular(enabled)
+
+    def poll_clip_drag(self):
+        return self._gizmos.poll_clip_drag()
+
+    def release_clip_drag(self):
+        return self._gizmos.release_clip_drag()
+
+    def update(self, points, radius, wireframe, wireframe_quality: int = 3, clip_planes=None):
         if not points:
             self.cleanup()
             return
+        active = enabled_points(points)
         quality = effective_wireframe_quality(
-            wireframe_quality, len(points), wireframe=wireframe,
+            wireframe_quality, len(active) or len(points), wireframe=wireframe,
         )
+        clips = normalize_clip_planes(clip_planes)
         existing = list(self._preview._obj) if self._preview._obj is not None else []
         children = []
         for i, pt in enumerate(points):
@@ -748,20 +1182,26 @@ class SpherePreview:
                 existing[i], radius, wireframe, quality.frequency,
             ):
                 _retarget_point_mesh(existing[i], pt)
+                existing[i].enabled = bool(getattr(pt, "enabled", True))
+                if hasattr(existing[i], "set_clip_planes"):
+                    if not clip_planes_match(getattr(existing[i], "clip_planes", None), clips):
+                        existing[i].set_clip_planes(clips)
                 children.append(existing[i])
             else:
-                children.append(
-                    Sphere(
-                        pt.point_source,
-                        float(radius),
-                        color=pt.color,
-                        frequency=quality.frequency,
-                        wireframe=wireframe,
-                        bypass_colormap=True,
-                        transparency=1.0 - float(pt.alpha),
-                    )
+                sphere = Sphere(
+                    pt.point_source,
+                    float(radius),
+                    color=pt.color,
+                    frequency=quality.frequency,
+                    wireframe=wireframe,
+                    clip_planes=clips,
+                    enabled=bool(getattr(pt, "enabled", True)),
+                    bypass_colormap=True,
+                    transparency=1.0 - float(pt.alpha),
                 )
-        alpha = 1.0 - min(float(pt.alpha) for pt in points)
+                apply_point_color_to_mesh(sphere, pt)
+                children.append(sphere)
+        alpha = 1.0 - min(float(pt.alpha) for pt in (active or points))
         self._preview.set_children(children, transparency=alpha)
 
     def add_points(self, points, radius, wireframe, wireframe_quality: int = 3):
@@ -770,11 +1210,13 @@ class SpherePreview:
         if self._preview._obj is None:
             self.update(points, radius, wireframe, wireframe_quality)
             return True
+        sample = self._preview._obj[0]
+        if getattr(sample, "clip_planes", None):
+            return False
         n_total = len(self._preview._obj) + len(points)
         quality = effective_wireframe_quality(
             wireframe_quality, n_total, wireframe=wireframe,
         )
-        sample = self._preview._obj[0]
         if not _sphere_can_reuse(sample, radius, wireframe, quality.frequency):
             return False
         for pt in points:
@@ -784,9 +1226,11 @@ class SpherePreview:
                 color=pt.color,
                 frequency=quality.frequency,
                 wireframe=wireframe,
+                enabled=bool(getattr(pt, "enabled", True)),
                 bypass_colormap=True,
                 transparency=1.0 - float(pt.alpha),
             )
+            apply_point_color_to_mesh(sphere, pt)
             self._preview.append_child(sphere, transparency=1.0 - float(pt.alpha), push=False)
         self._preview.push_tokens()
         return True
@@ -798,6 +1242,7 @@ class SpherePreview:
             self._preview.push_tokens()
 
     def cleanup(self):
+        self._gizmos.cleanup()
         self._preview.cleanup()
         purge_objects(
             self._preview.cmd,
@@ -808,6 +1253,7 @@ class SpherePreview:
 class BoxPreview:
     def __init__(self, cmd_):
         self._preview = RuntimeCollectionPreview(cmd_, PREVIEW_BOX_NAME)
+        self._gizmos = ClipGizmoPreview(cmd_)
 
     @property
     def collection(self):
@@ -819,28 +1265,56 @@ class BoxPreview:
     def adopt(self, source):
         self._preview.adopt(_clone_collection(source, PREVIEW_BOX_NAME))
 
-    def update(self, points, extent, wireframe):
+    def span_points(self):
+        return _enabled_vertex_span(self._preview._obj)
+
+    def set_gizmos(self, planes, selected_index=None, span_points=None, attach_drag=True):
+        if span_points is None:
+            span_points = self.span_points()
+        self._gizmos.set_gizmos(planes, selected_index, span_points, attach_drag)
+
+    def drag_is_live(self) -> bool:
+        return self._gizmos.drag_is_live()
+
+    def set_specular(self, enabled: bool) -> None:
+        self._preview.set_specular(enabled)
+
+    def poll_clip_drag(self):
+        return self._gizmos.poll_clip_drag()
+
+    def release_clip_drag(self):
+        return self._gizmos.release_clip_drag()
+
+    def update(self, points, extent, wireframe, clip_planes=None):
         if not points:
             self.cleanup()
             return
+        active = enabled_points(points)
+        clips = normalize_clip_planes(clip_planes)
         existing = list(self._preview._obj) if self._preview._obj is not None else []
         children = []
         for i, pt in enumerate(points):
             if i < len(existing) and _box_can_reuse(existing[i], extent, wireframe):
                 _retarget_point_mesh(existing[i], pt)
+                existing[i].enabled = bool(getattr(pt, "enabled", True))
+                if hasattr(existing[i], "set_clip_planes"):
+                    if not clip_planes_match(getattr(existing[i], "clip_planes", None), clips):
+                        existing[i].set_clip_planes(clips)
                 children.append(existing[i])
             else:
-                children.append(
-                    CenteredBox(
-                        pt.point_source,
-                        extent,
-                        color=pt.color,
-                        wireframe=wireframe,
-                        bypass_colormap=True,
-                        transparency=1.0 - float(pt.alpha),
-                    )
+                box = CenteredBox(
+                    pt.point_source,
+                    extent,
+                    color=pt.color,
+                    wireframe=wireframe,
+                    clip_planes=clips,
+                    enabled=bool(getattr(pt, "enabled", True)),
+                    bypass_colormap=True,
+                    transparency=1.0 - float(pt.alpha),
                 )
-        alpha = 1.0 - min(float(pt.alpha) for pt in points)
+                apply_point_color_to_mesh(box, pt)
+                children.append(box)
+        alpha = 1.0 - min(float(pt.alpha) for pt in (active or points))
         self._preview.set_children(children, transparency=alpha)
 
     def add_points(self, points, extent, wireframe):
@@ -850,6 +1324,8 @@ class BoxPreview:
             self.update(points, extent, wireframe)
             return True
         sample = self._preview._obj[0]
+        if getattr(sample, "clip_planes", None):
+            return False
         if not _box_can_reuse(sample, extent, wireframe):
             return False
         for pt in points:
@@ -858,9 +1334,11 @@ class BoxPreview:
                 extent,
                 color=pt.color,
                 wireframe=wireframe,
+                enabled=bool(getattr(pt, "enabled", True)),
                 bypass_colormap=True,
                 transparency=1.0 - float(pt.alpha),
             )
+            apply_point_color_to_mesh(box, pt)
             self._preview.append_child(box, transparency=1.0 - float(pt.alpha), push=False)
         self._preview.push_tokens()
         return True
@@ -872,6 +1350,7 @@ class BoxPreview:
             self._preview.push_tokens()
 
     def cleanup(self):
+        self._gizmos.cleanup()
         self._preview.cleanup()
         purge_objects(
             self._preview.cmd,
@@ -884,6 +1363,7 @@ class ArrowPreview:
         self.cmd = cmd_
         self._preview = RuntimeCollectionPreview(cmd_, PREVIEW_ARROW_NAME)
         self._pending = RuntimeCollectionPreview(cmd_, PREVIEW_ARROW_PENDING)
+        self._gizmos = ClipGizmoPreview(cmd_)
 
     @property
     def collection(self):
@@ -895,18 +1375,47 @@ class ArrowPreview:
     def adopt(self, source):
         self._preview.adopt(_clone_collection(source, PREVIEW_ARROW_NAME))
 
-    def update(self, pairs, quality: int, style, pending=None, highlight_id=None):
+    def span_points(self):
+        return _enabled_vertex_span(self._preview._obj)
+
+    def set_gizmos(self, planes, selected_index=None, span_points=None, attach_drag=True):
+        if span_points is None:
+            span_points = self.span_points()
+        self._gizmos.set_gizmos(planes, selected_index, span_points, attach_drag)
+
+    def drag_is_live(self) -> bool:
+        return self._gizmos.drag_is_live()
+
+    def set_specular(self, enabled: bool) -> None:
+        self._preview.set_specular(enabled)
+
+    def poll_clip_drag(self):
+        return self._gizmos.poll_clip_drag()
+
+    def release_clip_drag(self):
+        return self._gizmos.release_clip_drag()
+
+    def update(self, pairs, quality: int, style, pending=None, highlight_id=None,
+               clip_planes=None, head_radius=None):
         ready = _preview_pairs(pairs, highlight_id)
+        clips = normalize_clip_planes(clip_planes)
         if ready:
             existing = list(self._preview._obj) if self._preview._obj is not None else []
             mesh = existing[0] if existing else None
             if mesh is not None and _arrow_can_reuse(mesh, quality, len(ready)):
                 _retarget_arrows(mesh, ready)
+                mesh.clip_planes = clips
+                mesh.head_radius = None if head_radius is None else float(head_radius)
+                if hasattr(mesh, "invalidate_cgo_cache"):
+                    mesh.invalidate_cgo_cache()
                 alpha = 1.0 - min(float(pair.alpha) for pair in ready)
                 self._preview.set_children([mesh], transparency=alpha)
             else:
                 self._preview.update_collection(
-                    build_arrow_collection(ready, quality, style, PREVIEW_ARROW_NAME)
+                    build_arrow_collection(
+                        ready, quality, style, PREVIEW_ARROW_NAME,
+                        clip_planes=clips, head_radius=head_radius,
+                    )
                 )
         else:
             self._preview.cleanup()
@@ -922,6 +1431,8 @@ class ArrowPreview:
         if type(mesh).__name__ != "Arrows":
             return False
         if int(getattr(mesh, "quality", -1)) != int(quality):
+            return False
+        if getattr(mesh, "clip_planes", None):
             return False
         for pair in new_pairs:
             _append_arrow_pair_arrays(mesh, pair)
@@ -981,6 +1492,7 @@ class ArrowPreview:
         self._pending.update_collection(CGOCollection([marker], name=PREVIEW_ARROW_PENDING))
 
     def cleanup(self):
+        self._gizmos.cleanup()
         self._preview.cleanup()
         self._pending.cleanup()
         purge_objects(
@@ -989,10 +1501,214 @@ class ArrowPreview:
         )
 
 
+class NativeFieldVisualPreview:
+    """One ephemeral IsoSurface / IsoMesh / Volume loaded through ``visual.load``."""
+
+    def __init__(self, cmd_, name: str):
+        self.cmd = cmd_
+        self.name = name
+        self.visual = None
+        self.key = None
+
+    def update(self, visual=None, key=None):
+        if visual is None:
+            self.cleanup()
+            return
+        if key is not None and key == self.key and self.visual is not None:
+            return
+        self.cleanup()
+        from .field_preview import load_preview_field_visual
+
+        load_preview_field_visual(self.cmd, visual)
+        self.visual = visual
+        self.key = key
+
+    def cleanup(self):
+        visual = self.visual
+        self.visual = None
+        self.key = None
+        names = []
+        if visual is not None:
+            names.append(str(visual.name))
+            names.append("%s_volume_color_ramp" % visual.name)
+        purge_objects(self.cmd, names=names, prefixes=(self.name,))
+
+
+class FromSelectionFieldPreview:
+    """Atom markers or native IsoSurface (optional Volume) for From Selection fields."""
+
+    def __init__(self, cmd_):
+        self.cmd = cmd_
+        self._markers = SpherePreview(cmd_)
+        self._native = NativeFieldVisualPreview(cmd_, PREVIEW_FIELD_ISO_NAME)
+        self._volume = NativeFieldVisualPreview(cmd_, PREVIEW_FIELD_VOLUME_NAME)
+        self._domain = RuntimeCollectionPreview(cmd_, PREVIEW_DOMAIN_NAME)
+        self._iso_key = None
+        self._domain_key = None
+
+    @property
+    def visual(self):
+        return self._native.visual
+
+    @property
+    def collection(self):
+        if self._native.visual is not None:
+            return None
+        return self._markers.collection
+
+    def take(self):
+        return self._markers.take()
+
+    def adopt(self, source):
+        self._markers.adopt(source)
+
+    def span_points(self):
+        return self._markers.span_points()
+
+    def set_gizmos(self, planes, selected_index=None, span_points=None, attach_drag=True):
+        self._markers.set_gizmos(planes, selected_index, span_points, attach_drag)
+
+    def drag_is_live(self) -> bool:
+        return self._markers.drag_is_live()
+
+    def set_specular(self, enabled: bool) -> None:
+        self._markers.set_specular(enabled)
+
+    def poll_clip_drag(self):
+        return self._markers.poll_clip_drag()
+
+    def release_clip_drag(self):
+        return self._markers.release_clip_drag()
+
+    def update(
+        self,
+        points,
+        marker_radius,
+        live_iso=False,
+        iso_visual=None,
+        volume_visual=None,
+        iso_key=None,
+        wireframe_quality: int = 1,
+        domain_aabb=None,
+        show_domain=False,
+    ):
+        self._set_domain_box(domain_aabb, show_domain=show_domain)
+        if not points:
+            self._iso_key = None
+            self._native.cleanup()
+            self._volume.cleanup()
+            self._markers.cleanup()
+            return
+        if live_iso and iso_visual is not None:
+            self._markers._preview.cleanup()
+            if iso_key is not None and iso_key == self._iso_key and self._native.visual is not None:
+                return
+            self._native.update(iso_visual, key=iso_key)
+            self._volume.update(volume_visual, key=iso_key)
+            self._iso_key = iso_key
+            return
+        self._native.cleanup()
+        self._volume.cleanup()
+        self._iso_key = None
+        self._markers.update(points, marker_radius, False, wireframe_quality)
+
+    def _set_domain_box(self, aabb, show_domain=False):
+        apply_domain_box_preview(self, aabb, show_domain=show_domain)
+
+    def cleanup(self):
+        self._iso_key = None
+        self._domain_key = None
+        self._domain.cleanup()
+        self._native.cleanup()
+        self._volume.cleanup()
+        self._markers.cleanup()
+        from .field_preview import PREVIEW_NATIVE_PREFIXES
+
+        purge_objects(self.cmd, prefixes=PREVIEW_NATIVE_PREFIXES)
+
+
+def apply_domain_box_preview(holder, aabb, show_domain=False, grid=None):
+    """Wire Domain AABB on ``holder._domain`` (RuntimeCollectionPreview)."""
+    from .field_preview import build_domain_box_collection, domain_box_key
+
+    key = domain_box_key(aabb, grid=grid) if show_domain else None
+    if key is None:
+        holder._domain_key = None
+        holder._domain.cleanup()
+        return
+    if key == getattr(holder, "_domain_key", None) and holder._domain._obj is not None:
+        return
+    holder._domain.update_collection(build_domain_box_collection(aabb, PREVIEW_DOMAIN_NAME, grid=grid))
+    holder._domain_key = key
+
+
+class FieldVisualPreview:
+    """Ephemeral native IsoSurface / IsoMesh / Volume (not interned)."""
+
+    def __init__(self, cmd_):
+        self.cmd = cmd_
+        self._native = NativeFieldVisualPreview(cmd_, PREVIEW_FIELD_VISUAL_NAME)
+        self._domain = RuntimeCollectionPreview(cmd_, PREVIEW_DOMAIN_NAME)
+        self._gizmos = ClipGizmoPreview(cmd_, PREVIEW_FIELD_CLIP_NAME)
+        self._iso_key = None
+        self._domain_key = None
+
+    @property
+    def visual(self):
+        return self._native.visual
+
+    @property
+    def collection(self):
+        return None
+
+    def set_gizmos(self, planes, selected_index=None, span_points=None, attach_drag=True, axis_lock=True):
+        self._gizmos.set_gizmos(
+            planes,
+            selected_index=selected_index,
+            span_points=span_points,
+            attach_drag=attach_drag,
+            axis_lock=axis_lock,
+        )
+
+    def drag_is_live(self) -> bool:
+        return self._gizmos.drag_is_live()
+
+    def poll_clip_drag(self):
+        return self._gizmos.poll_clip_drag()
+
+    def release_clip_drag(self):
+        return self._gizmos.release_clip_drag()
+
+    def update(self, visual=None, iso_key=None, domain_aabb=None, show_domain=False, grid=None):
+        apply_domain_box_preview(self, domain_aabb, show_domain=show_domain, grid=grid)
+        if visual is None:
+            self._iso_key = None
+            self._native.cleanup()
+            if not show_domain:
+                self._domain_key = None
+                self._domain.cleanup()
+            return
+        if iso_key is not None and iso_key == self._iso_key and self._native.visual is not None:
+            return
+        self._native.update(visual, key=iso_key)
+        self._iso_key = iso_key
+
+    def cleanup(self):
+        self._iso_key = None
+        self._domain_key = None
+        self._gizmos.cleanup()
+        self._domain.cleanup()
+        self._native.cleanup()
+        from .field_preview import PREVIEW_NATIVE_PREFIXES
+
+        purge_objects(self.cmd, prefixes=PREVIEW_NATIVE_PREFIXES)
+
+
 class SurfacePreview:
     def __init__(self, cmd_):
+        self.cmd = cmd_
         self._preview = RuntimeCollectionPreview(cmd_, PREVIEW_SURFACE_NAME)
-        self._clip_preview = RuntimeCollectionPreview(cmd_, PREVIEW_SURFACE_CLIP_NAME)
+        self._gizmos = ClipGizmoPreview(cmd_, PREVIEW_SURFACE_CLIP_NAME)
 
     @property
     def collection(self):
@@ -1005,49 +1721,30 @@ class SurfacePreview:
         self._preview.adopt(_clone_collection(source, PREVIEW_SURFACE_NAME))
 
     def span_points(self):
-        coll = self._preview._obj
-        if coll is None or len(coll) == 0:
-            return None
-        mesh = coll[0]
-        src = getattr(mesh, "_source_vertices", None)
-        if src is not None:
-            arr = np.asarray(src, dtype=float).reshape(-1, 3)
-            if arr.size:
-                return arr
-        verts = getattr(mesh, "vertices", None)
-        if verts is None:
-            return None
-        arr = np.asarray(verts, dtype=float).reshape(-1, 3)
-        return arr if arr.size else None
+        return _enabled_vertex_span(self._preview._obj)
 
-    def set_gizmos(self, planes, selected_index=None, span_points=None):
-        planes = list(planes or [])
-        if not planes:
-            self._clip_preview.cleanup()
-            return
+    def set_gizmos(self, planes, selected_index=None, span_points=None, attach_drag=True):
         if span_points is None:
             span_points = self.span_points()
-        children = []
-        for i, plane in enumerate(planes):
-            origin = plane.get("origin", (0.0, 0.0, 0.0))
-            normal = plane.get("normal", (0.0, 0.0, 1.0))
-            scale = float(plane.get("scale", 5.0) or 5.0)
-            children.append(
-                ClipGizmo(
-                    origin, normal, scale,
-                    points=span_points,
-                    selected=(selected_index is not None and i == int(selected_index)),
-                    draft=not bool(plane.get("committed", True)),
-                    bypass_colormap=True,
-                )
-            )
-        collection = CGOCollection(children, name=PREVIEW_SURFACE_CLIP_NAME)
-        self._clip_preview.update_collection(collection)
+        self._gizmos.set_gizmos(planes, selected_index, span_points, attach_drag)
+
+    def drag_is_live(self) -> bool:
+        return self._gizmos.drag_is_live()
+
+    def set_specular(self, enabled: bool) -> None:
+        self._preview.set_specular(enabled)
+
+    def poll_clip_drag(self):
+        return self._gizmos.poll_clip_drag()
+
+    def release_clip_drag(self):
+        return self._gizmos.release_clip_drag()
 
     def update(self, points, atom_radius, probe_radius, algorithm, quality, wireframe,
                radius_mode=DEFAULT_RADIUS_MODE, vdw_scale=DEFAULT_VDW_SCALE,
                clip_planes=None, gizmo_planes=None, gizmo_selected=None):
-        if not points:
+        active = enabled_points(points)
+        if not active:
             self.cleanup()
             return
         existing = self._preview._obj
@@ -1055,19 +1752,24 @@ class SurfacePreview:
             existing, points, atom_radius, probe_radius, algorithm, quality, wireframe,
             radius_mode=radius_mode, vdw_scale=vdw_scale, clip_planes=clip_planes,
         ):
-            self._preview.push_tokens()
+            if getattr(existing, "_preview_dirty", True):
+                self._preview.push_tokens()
         else:
             collection = build_surface_collection(
                 points, atom_radius, probe_radius, algorithm, quality, wireframe, PREVIEW_SURFACE_NAME,
                 radius_mode=radius_mode, vdw_scale=vdw_scale, clip_planes=clip_planes,
             )
             self._preview.update_collection(collection)
-        self.set_gizmos(gizmo_planes, selected_index=gizmo_selected)
+        self.set_gizmos(
+            gizmo_planes,
+            selected_index=gizmo_selected,
+            attach_drag=not self.drag_is_live(),
+        )
 
     def cleanup(self):
+        self._gizmos.cleanup()
         self._preview.cleanup()
-        self._clip_preview.cleanup()
         purge_objects(
             self._preview.cmd,
-            prefixes=(PREVIEW_SURFACE_NAME, PREVIEW_SURFACE_CLIP_NAME),
+            prefixes=(PREVIEW_SURFACE_NAME, PREVIEW_SURFACE_CLIP_NAME, CLIP_DRAG_NAME),
         )

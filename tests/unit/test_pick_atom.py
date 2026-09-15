@@ -129,6 +129,11 @@ def test_camera_center_loads_cgo_and_updates_ttt():
     moved = cmd.settings[CAMERA_CENTER_NAME]["_ttt"]
     assert moved == translation_ttt(screen_center(view))
     assert moved != first
+    from pymol.cgo import CYLINDER, VERTEX
+
+    tokens = cmd.objects[CAMERA_CENTER_NAME]
+    assert tokens.count(CYLINDER) == 0
+    assert tokens.count(VERTEX) == 24
 
 
 def test_ensure_object_recreates_deleted_cgo():
@@ -150,3 +155,254 @@ def test_pointer_over_viewer_true_without_qt_app():
     from pymolviz.wizards.pick import pointer_over_viewer
 
     assert pointer_over_viewer() is True
+
+
+def test_stacked_tool_windows_raise_color_picker_last():
+    from pymolviz.wizards.pick import stacked_tool_windows
+
+    class _Win:
+        def __init__(self, last=False):
+            self._pmv_raise_last = last
+
+    wizard = _Win(False)
+    picker = _Win(True)
+    assert stacked_tool_windows([wizard, picker]) == [wizard, picker]
+    assert stacked_tool_windows([picker, wizard]) == [wizard, picker]
+
+
+def test_configure_tool_window_stays_on_top_without_qt_tool():
+    import inspect
+
+    from pymolviz.wizards.pick import configure_tool_window
+
+    src = inspect.getsource(configure_tool_window)
+    assert "WindowStaysOnTopHint" in src
+    assert "_pmv_no_transient" in src
+    assert "| QtCore.Qt.Tool" not in src
+
+
+def test_bind_tool_window_deferred_skips_deleted_color_dialog(monkeypatch):
+    import pymolviz.wizards.pick as pick
+
+    pending = []
+
+    class _FakeTimer:
+        @staticmethod
+        def singleShot(_delay, callback):
+            pending.append(callback)
+
+    class _QtCore:
+        QTimer = _FakeTimer
+
+    class _Sig:
+        def connect(self, _fn):
+            return None
+
+    class _Dialog:
+        def __init__(self):
+            self._alive = True
+            self._pmv_window_anchor = None
+            self.destroyed = _Sig()
+
+        def isVisible(self):
+            if not self._alive:
+                raise RuntimeError(
+                    "wrapped C/C++ object of type QColorDialog has been deleted"
+                )
+            return True
+
+        def show(self):
+            pass
+
+        def raise_(self):
+            pass
+
+        def windowHandle(self):
+            if not self._alive:
+                raise RuntimeError(
+                    "wrapped C/C++ object of type QColorDialog has been deleted"
+                )
+            return None
+
+    monkeypatch.setattr(pick, "qt_modules", lambda: (_QtCore, None, None))
+    monkeypatch.setattr(pick, "find_pymol_window", lambda *_: None)
+    monkeypatch.setattr(pick, "_install_raise_on_parent_activate", lambda *_: None)
+    monkeypatch.setattr(
+        pick, "qt_widget_alive", lambda w: w is not None and getattr(w, "_alive", True)
+    )
+    before = list(pick._OPEN_TOOL_WINDOWS)
+    try:
+        dialog = _Dialog()
+        dialog._pmv_window_anchor = object()
+        pick.bind_tool_window(dialog)
+        dialog._alive = False
+        assert pending
+        pending[-1]()
+    finally:
+        pick._OPEN_TOOL_WINDOWS[:] = before
+
+
+def test_bind_tool_window_skips_transient_when_flagged(monkeypatch):
+    import pymolviz.wizards.pick as pick
+
+    pending = []
+
+    class _FakeTimer:
+        @staticmethod
+        def singleShot(_delay, callback):
+            pending.append(callback)
+
+    class _QtCore:
+        QTimer = _FakeTimer
+
+    class _Sig:
+        def connect(self, _fn):
+            return None
+
+    class _Dialog:
+        def __init__(self):
+            self._pmv_no_transient = True
+            self._pmv_window_anchor = None
+            self.destroyed = _Sig()
+
+        def isVisible(self):
+            return True
+
+    monkeypatch.setattr(pick, "qt_modules", lambda: (_QtCore, None, None))
+    monkeypatch.setattr(pick, "find_pymol_window", lambda *_: object())
+    monkeypatch.setattr(pick, "_install_raise_on_parent_activate", lambda *_: None)
+    before = list(pick._OPEN_TOOL_WINDOWS)
+    try:
+        dialog = _Dialog()
+        pick.bind_tool_window(dialog)
+        assert dialog in pick._OPEN_TOOL_WINDOWS
+        assert pending == []
+    finally:
+        pick._OPEN_TOOL_WINDOWS[:] = before
+
+
+def test_overlay_window_uses_top_level():
+    from pymolviz.wizards.pick import overlay_window
+
+    class _W:
+        def __init__(self, top=None):
+            self._top = top if top is not None else self
+
+        def window(self):
+            return self._top
+
+    top = _W()
+    nested = _W(top)
+    assert overlay_window(None) is None
+    assert overlay_window(top) is top
+    assert overlay_window(nested) is top
+
+    class _Missing:
+        def window(self):
+            return None
+
+    leaf = _Missing()
+    assert overlay_window(leaf) is leaf
+
+
+def test_configure_overlay_dialog_inherits_stay_on_top(monkeypatch):
+    import types
+
+    import pymolviz.wizards.pick as pick
+
+    qt_core = types.SimpleNamespace(
+        Qt=types.SimpleNamespace(WindowStaysOnTopHint=8),
+    )
+    stays = qt_core.Qt.WindowStaysOnTopHint
+
+    class _Flags:
+        def __init__(self, bits):
+            self.bits = bits
+
+        def __or__(self, other):
+            other_bits = other.bits if isinstance(other, _Flags) else int(other)
+            return _Flags(self.bits | other_bits)
+
+        def __and__(self, other):
+            other_bits = other.bits if isinstance(other, _Flags) else int(other)
+            return self.bits & other_bits
+
+        def __bool__(self):
+            return bool(self.bits)
+
+        def __int__(self):
+            return self.bits
+
+    class _Signal:
+        def connect(self, _fn):
+            return None
+
+    class _Win:
+        def __init__(self, flags=0, top=None):
+            self._flags = _Flags(flags)
+            self._parent = None
+            self._top = top if top is not None else self
+            self._pmv_raise_last = False
+            self.destroyed = _Signal()
+
+        def window(self):
+            return self._top
+
+        def windowFlags(self):
+            return self._flags
+
+        def setWindowFlags(self, flags):
+            if not isinstance(flags, _Flags):
+                flags = _Flags(int(flags))
+            self._flags = flags
+
+        def parentWidget(self):
+            return self._parent
+
+        def setParent(self, parent, *_args):
+            self._parent = parent
+            if parent is not None:
+                self._top = parent.window() if hasattr(parent, "window") else parent
+
+        def winId(self):
+            return 1
+
+        def windowHandle(self):
+            return None
+
+    monkeypatch.setattr(pick, "qt_modules", lambda: (qt_core, None, None))
+    before = list(pick._OPEN_TOOL_WINDOWS)
+    try:
+        fields = _Win(stays)
+        nested = _Win(top=fields)
+        nested._parent = fields
+        box = _Win()
+        box._parent = nested
+        pick.configure_overlay_dialog(box, nested)
+        assert int(box.windowFlags() & stays)
+        assert box._pmv_raise_last is True
+        assert box in pick._OPEN_TOOL_WINDOWS
+        assert box.parentWidget() is fields
+    finally:
+        pick._OPEN_TOOL_WINDOWS[:] = before
+
+
+def test_format_center_xyz():
+    from pymolviz.wizards.camera_center import format_center_xyz
+
+    assert format_center_xyz(None) == "Cam center: (unavailable)"
+    assert format_center_xyz((1.23456, -2.0, 3.0)) == "Cam center: 1.235, -2.000, 3.000"
+
+
+def test_create_cam_center_pseudoatom_unique_names():
+    from pymolviz.wizards.camera_center import create_cam_center_pseudoatom
+    from tests.fakes.cmd import FakeCmd
+
+    cmd = FakeCmd()
+    first = create_cam_center_pseudoatom(cmd, (1.0, 2.0, 3.0))
+    second = create_cam_center_pseudoatom(cmd, (4.0, 5.0, 6.0))
+    assert first == "cam_center"
+    assert second != first
+    assert cmd.objects[first] == [1.0, 2.0, 3.0]
+    assert cmd.objects[second] == [4.0, 5.0, 6.0]
+    assert cmd.settings[first]["label"].startswith("Cam center:")

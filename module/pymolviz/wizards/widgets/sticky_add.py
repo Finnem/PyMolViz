@@ -6,15 +6,27 @@ from typing import Callable, Optional
 
 from ..pick import qt_modules
 from ..tooltips import apply_required_tooltips
+from .theme import (
+    DASH,
+    MUTED,
+    ROW,
+    dashed_button_css,
+    primary_button_css,
+    rgb_css,
+)
 
-ADD_BUTTON_STYLE = (
-    "QPushButton { text-align: center; padding: 5px 12px; font-weight: 600;"
-    " border: 1px solid palette(dark); border-radius: 4px;"
-    " background: palette(button); }"
-    "QPushButton:hover { background: palette(midlight);"
-    " border: 1px solid palette(highlight); }"
-    "QPushButton:pressed { background: palette(mid); padding-top: 6px;"
-    " padding-bottom: 4px; }"
+ADD_BUTTON_STYLE = primary_button_css(None)
+EMPTY_ADD_STYLE = (
+    "QWidget#pmvEmptyAdd { border: 1px dashed %s; border-radius: 6px;"
+    " background: %s; }"
+    "%s"
+    "QLabel#pmvEmptyAddHint { color: %s; padding: 0px 12px 10px 12px; }"
+    % (
+        rgb_css(DASH),
+        rgb_css(ROW),
+        dashed_button_css("pmvEmptyAddButton"),
+        rgb_css(MUTED),
+    )
 )
 
 
@@ -93,6 +105,7 @@ class StickyAddOverlay:
         add_height: Optional[Callable[[], int]] = None,
         context: str = "StickyAddOverlay",
         extra=None,
+        empty_hint: Optional[str] = None,
     ):
         QtCore, _, QtWidgets = qt_modules()
         self._target = target
@@ -101,11 +114,15 @@ class StickyAddOverlay:
         self._add_height_fn = add_height
         self._syncing = False
         self._filter = None
+        self._empty_hint = str(empty_hint) if empty_hint else ""
 
         bar = QtWidgets.QWidget(parent)
-        layout = QtWidgets.QHBoxLayout(bar)
+        layout = QtWidgets.QVBoxLayout(bar)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
+        layout.setSpacing(0)
+        btn_row = QtWidgets.QHBoxLayout()
+        btn_row.setContentsMargins(0, 0, 0, 0)
+        btn_row.setSpacing(4)
         btn = QtWidgets.QPushButton(text)
         btn.setToolTip(tooltip)
         btn.setAutoDefault(False)
@@ -120,14 +137,23 @@ class StickyAddOverlay:
             btn.setCursor(hand)
         btn.setStyleSheet(ADD_BUTTON_STYLE)
         btn.clicked.connect(lambda *_args: on_click())
-        layout.addWidget(btn, stretch=1)
+        btn_row.addWidget(btn, stretch=1)
         if extra is not None:
             extra.setParent(bar)
             extra.setVisible(False)
-            layout.addWidget(extra)
+            btn_row.addWidget(extra)
+        layout.addLayout(btn_row)
+        hint = QtWidgets.QLabel(self._empty_hint)
+        hint.setObjectName("pmvEmptyAddHint")
+        align = getattr(QtCore.Qt, "AlignCenter", None)
+        if align is not None:
+            hint.setAlignment(align)
+        hint.hide()
+        layout.addWidget(hint)
         bar.hide()
         self._bar = bar
         self._button = btn
+        self._hint = hint
         self._extra = extra
         apply_required_tooltips(
             [(btn, tooltip, text.strip() or "Add")],
@@ -202,11 +228,34 @@ class StickyAddOverlay:
             return
         self._syncing = True
         try:
+            self._apply_empty_chrome()
             self._place()
         except Exception:
             pass
         finally:
             self._syncing = False
+
+    def _is_empty(self) -> bool:
+        try:
+            return int(self._count()) <= 0 and bool(self._empty_hint)
+        except Exception:
+            return bool(self._empty_hint)
+
+    def _apply_empty_chrome(self) -> None:
+        empty = self._is_empty()
+        if self._hint is not None:
+            self._hint.setVisible(empty)
+            self._hint.setText(self._empty_hint)
+        if empty:
+            self._bar.setObjectName("pmvEmptyAdd")
+            self._button.setObjectName("pmvEmptyAddButton")
+            self._bar.setStyleSheet(EMPTY_ADD_STYLE)
+            self._button.setStyleSheet("")
+            return
+        self._bar.setObjectName("")
+        self._button.setObjectName("")
+        self._bar.setStyleSheet("")
+        self._button.setStyleSheet(ADD_BUTTON_STYLE)
 
     def _row_height(self) -> int:
         if self._row_height_fn is not None:
@@ -230,6 +279,14 @@ class StickyAddOverlay:
             return 28
 
     def _add_height(self) -> int:
+        if self._is_empty():
+            try:
+                hint = int(self._bar.sizeHint().height())
+                if hint > 0:
+                    return max(hint, 52)
+            except Exception:
+                pass
+            return 56
         if self._add_height_fn is not None:
             try:
                 height = int(self._add_height_fn())

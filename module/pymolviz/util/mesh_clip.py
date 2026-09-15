@@ -44,6 +44,27 @@ def normalize_clip_planes(planes: Optional[Iterable[Mapping]] = None) -> List[di
     return out
 
 
+def apply_clip_plane_pose(plane: Mapping, origin, normal) -> bool:
+    """Write origin and a unit keep-side normal onto *plane*.
+
+    Returns False (and leaves *plane* unchanged) if *origin* is unreadable or
+    *normal* is degenerate.
+    """
+    try:
+        ox, oy, oz = (float(x) for x in list(origin)[:3])
+    except (TypeError, ValueError):
+        return False
+    n = np.asarray(normal, dtype=float).reshape(-1)
+    if n.size < 3:
+        return False
+    ln = float(np.linalg.norm(n[:3]))
+    if ln < 1e-12:
+        return False
+    plane["origin"] = [ox, oy, oz]
+    plane["normal"] = (n[:3] / ln).tolist()
+    return True
+
+
 def clip_planes_match(a, b, *, atol: float = 1e-6, ignore_scale: bool = False) -> bool:
     left = normalize_clip_planes(a)
     right = normalize_clip_planes(b)
@@ -92,7 +113,14 @@ def oriented_clip_normal(base_normal, tilt_deg=0.0, turn_deg=0.0):
 
 
 def clip_plane_from_view(view, points_xyz=None) -> dict:
-    """Plane through the screen center, keep-side toward the camera."""
+    """Screen-parallel plane through the geometry, keep-side toward the camera.
+
+    ``origin`` is the in-plane AABB center of ``points_xyz`` (or the screen
+    center when no points are given), so the cut sits on the surface rather
+    than at the camera rotation origin.
+    """
+    from .clip_gizmo import fit_plane_rectangle
+
     look = np.asarray(camera_to_model_offset(view, (0.0, 0.0, -1.0)), dtype=float)
     ln = float(np.linalg.norm(look))
     if ln < 1e-12:
@@ -104,12 +132,14 @@ def clip_plane_from_view(view, points_xyz=None) -> dict:
     if points_xyz is not None:
         pts = np.asarray(points_xyz, dtype=float).reshape(-1, 3)
         if pts.shape[0]:
-            center = pts.mean(axis=0)
+            origin = pts.mean(axis=0)
             extent = float(np.max(pts.max(axis=0) - pts.min(axis=0)))
             span = max(extent, 1.0)
-            if float(np.linalg.norm(origin - center)) > 2.0 * span:
-                origin = center
             scale = max(span * 0.65, 4.0)
+            center, _n, _u, _v = fit_plane_rectangle(
+                origin, normal, points=pts, scale=scale,
+            )
+            origin = np.asarray(center, dtype=float).reshape(3)
     return {
         "origin": [float(origin[0]), float(origin[1]), float(origin[2])],
         "normal": [float(normal[0]), float(normal[1]), float(normal[2])],
@@ -242,3 +272,42 @@ def clip_mesh_by_planes(vertices, faces, normals, planes):
         if f.size == 0:
             break
     return v, n, f
+
+
+_SEG_KEEP = 1e-8
+
+
+def clip_segment_by_planes(start, end, planes):
+    """Shorten a shaft to the kept half-space, or ``None`` if fully cut.
+
+    Keep-side is ``dot(v - origin, normal) >= 0``. Used for arrow pairs
+    instead of cylinder CSG.
+    """
+    a = np.asarray(start, dtype=float).reshape(3).copy()
+    b = np.asarray(end, dtype=float).reshape(3).copy()
+    planes = normalize_clip_planes(planes)
+    if not planes:
+        return (tuple(float(x) for x in a), tuple(float(x) for x in b))
+    for plane in planes:
+        origin = np.asarray(plane["origin"], dtype=float).reshape(3)
+        normal = np.asarray(plane["normal"], dtype=float).reshape(3)
+        da = float(np.dot(a - origin, normal))
+        db = float(np.dot(b - origin, normal))
+        keep_a = da >= -_SEG_KEEP
+        keep_b = db >= -_SEG_KEEP
+        if keep_a and keep_b:
+            continue
+        if not keep_a and not keep_b:
+            return None
+        denom = da - db
+        if abs(denom) < 1e-12:
+            return None
+        t = da / denom
+        hit = a + t * (b - a)
+        if keep_a:
+            b = hit
+        else:
+            a = hit
+    if float(np.linalg.norm(b - a)) < 1e-8:
+        return None
+    return (tuple(float(x) for x in a), tuple(float(x) for x in b))

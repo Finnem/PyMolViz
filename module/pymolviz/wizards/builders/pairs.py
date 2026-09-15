@@ -65,6 +65,14 @@ class VisualPair:
         end = self.end.with_color(color) if self.end is not None else None
         return replace(self, start=start, end=end)
 
+    def with_color_choice(self, choice) -> "VisualPair":
+        start = self.start.with_color_choice(choice)
+        end = self.end.with_color_choice(choice) if self.end is not None else None
+        return replace(self, start=start, end=end)
+
+    def color_choice(self):
+        return self.start.color_choice()
+
     def with_start(self, start: VisualPoint) -> "VisualPair":
         return replace(self, start=start)
 

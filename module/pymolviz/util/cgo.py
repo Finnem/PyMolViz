@@ -187,8 +187,8 @@ _BOX_FACES = (
     ((0, 5, 4), (0.0, -1.0, 0.0)),
     ((2, 3, 7), (0.0, 1.0, 0.0)),
     ((2, 7, 6), (0.0, 1.0, 0.0)),
-    ((0, 3, 7), (-1.0, 0.0, 0.0)),
-    ((0, 7, 4), (-1.0, 0.0, 0.0)),
+    ((0, 7, 3), (-1.0, 0.0, 0.0)),
+    ((0, 4, 7), (-1.0, 0.0, 0.0)),
     ((1, 2, 6), (1.0, 0.0, 0.0)),
     ((1, 6, 5), (1.0, 0.0, 0.0)),
 )
@@ -409,6 +409,13 @@ def lines_cgo(segments, color, width=2.0, alpha=1.0):
         obj.extend(["VERTEX", float(p1[0]), float(p1[1]), float(p1[2])])
     obj.append("END")
     return obj
+
+
+def line_wireframe_box_cgo(center, extent, color, width=2.0, alpha=1.0):
+    """Wireframe box as CGO LINES (pixel-width edges, not cylinders)."""
+    corners = _box_corners(center, extent)
+    segments = [(corners[i0], corners[i1]) for i0, i1 in _BOX_EDGES]
+    return lines_cgo(segments, color, width=width, alpha=alpha)
 
 
 def mesh_cylinder_cgo(p0, p1, radius, color, n_seg=8, alpha=1.0, caps=True):

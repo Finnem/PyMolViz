@@ -15,6 +15,8 @@ from ...util.line_style import (
 )
 from ..pick import qt_modules
 from ..tooltips import apply_required_tooltips
+from ..widgets.section import make_section
+from ..widgets.theme import INK, ROW, qcolor
 
 __all__ = [
     "DASH_PRESETS",
@@ -54,18 +56,19 @@ class LineStylePreview:
         painter = QtGui.QPainter(self._widget)
         painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
         rect = self._widget.rect().adjusted(10, 8, -10, -8)
-        painter.fillRect(self._widget.rect(), self._widget.palette().base())
+        painter.fillRect(self._widget.rect(), qcolor(QtGui, ROW))
         y = rect.center().y()
         x0 = float(rect.left())
         x1 = float(rect.right())
         width = max(x1 - x0, 1.0)
-        margin_px = min(self._style.margin * 18.0, width * 0.2)
-        a = x0 + margin_px
-        b = x1 - margin_px
+        margin0 = min(self._style.start_margin * 18.0, width * 0.2)
+        margin1 = min(self._style.end_margin * 18.0, width * 0.2)
+        a = x0 + margin0
+        b = x1 - margin1
         if b <= a:
             a, b = x0 + 8.0, x1 - 8.0
 
-        pen = QtGui.QPen(QtGui.QColor(40, 40, 40), 2.2)
+        pen = QtGui.QPen(qcolor(QtGui, INK), 2.2)
         pattern = self._style.pattern()
         if len(pattern) < 2 or pattern[1] <= 1e-6:
             pen.setStyle(QtCore.Qt.SolidLine)
@@ -75,8 +78,8 @@ class LineStylePreview:
         painter.setPen(pen)
         painter.drawLine(int(a), int(y), int(b), int(y))
 
-        painter.setPen(QtGui.QPen(QtGui.QColor(40, 40, 40), 1.6))
-        painter.setBrush(QtGui.QColor(40, 40, 40))
+        painter.setPen(QtGui.QPen(qcolor(QtGui, INK), 1.6))
+        painter.setBrush(qcolor(QtGui, INK))
         self._draw_cap(painter, self._style.start_head, a, y, -1)
         self._draw_cap(painter, self._style.end_head, b, y, 1)
         painter.end()
@@ -89,12 +92,12 @@ class LineStylePreview:
         if kind == "Arrow":
             self._draw_arrow(painter, x, y, direction)
             return
-        ghost = QtGui.QColor(40, 40, 40, 110)
+        ghost = qcolor(QtGui, INK, alpha=110)
         painter.setPen(QtGui.QPen(ghost, 1.2))
         painter.setBrush(QtCore.Qt.NoBrush)
         self._draw_arrow(painter, x, y, direction)
-        painter.setPen(QtGui.QPen(QtGui.QColor(40, 40, 40), 1.6))
-        painter.setBrush(QtGui.QColor(40, 40, 40))
+        painter.setPen(QtGui.QPen(qcolor(QtGui, INK), 1.6))
+        painter.setBrush(qcolor(QtGui, INK))
 
     def _draw_arrow(self, painter, x, y, direction):
         QtCore, QtGui, _ = qt_modules()
@@ -112,8 +115,8 @@ class LineOptionsWidget:
     def __init__(self, parent=None, on_change: Callable[[], None] = None):
         QtCore, _, QtWidgets = qt_modules()
         self._on_change = on_change
-        box = QtWidgets.QGroupBox("Line options", parent)
-        layout = QtWidgets.QFormLayout(box)
+        section = make_section("Line options", parent, form=True)
+        layout = section.layout
         self._dash = QtWidgets.QComboBox()
         for name, _pattern in DASH_PRESETS:
             self._dash.addItem(name)
@@ -134,7 +137,7 @@ class LineOptionsWidget:
             self._end_head.addItem(name)
         self._start_head.setCurrentText("None")
         self._end_head.setCurrentText("Arrow")
-        self._preview = LineStylePreview(box)
+        self._preview = LineStylePreview(section.body)
         for widget in (self._dash, self._start_head, self._end_head):
             widget.currentIndexChanged.connect(self._emit)
         for widget in (self._scale, self._margin):
@@ -145,7 +148,7 @@ class LineOptionsWidget:
         layout.addRow("Start cap", self._start_head)
         layout.addRow("End cap", self._end_head)
         layout.addRow("Preview", self._preview.widget)
-        self._box = box
+        self._box = section.widget
         self._preview.set_style(self.style())
         apply_required_tooltips(
             [

@@ -1,6 +1,6 @@
 """Solvent surfaces around a set of spheres.
 
-``SAS`` — rolling-ball solvent-excluded surface (Connolly / MSMS): reduced
+``SASA`` — rolling-ball solvent-excluded surface (Connolly / MSMS): reduced
 surface, analytical contact/saddle/reentrant faces, singularity clipping,
 then a geodesic template sphere whose contact patches are clipped to the
 torus polylines (Sanner, Olson & Spehner, Biopolymers 38:305–320, 1996).
@@ -9,8 +9,6 @@ accessible union, extracted with marching cubes (EDTSurf-style). The mesh
 is watertight on the voxel grid and has no cap/saddle stitches.
 ``GAUSS`` — PyMOL ``map_new gaussian`` + ``isosurface``: Cromer–Mann atomic
 scattering Gaussians, B-factor floor, normalized brick, contour at 1σ.
-``ASA`` — Shrake–Rupley solvent-accessible patches on the expanded spheres
-(atom radius + probe), clipped to neighboring intersection circles.
 """
 
 from __future__ import annotations
@@ -29,20 +27,29 @@ from .gaussian_map import (
     DEFAULT_GAUSSIAN_B_FLOOR,
     DEFAULT_GAUSSIAN_ISOLEVEL,
     DEFAULT_GAUSSIAN_RESOLUTION,
-    atom_gaussian_terms,
-    gaussian_blur_factor,
+    gaussian_pad_radius,
     normalize_gaussian_map,
     paint_gaussian_density,
 )
-from .marching_cubes import march_cubes
+from .marching_cubes import march_cubes_mesh
 
-SURFACE_ALGORITHMS = ("SAS", "MC", "GAUSS", "ASA")
+SURFACE_ALGORITHMS = ("SASA", "MC", "GAUSS")
+SURFACE_ALGORITHM_LABELS = {
+    "GAUSS": "Gaussian Spheres",
+    "MC": "Marching Cubes",
+    "SASA": "Solvent Accessible Surface",
+}
+SURFACE_ALGORITHM_UI_ORDER = ("GAUSS", "MC", "SASA")
 _ALGORITHM_ALIASES = {
+    "SAS": "SASA",
+    "SASA": "SASA",
+    "SOLVENT_ACCESSIBLE_SURFACE": "SASA",
     "CUBES": "MC",
     "EDT": "MC",
     "MARCHING_CUBES": "MC",
     "MARCHINGCUBES": "MC",
     "GAUSSIAN": "GAUSS",
+    "GAUSSIAN_SPHERES": "GAUSS",
     "BLOB": "GAUSS",
     "MAP": "GAUSS",
 }
@@ -66,40 +73,64 @@ BONDI_VDW = {
 _TWO_LETTER_ELEM = frozenset(
     key for key in BONDI_VDW if len(key) == 2
 )
-MAX_SAS_CUBES = 80000
-MAX_SAS_VOXELS = 1200000
+MAX_SAS_CUBES = 320000
+MAX_SAS_VOXELS = 9600000
 
-# Grid step (Å) for the MC EDT isosurface (capped further by probe / 4.5).
-SAS_SPACING = {1: 0.90, 2: 0.65, 3: 0.45, 4: 0.32, 5: 0.22}
-# Icosphere frequency for ASA patches (same ladder as sphere meshes).
-ASA_FREQUENCY = {1: 2, 2: 3, 3: 4, 4: 6, 5: 8}
+# Grid step (Å) for SAS-related helpers. Quality 3 is the old quality-1 step;
+# quality 5 is the old quality-3 step. Quality 1 is a draft grid.
+SAS_SPACING = {1: 1.80, 2: 1.25, 3: 0.90, 4: 0.65, 5: 0.45}
+# Voxel isosurface brick for MC and GAUSS (~1.4× step between levels).
+ISO_SPACING = {1: 0.325, 2: 0.225, 3: 0.16, 4: 0.11, 5: 0.075}
+GAUSS_SPACING = ISO_SPACING
+MC_SPACING = ISO_SPACING
+# SASA VDW-cap geodesic frequency.
+SAS_CAP_FREQUENCY = {1: 4, 2: 8, 3: 12, 4: 14, 5: 16}
+# Minimum phi samples along a probe fillet. Quality 5 keeps the old quality-3
+# saddle; lower levels stop packing 32 rings into a ~1 Å torus.
+SAS_N_PHI_FLOOR = {1: 4, 2: 6, 3: 8, 4: 16, 5: 32}
 
 
-def _convex_cap_frequency(frequency: int) -> int:
-    """Geodesic frequency for VDW contact caps.
-
-    Default quality 3 is ASA frequency 4; lighting needs a denser sphere than
-    that or PyMOL's specular exponent turns each cap into a cluster of spots.
-    """
-    return min(20, max(12, 4 * int(frequency)))
+def _convex_cap_frequency(quality: int) -> int:
+    """Geodesic frequency for VDW contact caps."""
+    return int(SAS_CAP_FREQUENCY[_quality_level(quality)])
 
 
-def _torus_n_theta(frequency: int) -> int:
-    """Contact-circle samples so the torus rim matches the geodesic cap.
+def _torus_n_theta(quality: int) -> int:
+    """Contact-circle samples so the torus rim matches the geodesic cap."""
+    return max(8, 4 * int(_convex_cap_frequency(quality)))
 
-    Quality 3 used 32 theta samples against a 16-frequency VDW ico. Clip hits
-    then hung on ~0.18 Å chords and lit as a jagged stitch even after T-split.
-    """
-    cap_freq = _convex_cap_frequency(frequency)
-    return max(24, 8 * int(frequency), 4 * int(cap_freq))
+
+def _torus_n_phi_floor(quality: int) -> int:
+    """Lower bound on probe-fillet rings. Quality 1 stays a handful of quads."""
+    return int(SAS_N_PHI_FLOOR[_quality_level(quality)])
+
+
+def _phong_refine_params(quality: int):
+    """Phong splits that would undo a coarse torus are skipped at quality 1."""
+    q = _quality_level(quality)
+    if q <= 1:
+        return 0.70, 1
+    if q == 2:
+        return 0.85, 2
+    return 0.92, 3
 
 
 def normalize_algorithm(name) -> str:
-    text = str(name or DEFAULT_ALGORITHM).strip().upper().replace("-", "_").replace(" ", "_")
+    text = str(name or DEFAULT_ALGORITHM).strip()
+    for key, label in SURFACE_ALGORITHM_LABELS.items():
+        if text.lower() == label.lower():
+            return key
+    text = text.upper().replace("-", "_").replace(" ", "_")
     text = _ALGORITHM_ALIASES.get(text, text)
     if text in SURFACE_ALGORITHMS:
         return text
     return DEFAULT_ALGORITHM
+
+
+def surface_algorithm_label(algorithm: str) -> str:
+    """User-facing combo label for a normalized algorithm id."""
+    key = normalize_algorithm(algorithm)
+    return SURFACE_ALGORITHM_LABELS[key]
 
 
 def normalize_radius_mode(name) -> str:
@@ -151,6 +182,24 @@ def lookup_source_vdw(source, context=None):
     if cached is not None:
         return float(cached)
     return vdw_for_atom(getattr(source, "name", ""), getattr(source, "elem", ""))
+
+
+def normalize_point_enabled(values, n: int):
+    """Length-*n* list of bools; ``None`` when every point is enabled."""
+    if n <= 0:
+        return None
+    if values is None:
+        return None
+    raw = list(values)
+    out = []
+    for i in range(int(n)):
+        if i >= len(raw):
+            out.append(True)
+        else:
+            out.append(bool(raw[i]))
+    if all(out):
+        return None
+    return out
 
 
 def normalize_point_radii(values, n: int):
@@ -229,23 +278,145 @@ def sas_spacing(quality: int) -> float:
 
 
 def edt_spacing(quality: int, probe_radius: float) -> float:
-    """Voxel size for the rolling-ball EDT. Keep several samples across the probe."""
-    h = sas_spacing(quality)
-    probe = float(probe_radius)
-    if probe < 1e-8:
-        return h
-    return float(min(h, max(probe / 4.5, 0.16)))
+    """Voxel size for the rolling-ball EDT.
 
-
-def asa_frequency(quality: int) -> int:
-    return int(ASA_FREQUENCY[_quality_level(quality)])
+    Independent of the SAS draft ladder. ``probe_radius`` is kept for callers.
+    """
+    _ = probe_radius
+    return float(MC_SPACING[_quality_level(quality)])
 
 
 def gauss_spacing(quality: int, resolution: float = DEFAULT_GAUSSIAN_RESOLUTION) -> float:
-    """Voxel size for the PyMOL Gaussian map. Default grid is resolution / 3."""
-    h = sas_spacing(quality)
-    resol = max(float(resolution), 1.0)
-    return float(min(h, max(resol / 3.0, 0.16)))
+    """Voxel size for the PyMOL Gaussian map.
+
+    Independent of the SAS draft ladder. ``resolution`` is kept for callers.
+    """
+    _ = resolution
+    return float(GAUSS_SPACING[_quality_level(quality)])
+
+
+# Seconds or voxel counts above these AABB estimates require confirmation.
+HEAVY_SURFACE_SECONDS = 1.5
+HEAVY_SURFACE_VOXELS = 4000000
+# Cromer–Mann window splat, from ~800 carbons at 0.65 Å ≈ 0.13 s.
+_PAINT_SEC_PER_WINDOW_VOXEL = 1.2e-7
+_ISO_SEC_PER_VOXEL = 4.0e-8
+_MC_SEC_PER_CUBE = 8.0e-7
+_SASA_SEC_PER_FACE = 8.0e-6
+_GAUSS_WINDOW_EXTENT = 2.8
+
+
+def _bounded_brick_voxels(centers, spacing, pad, max_voxels=MAX_SAS_VOXELS, max_depth=8):
+    """Voxel count after the same coarsen loop as ``_gauss_grid`` / ``_edt_ses_grid``."""
+    centers = np.asarray(centers, dtype=float).reshape(-1, 3)
+    h = float(spacing)
+    if h < 1e-8 or centers.shape[0] == 0:
+        return 0, h
+    span = np.max(centers, axis=0) - np.min(centers, axis=0) + 2.0 * float(pad)
+    depth = 0
+    while True:
+        shape = np.floor(span / h).astype(np.int64) + 3
+        shape = np.maximum(shape, 2)
+        n_vox = int(shape[0] * shape[1] * shape[2])
+        if n_vox <= int(max_voxels) or depth >= int(max_depth):
+            return n_vox, h
+        scale = (float(n_vox) / float(max_voxels)) ** (1.0 / 3.0)
+        h = h * max(scale, 1.12)
+        depth += 1
+
+
+def estimate_surface_job(
+    points,
+    algorithm="GAUSS",
+    quality=DEFAULT_QUALITY,
+    atom_radius=DEFAULT_ATOM_RADIUS,
+    probe_radius=DEFAULT_PROBE_RADIUS,
+    elements=None,
+) -> dict:
+    """Cheap AABB estimate of work. Never builds a mesh."""
+    centers = np.asarray(points, dtype=float).reshape(-1, 3)
+    n = int(centers.shape[0])
+    kind = normalize_algorithm(algorithm)
+    q = _quality_level(quality)
+    job = {
+        "algorithm": kind,
+        "quality": q,
+        "n_atoms": n,
+        "voxels": 0,
+        "seconds": 0.0,
+        "heavy": False,
+    }
+    if n == 0:
+        return job
+    if kind == "SASA":
+        freq = float(_convex_cap_frequency(q))
+        cap_faces = n * 20.0 * freq * freq
+        contacts = min(n * 3.0, max(n - 1.0, 0.0))
+        torus_faces = contacts * 2.0 * float(_torus_n_theta(q)) * float(_torus_n_phi_floor(q))
+        seconds = (cap_faces + torus_faces) * _SASA_SEC_PER_FACE
+    else:
+        if kind == "MC":
+            radii = expanded_radii(atom_radius, n, probe_radius)
+            pad = float(np.max(radii)) + 2.0 * edt_spacing(q, probe_radius)
+            spacing = edt_spacing(q, probe_radius)
+            extent = pad
+        else:
+            spacing = gauss_spacing(q)
+            pad = _GAUSS_WINDOW_EXTENT + 2.0 * spacing
+            extent = _GAUSS_WINDOW_EXTENT
+        n_vox, h = _bounded_brick_voxels(centers, spacing, pad)
+        edge = max(1.0, 2.0 * extent / max(h, 1e-8) + 1.0)
+        window = edge * edge * edge
+        splat = float(n) * min(window, float(n_vox))
+        cubes = min(float(MAX_SAS_CUBES), 0.05 * float(n_vox))
+        seconds = (
+            splat * _PAINT_SEC_PER_WINDOW_VOXEL
+            + float(n_vox) * _ISO_SEC_PER_VOXEL
+            + cubes * _MC_SEC_PER_CUBE
+        )
+        job["voxels"] = int(n_vox)
+    job["seconds"] = float(seconds)
+    job["heavy"] = bool(
+        seconds >= HEAVY_SURFACE_SECONDS
+        or int(job["voxels"]) >= HEAVY_SURFACE_VOXELS
+    )
+    return job
+
+
+def surface_job_fingerprint(job) -> tuple:
+    return (
+        str(job.get("algorithm") or ""),
+        int(job.get("quality") or 0),
+        int(job.get("n_atoms") or 0),
+        int(job.get("voxels") or 0),
+        round(float(job.get("seconds") or 0.0), 1),
+    )
+
+
+def confirm_heavy_surface_job(job, previous_ok=None, previous_denied=None):
+    """Return ``('allow'|'deny'|'ask', fingerprint)`` without showing UI."""
+    fp = surface_job_fingerprint(job)
+    if not job.get("heavy"):
+        return "allow", fp
+    if previous_ok == fp:
+        return "allow", fp
+    if previous_denied == fp:
+        return "deny", fp
+    return "ask", fp
+
+
+def format_heavy_surface_message(job) -> str:
+    label = SURFACE_ALGORITHM_LABELS.get(job.get("algorithm"), "surface")
+    seconds = max(2, int(round(float(job.get("seconds") or 0.0))))
+    n = int(job.get("n_atoms") or 0)
+    q = int(job.get("quality") or 0)
+    voxels = int(job.get("voxels") or 0)
+    extra = " (%s voxels)" % format(voxels, ",") if voxels else ""
+    return (
+        "Building this %s mesh at quality %s for %s points may take about %s seconds%s. "
+        "PyMOL will not respond until it finishes. Build it anyway?"
+        % (label, q, n, seconds, extra)
+    )
 
 
 def expanded_radii(atom_radius, n: int, probe_radius: float) -> np.ndarray:
@@ -1552,17 +1723,20 @@ def _circle_theta(point, origin, u, v):
 
 
 def _torus_row(probe_center, center_i, center_j, probe, n_phi):
-    """Probe-sphere geodesic from the i-contact to the j-contact."""
+    """Probe-sphere geodesic from the i-contact to the j-contact.
+
+    Parameterize uniformly in angle (slerp). Clustering samples at the VDW
+    contacts (Chebyshev) left long chords on the saddle floor, which Phong
+    shades as a crease — the look of two intersecting spheres, not a rolling
+    ball.
+    """
     q = np.asarray(probe_center, dtype=float)
     ui = _unit_vec(np.asarray(center_i, dtype=float) - q)
     uj = _unit_vec(np.asarray(center_j, dtype=float) - q)
     n_phi = max(1, int(n_phi))
-    # Cluster samples at the VDW contacts (Chebyshev) so the first torus step is
-    # small. Connolly is only C1 there; a large phi step clips Phong highlights.
     out = []
     for p in range(n_phi + 1):
-        u = p / float(n_phi)
-        t = 0.5 * (1.0 - math.cos(math.pi * u))
+        t = p / float(n_phi)
         out.append(q + float(probe) * _slerp(ui, uj, t))
     return np.asarray(out, dtype=float)
 
@@ -2183,7 +2357,7 @@ def _saddle_n_phi(centers, expanded, n_theta):
             ang = math.acos(float(np.clip(np.dot(ui, uj), -1.0, 1.0)))
             if ang > max_ang:
                 max_ang = ang
-    return max(6, int(round(max_ang / max(dtheta, 1e-6))))
+    return max(1, int(round(max_ang / max(dtheta, 1e-6))))
 
 
 def _probe_triangle_tris(probe_center, probe, d0, d1, d2, n_phi):
@@ -3185,8 +3359,8 @@ def _ses_concave_tris(centers, expanded, probe, n_phi, triples=None, eat_probes=
     return tris
 
 
-def _ses_convex_tris(centers, vdw, expanded, frequency, contacts, probe=0.0, triples=None):
-    cap_freq = _convex_cap_frequency(frequency)
+def _ses_convex_tris(centers, vdw, expanded, quality, contacts, probe=0.0, triples=None):
+    cap_freq = _convex_cap_frequency(quality)
     unit, faces, _edges = geodesic_icosphere(int(cap_freq))
     unit = np.asarray(unit, dtype=float)
     faces = np.asarray(faces, dtype=int)
@@ -3245,18 +3419,6 @@ def _ses_convex_tris(centers, vdw, expanded, frequency, contacts, probe=0.0, tri
                 )
             tris.extend(patch)
     return tris
-
-
-def _quality_from_frequency(frequency: int) -> int:
-    freq = int(frequency)
-    for quality, value in ASA_FREQUENCY.items():
-        if int(value) == freq:
-            return int(quality)
-    if freq <= 2:
-        return 1
-    if freq >= 8:
-        return 5
-    return DEFAULT_QUALITY
 
 
 def _overlap_components(centers, radii):
@@ -3393,10 +3555,9 @@ def _isosurface_from_signed_field(origin, h, field, grad):
     cubes = _cubes_with_sign_change(field)
     if cubes.shape[0] == 0:
         return empty
-    tris = march_cubes(origin, h, field, cubes)
-    if not tris:
+    vertices, faces = march_cubes_mesh(origin, h, field, cubes)
+    if faces.shape[0] == 0:
         return empty
-    vertices, faces = _weld(tris, ndigits=5)
     faces = _unique_faces(faces)
     faces = _drop_degenerate_faces(vertices, faces)
     vertices, faces = _compact_mesh(vertices, faces)
@@ -3430,13 +3591,18 @@ def _edt_ses_grid(centers, expanded, probe, spacing, _depth=0):
     if n_vox > MAX_SAS_VOXELS and _depth < 8:
         scale = (float(n_vox) / float(MAX_SAS_VOXELS)) ** (1.0 / 3.0)
         return _edt_ses_grid(centers, expanded, probe, h * max(scale, 1.12), _depth=_depth + 1)
-    occ = _paint_ball_union(shape, origin, h, centers, expanded)
-    if not np.any(occ):
+    try:
+        occ = _paint_ball_union(shape, origin, h, centers, expanded)
+        if not np.any(occ):
+            return None
+        edt = distance_transform_edt(occ, sampling=(h, h, h))
+        field = float(probe) - edt
+        gx, gy, gz = np.gradient(edt, h, h, h)
+        grad = np.stack((-gx, -gy, -gz), axis=-1)
+    except MemoryError:
+        if _depth < 8:
+            return _edt_ses_grid(centers, expanded, probe, h * 1.25, _depth=_depth + 1)
         return None
-    edt = distance_transform_edt(occ, sampling=(h, h, h))
-    field = float(probe) - edt
-    gx, gy, gz = np.gradient(edt, h, h, h)
-    grad = np.stack((-gx, -gy, -gz), axis=-1)
     return origin, h, field, grad
 
 
@@ -3461,29 +3627,29 @@ def _edt_ses_component(centers, expanded, probe, spacing, _depth=0):
     return _isosurface_from_signed_field(origin, h, field, grad)
 
 
-def _connolly_ses_component(centers, expanded, vdw, probe, frequency):
+def _connolly_ses_component(centers, expanded, vdw, probe, quality):
     """SES via the four MSMS algorithms (Sanner, Olson & Spehner, 1996)."""
     empty = (
         np.zeros((0, 3), dtype=float),
         np.zeros((0, 3), dtype=float),
         np.zeros((0, 3), dtype=int),
     )
-    freq = max(1, int(frequency))
+    q = _quality_level(quality)
     probe = float(probe)
     rs = _reduced_surface(centers, expanded, probe)
     triples = list(rs["faces"])
     if not triples and int(centers.shape[0]) >= 3:
         triples = _iter_probe_triples(centers, expanded)
     triples = [
-        (int(i), int(j), int(k), np.array(_q_key(q), dtype=float))
-        for i, j, k, q in triples
+        (int(i), int(j), int(k), np.array(_q_key(q_probe), dtype=float))
+        for i, j, k, q_probe in triples
     ]
     pairs = list(rs["free_edges"])
     pairs.extend(rs["edge_faces"].keys())
     pair_set = {_rs_edge_key(i, j) for i, j in pairs}
-    eat = [q for _i, _j, _k, q in triples]
-    n_theta = _torus_n_theta(freq)
-    n_phi = max(16, _saddle_n_phi(centers, expanded, n_theta))
+    eat = [q_probe for _i, _j, _k, q_probe in triples]
+    n_theta = _torus_n_theta(q)
+    n_phi = max(_torus_n_phi_floor(q), _saddle_n_phi(centers, expanded, n_theta))
     torus, contacts = _ses_torus_tris(
         centers, expanded, probe, n_theta, n_phi,
         triples=triples, pairs=(list(pair_set) if pair_set else None),
@@ -3497,7 +3663,7 @@ def _connolly_ses_component(centers, expanded, vdw, probe, frequency):
     )
     tris.extend(
         _ses_convex_tris(
-            centers, vdw, expanded, freq, contacts, probe=probe, triples=triples,
+            centers, vdw, expanded, q, contacts, probe=probe, triples=triples,
         )
     )
     if not tris:
@@ -3518,18 +3684,19 @@ def _connolly_ses_component(centers, expanded, vdw, probe, frequency):
     circles = _intersection_circles(centers, expanded)
     neighbors = _overlap_neighbors(centers, expanded)
     triples = _sas_triple_vertices(centers, expanded)
-    vertices = _smooth_on_ses(
-        vertices, faces, centers, expanded, probe,
+    vertices = _snap_to_ses(
+        vertices, centers, expanded, probe,
         circles=circles, neighbors=neighbors, triples=triples,
-        iterations=3, lam=0.22, pin_vdw=True,
     )
     normals = _ses_vertex_normals(
         vertices, faces, centers, vdw, expanded,
         circles=circles, neighbors=neighbors, triples=triples,
     )
+    min_dot, max_level = _phong_refine_params(q)
     vertices, faces, normals = _refine_phong_faces(
         vertices, faces, normals, centers, expanded, probe,
         circles=circles, neighbors=neighbors, triples=triples,
+        min_dot=min_dot, max_level=max_level,
     )
     vertices, faces = _split_t_junctions(vertices, faces, cleanup=True)
     vertices, faces = _weld_contact_seam_stubs(vertices, faces, centers, vdw)
@@ -3545,7 +3712,7 @@ def _connolly_ses_component(centers, expanded, vdw, probe, frequency):
     return vertices, normals, faces
 
 
-def _sas_mesh(centers, radii, frequency: int, probe_radius: float = 0.0):
+def _sas_mesh(centers, radii, quality: int, probe_radius: float = 0.0):
     empty = (
         np.zeros((0, 3), dtype=float),
         np.zeros((0, 3), dtype=float),
@@ -3554,7 +3721,7 @@ def _sas_mesh(centers, radii, frequency: int, probe_radius: float = 0.0):
     probe = float(probe_radius)
     expanded = np.asarray(radii, dtype=float).reshape(-1)
     vdw = np.maximum(expanded - probe, 1e-6)
-    freq = max(1, int(frequency))
+    q = _quality_level(quality)
     n = int(np.asarray(centers).reshape(-1, 3).shape[0])
     if n == 0:
         return empty
@@ -3566,7 +3733,7 @@ def _sas_mesh(centers, radii, frequency: int, probe_radius: float = 0.0):
     for group in _overlap_components(centers, expanded):
         idx = np.asarray(group, dtype=int)
         vertices, normals, faces = _connolly_ses_component(
-            centers[idx], expanded[idx], vdw[idx], probe, freq,
+            centers[idx], expanded[idx], vdw[idx], probe, q,
         )
         if faces.shape[0] == 0:
             continue
@@ -3639,14 +3806,7 @@ def _mc_mesh(centers, radii, quality: int, probe_radius: float = 0.0):
 
 
 def _gauss_pad_radius(elements, resolution, b_floor) -> float:
-    blur = gaussian_blur_factor(resolution)
-    extent = max(float(resolution), 1.0)
-    for elem in elements:
-        _amps, _kappas, rcut = atom_gaussian_terms(elem, b_floor, 1.0, blur)
-        real = rcut / blur if blur > 1e-12 else rcut
-        if real > extent:
-            extent = real
-    return float(extent)
+    return gaussian_pad_radius(elements, resolution, b_floor)
 
 
 def _gauss_grid(centers, elements, spacing, resolution, b_floor, isolevel, _depth=0):
@@ -3666,15 +3826,23 @@ def _gauss_grid(centers, elements, spacing, resolution, b_floor, isolevel, _dept
             centers, elements, h * max(scale, 1.12), resolution, b_floor, isolevel,
             _depth=_depth + 1,
         )
-    density = paint_gaussian_density(
-        shape, origin, h, centers, elements,
-        resolution=resolution, b_floor=b_floor,
-    )
-    if not np.any(np.abs(density) > 1e-12):
+    try:
+        density = paint_gaussian_density(
+            shape, origin, h, centers, elements,
+            resolution=resolution, b_floor=b_floor,
+        )
+        if not np.any(np.abs(density) > 1e-12):
+            return None
+        signed = float(isolevel) - normalize_gaussian_map(density)
+        gx, gy, gz = np.gradient(signed, h, h, h)
+        grad = np.stack((gx, gy, gz), axis=-1)
+    except MemoryError:
+        if _depth < 8:
+            return _gauss_grid(
+                centers, elements, h * 1.25, resolution, b_floor, isolevel,
+                _depth=_depth + 1,
+            )
         return None
-    signed = float(isolevel) - normalize_gaussian_map(density)
-    gx, gy, gz = np.gradient(signed, h, h, h)
-    grad = np.stack((gx, gy, gz), axis=-1)
     return origin, h, signed, grad
 
 
@@ -3720,18 +3888,6 @@ def _gauss_mesh(centers, elements, quality: int):
         centers, elems, spacing,
         DEFAULT_GAUSSIAN_RESOLUTION, DEFAULT_GAUSSIAN_B_FLOOR, DEFAULT_GAUSSIAN_ISOLEVEL,
     )
-
-
-_ASA_INSIDE_EPS = 1e-7
-_ASA_ON_SPHERE = 1e-3
-
-
-def _asa_outside(point, center, radius) -> bool:
-    return float(np.linalg.norm(point - center)) >= float(radius) - _ASA_INSIDE_EPS
-
-
-def _on_sphere(point, center, radius, tol=_ASA_ON_SPHERE) -> bool:
-    return abs(float(np.linalg.norm(point - center)) - float(radius)) <= float(tol)
 
 
 def _project_on_sphere(point, center, radius):
@@ -3804,177 +3960,6 @@ def _sphere_triple_points(center_i, radius_i, center_j, radius_j, center_k, radi
     return [_project_on_sphere(point, center_i, radius_i) for point in points]
 
 
-def _dist_to_segment(point, start, end):
-    span = end - start
-    length2 = float(np.dot(span, span))
-    if length2 < 1e-18:
-        return float(np.linalg.norm(point - start))
-    t = float(np.dot(point - start, span) / length2)
-    t = min(max(t, 0.0), 1.0)
-    return float(np.linalg.norm(point - (start + t * span)))
-
-
-def _radical_plane(center_i, radius_i, center_j, radius_j):
-    ci = np.asarray(center_i, dtype=float)
-    cj = np.asarray(center_j, dtype=float)
-    normal = cj - ci
-    if float(np.linalg.norm(normal)) < 1e-12:
-        return None
-    offset = 0.5 * (
-        float(np.dot(cj, cj)) - float(np.dot(ci, ci))
-        + float(radius_i) * float(radius_i) - float(radius_j) * float(radius_j)
-    )
-    return normal, offset
-
-
-def _plane_keep(point, normal, offset) -> bool:
-    return float(np.dot(point, normal) - offset) <= 1e-8
-
-
-def _intersect_plane(p0, p1, normal, offset):
-    f0 = float(np.dot(p0, normal) - offset)
-    f1 = float(np.dot(p1, normal) - offset)
-    denom = f0 - f1
-    if abs(denom) < 1e-18:
-        return np.asarray(p0, dtype=float)
-    t = min(max(f0 / denom, 0.0), 1.0)
-    return np.asarray(p0, dtype=float) + t * (np.asarray(p1, dtype=float) - p0)
-
-
-def _clip_vertex(p0, p1, i, j, centers, radii):
-    """Boundary point of an accessible/buried edge against neighbor *j*."""
-    center_i = centers[i]
-    radius_i = float(radii[i])
-    plane = _radical_plane(center_i, radius_i, centers[j], float(radii[j]))
-    if plane is None:
-        return _snap_to_intersection_circle(
-            0.5 * (np.asarray(p0) + np.asarray(p1)),
-            center_i, radius_i, centers[j], float(radii[j]),
-        )
-    raw = _intersect_plane(p0, p1, plane[0], plane[1])
-    triples = []
-    for k, center_k in enumerate(centers):
-        if k == i or k == j:
-            continue
-        if _on_sphere(p0, center_k, radii[k]) or _on_sphere(p1, center_k, radii[k]):
-            triples.extend(_sphere_triple_points(
-                center_i, radius_i, centers[j], float(radii[j]),
-                center_k, float(radii[k]),
-            ))
-    if triples:
-        return min(triples, key=lambda point: _dist_to_segment(point, p0, p1))
-    return _snap_to_intersection_circle(
-        raw, center_i, radius_i, centers[j], float(radii[j]),
-    )
-
-
-def _clip_poly_outside_neighbor(polygon, i, j, centers, radii):
-    """Sutherland–Hodgman: keep the part of *polygon* outside neighbor *j*."""
-    if len(polygon) < 3:
-        return []
-    center_i = centers[i]
-    radius_i = float(radii[i])
-    plane = _radical_plane(center_i, radius_i, centers[j], float(radii[j]))
-    if plane is None:
-        if radius_i <= float(radii[j]) + 1e-9:
-            return []
-        return list(polygon)
-    normal, offset = plane
-    previous = polygon[-1]
-    prev_keep = _plane_keep(previous, normal, offset)
-    clipped = []
-    for current in polygon:
-        curr_keep = _plane_keep(current, normal, offset)
-        if curr_keep:
-            if not prev_keep:
-                clipped.append(_clip_vertex(previous, current, i, j, centers, radii))
-            clipped.append(np.asarray(current, dtype=float))
-        elif prev_keep:
-            clipped.append(_clip_vertex(previous, current, i, j, centers, radii))
-        previous = current
-        prev_keep = curr_keep
-    cleaned = []
-    for point in clipped:
-        if not cleaned or float(np.linalg.norm(point - cleaned[-1])) > 1e-8:
-            cleaned.append(point)
-    if len(cleaned) > 1 and float(np.linalg.norm(cleaned[-1] - cleaned[0])) <= 1e-8:
-        cleaned.pop()
-    return cleaned if len(cleaned) >= 3 else []
-
-
-def _triangle_inside_one_neighbor(pa, pb, pc, neighbors, centers, radii) -> bool:
-    for j in neighbors:
-        center = centers[j]
-        radius = float(radii[j])
-        if (
-            not _asa_outside(pa, center, radius)
-            and not _asa_outside(pb, center, radius)
-            and not _asa_outside(pc, center, radius)
-        ):
-            return True
-    return False
-
-
-def _sphere_contained(index, neighbors, centers, radii) -> bool:
-    center = centers[index]
-    radius = float(radii[index])
-    for j in neighbors:
-        dist = float(np.linalg.norm(center - centers[j]))
-        if dist + radius <= float(radii[j]) + 1e-9:
-            return True
-    return False
-
-
-def _asa_mesh(centers, radii, frequency: int):
-    unit, faces, _edges = geodesic_icosphere(frequency)
-    unit = np.asarray(unit, dtype=float)
-    faces = np.asarray(faces, dtype=int)
-    n_dir = unit.shape[0]
-    n_spheres = int(centers.shape[0])
-    neighbors = [[] for _ in range(n_spheres)]
-    for i in range(n_spheres):
-        for j in range(n_spheres):
-            if i == j:
-                continue
-            dist = float(np.linalg.norm(centers[i] - centers[j]))
-            if dist < float(radii[i]) + float(radii[j]) - _ASA_INSIDE_EPS:
-                neighbors[i].append(j)
-    tris = []
-    for i, center in enumerate(centers):
-        radius = float(radii[i])
-        neigh = neighbors[i]
-        if _sphere_contained(i, neigh, centers, radii):
-            continue
-        world = center.reshape(1, 3) + unit * radius
-        keep = np.ones(n_dir, dtype=bool)
-        for j in neigh:
-            keep &= np.linalg.norm(world - centers[j].reshape(1, 3), axis=1) >= (
-                float(radii[j]) - _ASA_INSIDE_EPS
-            )
-        for a, b, c in faces:
-            pa, pb, pc = world[a], world[b], world[c]
-            if bool(keep[a]) and bool(keep[b]) and bool(keep[c]):
-                tris.append((pa, pb, pc))
-                continue
-            if neigh and _triangle_inside_one_neighbor(pa, pb, pc, neigh, centers, radii):
-                continue
-            polygon = [pa, pb, pc]
-            for j in neigh:
-                polygon = _clip_poly_outside_neighbor(polygon, i, j, centers, radii)
-                if len(polygon) < 3:
-                    break
-            if len(polygon) < 3:
-                continue
-            origin = polygon[0]
-            for k in range(1, len(polygon) - 1):
-                p1, p2 = polygon[k], polygon[k + 1]
-                if float(np.linalg.norm(np.cross(p1 - origin, p2 - origin))) < 1e-16:
-                    continue
-                tris.append((origin, p1, p2))
-    vertices, faces_out = _weld(tris)
-    return vertices, _face_normals(vertices, faces_out), faces_out
-
-
 def build_solvent_surface(
     points: Sequence[Sequence[float]],
     atom_radius=DEFAULT_ATOM_RADIUS,
@@ -3995,10 +3980,8 @@ def build_solvent_surface(
     centers = np.reshape(centers, (-1, 3))
     radii = expanded_radii(atom_radius, centers.shape[0], probe_radius)
     kind = normalize_algorithm(algorithm)
-    if kind == "ASA":
-        return _asa_mesh(centers, radii, asa_frequency(quality))
     if kind == "MC":
         return _mc_mesh(centers, radii, quality, float(probe_radius))
     if kind == "GAUSS":
         return _gauss_mesh(centers, elements, quality)
-    return _sas_mesh(centers, radii, asa_frequency(quality), float(probe_radius))
+    return _sas_mesh(centers, radii, quality, float(probe_radius))

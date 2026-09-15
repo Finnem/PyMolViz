@@ -1,11 +1,19 @@
 """Interactive PyMOL wizard with a side-panel menu."""
 
+import time
+
 from pymol import cmd
 from pymol.wizard import Wizard
 
 from .util.pymol_helpers import center_on, center_on_point, extend_cmd, restore_view
 from .wizards.add_visual import AddVisualWindow
-from .wizards.camera_center import CameraCenterSphere
+from .wizards.field_visuals import FieldVisualsWindow
+from .wizards.colormaps import ColormapMenuWindow
+from .wizards.camera_center import (
+    CameraCenterSphere,
+    create_cam_center_pseudoatom,
+    format_center_xyz,
+)
 from .wizards.middle_click import (
     install_middle_click_filter,
     restore_viewing_mouse,
@@ -32,6 +40,8 @@ class PyMolVizWizard(Wizard):
         self._closed = False
         self._syncing = False
         self._sphere_sync_posted = False
+        self._last_center_display = None
+        self._last_center_refresh = 0.0
         self._init_runtime()
 
     def _teardown_click_filter(self):
@@ -51,11 +61,14 @@ class PyMolVizWizard(Wizard):
                 pass
             self.camera_sphere = None
         self.menu_items = [
-            ("Open Objects Menu", self.on_add_visual),
-            ("Item B", self.on_item_b),
-            ("Item C", self.on_item_c),
+            ("Open 3D Objects Menu", self.on_add_visual),
+            ("Open Field Visuals Menu", self.on_field_visuals),
+            ("Open Colormap Menu", self.on_colormaps),
+            ("Create Pseudoatom at Cam Center", self.on_create_cam_pseudoatom),
         ]
         self.add_visual_window = AddVisualWindow(self)
+        self.field_visuals_window = FieldVisualsWindow(self)
+        self.colormap_window = ColormapMenuWindow(self)
         self.camera_sphere = CameraCenterSphere(self.cmd)
         self._click_filter, self._click_widget = install_middle_click_filter(self)
         take_over_center_click(self.cmd)
@@ -97,6 +110,8 @@ class PyMolVizWizard(Wizard):
         self._closed = False
         self._syncing = False
         self._sphere_sync_posted = False
+        self._last_center_display = None
+        self._last_center_refresh = 0.0
         self._init_runtime()
         try:
             self.cmd.refresh_wizard()
@@ -111,6 +126,18 @@ class PyMolVizWizard(Wizard):
             except Exception:
                 pass
             self.add_visual_window = None
+        if getattr(self, "field_visuals_window", None) is not None:
+            try:
+                self.field_visuals_window.close()
+            except Exception:
+                pass
+            self.field_visuals_window = None
+        if getattr(self, "colormap_window", None) is not None:
+            try:
+                self.colormap_window.close()
+            except Exception:
+                pass
+            self.colormap_window = None
         self._teardown_click_filter()
         if getattr(self, "camera_sphere", None) is not None:
             try:
@@ -171,6 +198,7 @@ class PyMolVizWizard(Wizard):
                 return
             self._last_sync_view = view
             sphere.follow_view(view)
+            self._maybe_refresh_center_display()
             if getattr(sphere, "_hold", False):
                 self._request_sphere_sync(50)
         except Exception:
@@ -179,10 +207,40 @@ class PyMolVizWizard(Wizard):
             self._syncing = False
 
     def get_prompt(self):
-        return list(self.prompt)
+        lines = [str(line) for line in (self.prompt or ["PyMOLViz"])]
+        lines.append(self._center_display_text())
+        return lines
+
+    def _center_display_text(self):
+        sphere = getattr(self, "camera_sphere", None)
+        pos = None
+        if sphere is not None:
+            try:
+                pos = sphere.current_position()
+            except Exception:
+                pos = None
+        return format_center_xyz(pos)
+
+    def _maybe_refresh_center_display(self):
+        text = self._center_display_text()
+        if text == getattr(self, "_last_center_display", None):
+            return
+        now = time.monotonic()
+        last = float(getattr(self, "_last_center_refresh", 0.0) or 0.0)
+        if last and (now - last) < 0.2:
+            return
+        self._last_center_display = text
+        self._last_center_refresh = now
+        try:
+            self.cmd.refresh_wizard()
+        except Exception:
+            pass
 
     def get_panel(self):
-        panel = [[1, "PyMOLViz", ""]]
+        panel = [
+            [1, "PyMOLViz", ""],
+            [1, self._center_display_text(), ""],
+        ]
         for index, (label, _) in enumerate(self.menu_items):
             panel.append([2, label, "cmd.get_wizard().select_item(%d)" % index])
         panel.append([2, "Done", "cmd.get_wizard().do_done()"])
@@ -202,17 +260,42 @@ class PyMolVizWizard(Wizard):
             pass
 
     def on_add_visual(self):
-        self.prompt = ["Open Objects Menu"]
+        self.prompt = ["Open 3D Objects Menu"]
         try:
             self.add_visual_window.show()
         except Exception as exc:
-            self.prompt = ["Open Objects Menu failed: %s" % exc]
+            self.prompt = ["Open 3D Objects Menu failed: %s" % exc]
 
-    def on_item_b(self):
-        self.prompt = ["Selected Item B"]
+    def on_field_visuals(self):
+        self.prompt = ["Open Field Visuals Menu"]
+        try:
+            self.field_visuals_window.show()
+        except Exception as exc:
+            self.prompt = ["Open Field Visuals Menu failed: %s" % exc]
 
-    def on_item_c(self):
-        self.prompt = ["Selected Item C"]
+    def on_colormaps(self):
+        self.prompt = ["Open Colormap Menu"]
+        try:
+            self.colormap_window.show()
+        except Exception as exc:
+            self.prompt = ["Open Colormap Menu failed: %s" % exc]
+
+    def on_create_cam_pseudoatom(self):
+        sphere = getattr(self, "camera_sphere", None)
+        pos = None
+        if sphere is not None:
+            try:
+                pos = sphere.current_position()
+            except Exception:
+                pos = None
+        if pos is None:
+            self.prompt = ["Camera center is unavailable"]
+            return
+        try:
+            name = create_cam_center_pseudoatom(self.cmd, pos)
+            self.prompt = ["Created %s" % name]
+        except Exception as exc:
+            self.prompt = ["Create pseudoatom failed: %s" % exc]
 
     def _on_middle_click(self, x, y):
         """Snap the cage, then issue cmd.center ourselves after the mouse event."""
@@ -251,6 +334,18 @@ class PyMolVizWizard(Wizard):
             except Exception:
                 pass
             self.add_visual_window = None
+        if getattr(self, "field_visuals_window", None) is not None:
+            try:
+                self.field_visuals_window.close()
+            except Exception:
+                pass
+            self.field_visuals_window = None
+        if getattr(self, "colormap_window", None) is not None:
+            try:
+                self.colormap_window.close()
+            except Exception:
+                pass
+            self.colormap_window = None
         if getattr(self, "camera_sphere", None) is not None:
             try:
                 self.camera_sphere.close()
@@ -297,6 +392,9 @@ def reconcile_wizard_after_session_load(cmd_=None):
 
 def start_wizard():
     """Open the PyMOLViz wizard panel."""
+    from .util.array_backend import announce_cuda
+
+    announce_cuda(cmd)
     view = cmd.get_view()
     try:
         exit_wizard(cmd)
@@ -329,3 +427,7 @@ extend_cmd(cmd, "pymolviz_wizard", start_wizard)
 extend_cmd(cmd, "pmvw", start_wizard)
 extend_cmd(cmd, "pymolviz_reload_wizard", reload_wizard)
 extend_cmd(cmd, "pymolviz_exit_wizard", exit_wizard)
+
+from .util.array_backend import announce_cuda as _announce_cuda
+
+_announce_cuda(cmd)

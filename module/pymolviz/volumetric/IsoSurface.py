@@ -7,7 +7,9 @@ from ..util.colors import _convert_string_color
 
 
 class IsoSurface(Displayable):
-    def __init__(self, grid_data : GridData, level: float, name = None, color = None, transparency = 0, selection = '', carve = None, side = 1):
+    renders_cgo = False
+
+    def __init__(self, grid_data : GridData, level: float, name = None, color = None, transparency = 0, selection = '', carve = None, side = 1, geometry_field_id=None, color_field_id=None, isovalues=None, clip_aabb=None):
         """ 
         Computes and collects pymol commands to load in regular data and display an iso mesh at the given level.
         Note that, since this is based on volumetric data it is different from the pmv.Mesh class.
@@ -29,6 +31,16 @@ class IsoSurface(Displayable):
         self.grid_data = grid_data
 
         self.level = level
+        from ..fields.isovalues import normalize_isovalues, primary_isovalue, primary_side
+        self.isovalues = normalize_isovalues(
+            isovalues, default_level=level, default_color=color, default_side=side,
+        )
+        self.level = primary_isovalue(self.isovalues, default_level=level)
+        self.side = primary_side(self.isovalues, default_side=side)
+        self.geometry_field_id = str(geometry_field_id) if geometry_field_id else None
+        self.color_field_id = str(color_field_id) if color_field_id else None
+        from ..fields.clip import normalize_clip_aabb
+        self.clip_aabb = normalize_clip_aabb(clip_aabb)
         color = [1, 1, 1] if color is None else color
         if isinstance(color, str):
             self.color = _convert_string_color(color)
@@ -73,12 +85,22 @@ cmd.set("transparency", {self.transparency}, "{self.name}")
         
         return result
     
-    def load(self):
-        from pymol import cmd
-        self.grid_data.load()
-        cmd.isosurface(self.name, self.grid_data.name,level= self.level, side = self.side, selection = self.selection, carve = self.carve)
+    def load(self, cmd=None):
+        if cmd is None:
+            from pymol import cmd
+        from ..Displayable import call_load
+        from ..wizards.builders.field_visual import bind_iso_color_ramp
+
+        bind_iso_color_ramp(self)
+        from ..wizards.builders.field_visual import load_geometry_map, sync_visual_grid_from_field
+
+        sync_visual_grid_from_field(self, cmd)
+        map_name, _rebuilt = load_geometry_map(cmd, self.grid_data, getattr(self, "clip_aabb", None))
+        if not map_name:
+            return
+        cmd.isosurface(self.name, map_name, level=self.level, side=self.side, selection=self.selection, carve=self.carve)
         if issubclass(type(self.color), ColorRamp):
-            self.color.load()
+            call_load(self.color, cmd)
             cmd.color(self.color.name, self.name)
         else:
             cmd.set_color(self.name + "_color", self.color)

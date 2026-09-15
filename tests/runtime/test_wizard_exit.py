@@ -65,11 +65,55 @@ def test_wizard_event_mask_is_silent():
 
 def test_done_button_calls_wizard_do_done():
     wizard = PyMolVizWizard.__new__(PyMolVizWizard)
-    wizard.menu_items = [("Open Objects Menu", None)]
+    wizard.menu_items = [("Open 3D Objects Menu", None), ("Open Field Visuals Menu", None)]
     panel = PyMolVizWizard.get_panel(wizard)
+    labels = [row[1] for row in panel]
+    assert "Open 3D Objects Menu" in labels
+    assert "Open Field Visuals Menu" in labels
+    assert "Item B" not in labels
     done = panel[-1]
     assert done[1] == "Done"
     assert done[2] == "cmd.get_wizard().do_done()"
+    assert any(str(row).startswith("Cam center:") for row in labels)
+
+
+def test_wizard_menu_includes_field_visuals():
+    wizard = PyMolVizWizard()
+    labels = [label for label, _ in wizard.menu_items]
+    assert labels[0] == "Open 3D Objects Menu"
+    assert labels[1] == "Open Field Visuals Menu"
+    assert labels[2] == "Open Colormap Menu"
+    assert labels[3] == "Create Pseudoatom at Cam Center"
+    assert "Item B" not in labels
+    assert "Item C" not in labels
+    assert wizard.field_visuals_window is not None
+    assert wizard.colormap_window is not None
+    assert hasattr(wizard, "on_field_visuals")
+    assert hasattr(wizard, "on_colormaps")
+    panel_labels = [row[1] for row in wizard.get_panel()]
+    assert "Open Colormap Menu" in panel_labels
+    assert panel_labels.index("Open Colormap Menu") < panel_labels.index(
+        "Create Pseudoatom at Cam Center"
+    )
+
+
+def test_create_pseudoatom_at_cam_center():
+    cmd = FakeCmd()
+    wizard = PyMolVizWizard.__new__(PyMolVizWizard)
+    wizard.cmd = cmd
+    wizard.prompt = ["PyMOLViz"]
+
+    class _Sphere:
+        def current_position(self):
+            return (1.25, -4.5, 8.0)
+
+    wizard.camera_sphere = _Sphere()
+    PyMolVizWizard.on_create_cam_pseudoatom(wizard)
+    assert "cam_center" in cmd.objects
+    assert cmd.objects["cam_center"] == [1.25, -4.5, 8.0]
+    assert wizard.prompt == ["Created cam_center"]
+    PyMolVizWizard.on_create_cam_pseudoatom(wizard)
+    assert "cam_center_1" in cmd.objects or "cam_center_2" in cmd.objects
 
 
 def test_extend_cmd_sets_module_attribute():

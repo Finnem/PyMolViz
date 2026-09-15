@@ -1,8 +1,8 @@
-"""Wireframe cage locked to the current screen / view center."""
+"""Line-cube cage locked to the current screen / view center."""
 
 import time
 
-from ..util.cgo import wireframe_sphere_cgo
+from ..util.cgo import line_wireframe_box_cgo
 from ..util.pymol_helpers import (
     CAMERA_CENTER_NAME,
     load_cgo_no_zoom,
@@ -12,11 +12,70 @@ from ..util.pymol_helpers import (
 from ..util.view import click_ray_points, screen_center
 from .pick import pick_atom, qt_to_pymol_xy, widget_fb_scale
 
+CAM_PSEUDOATOM_STEM = "cam_center"
+
+
+def format_center_xyz(pos, digits=3):
+    """One-line camera-center readout for the wizard panel / prompt."""
+    if pos is None or len(pos) < 3:
+        return "Cam center: (unavailable)"
+    fmt = "%%.%df" % max(0, int(digits))
+    return ("Cam center: " + ", ".join(fmt % float(c) for c in pos[:3]))
+
+
+def unused_object_name(cmd_, stem=CAM_PSEUDOATOM_STEM):
+    """Next free object name, preferring ``cmd.get_unused_name`` when present."""
+    stem = str(stem or CAM_PSEUDOATOM_STEM)
+    getter = getattr(cmd_, "get_unused_name", None)
+    if callable(getter):
+        try:
+            return str(getter(stem))
+        except TypeError:
+            try:
+                return str(getter(stem, 0))
+            except Exception:
+                pass
+        except Exception:
+            pass
+    names = set()
+    try:
+        names.update(cmd_.get_names("objects") or [])
+    except Exception:
+        pass
+    if stem not in names:
+        return stem
+    index = 2
+    while "%s_%d" % (stem, index) in names:
+        index += 1
+    return "%s_%d" % (stem, index)
+
+
+def create_cam_center_pseudoatom(cmd_, pos, stem=CAM_PSEUDOATOM_STEM):
+    """Place a labeled pseudoatom at the camera-center marker. Does not zoom."""
+    if pos is None or len(pos) < 3:
+        raise ValueError("camera center is unavailable")
+    xyz = [float(pos[0]), float(pos[1]), float(pos[2])]
+    name = unused_object_name(cmd_, stem)
+    label = format_center_xyz(xyz)
+    try:
+        cmd_.pseudoatom(name, pos=xyz, label=label)
+    except TypeError:
+        cmd_.pseudoatom(name, pos=xyz)
+    try:
+        cmd_.show("nb_spheres", name)
+    except Exception:
+        pass
+    try:
+        cmd_.show("labels", name)
+    except Exception:
+        pass
+    return name
+
 
 class CameraCenterSphere:
-    """Keeps a small wireframe sphere at the current screen / view center."""
+    """Keeps a small line-wireframe cube at the current screen / view center."""
 
-    def __init__(self, cmd_, name=CAMERA_CENTER_NAME, radius=0.35, color=(1.0, 0.85, 0.15)):
+    def __init__(self, cmd_, name=CAMERA_CENTER_NAME, radius=0.12, color=(1.0, 0.85, 0.15)):
         self.cmd = cmd_
         self.name = name
         self.radius = radius
@@ -39,7 +98,8 @@ class CameraCenterSphere:
         self.follow_view(tuple(self.cmd.get_view()))
 
     def _create_cage(self):
-        cgo = wireframe_sphere_cgo((0.0, 0.0, 0.0), self.radius, self.color)
+        side = 2.0 * float(self.radius)
+        cgo = line_wireframe_box_cgo((0.0, 0.0, 0.0), (side, side, side), self.color)
         load_cgo_no_zoom(self.cmd, cgo, self.name, 1)
         try:
             self.cmd.enable(self.name)

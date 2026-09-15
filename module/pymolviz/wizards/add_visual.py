@@ -2,22 +2,58 @@
 
 from .builders.arrow_page import ArrowBuilderPage
 from .builders.box_page import BoxBuilderPage
-from .builders.preview import set_visual_enabled
+from .builders.points import hide_exported_point_labels
+from .builders.preview import delete_visual, set_visual_enabled, visual_is_enabled
 from .builders.sphere_page import SphereBuilderPage
 from .builders.surface_page import SurfaceBuilderPage
-from .catalog import editor_kind, object_rows
+from .catalog import editor_kind, object_rows, type_card_icon_rgb
 from .pick import (
     bind_tool_window,
     configure_tool_window,
-    find_pymol_window,
+    overlay_information,
+    overlay_question,
+    overlay_warning,
     qt_modules,
 )
 from .pick import _qt_platform_name
+from .tooltips import apply_required_tooltips
+from .widgets.breadcrumb import (
+    CRUMB_ADD_OBJECT,
+    CRUMB_VISUALS,
+    make_page_header,
+)
+from .widgets.section import make_section
+from .widgets.scrolling import (
+    apply_expanding_list_policy,
+    configure_resizable_window,
+    make_scrolling_body,
+)
+from .widgets.catalog_chrome import (
+    LIBRARY_ROW_MIN_HEIGHT,
+    cell_band_css,
+    make_kind_cell,
+    make_lib_cell,
+    make_row_icon_button,
+)
 from .widgets.sticky_add import (
     StickyAddOverlay,
     list_needs_sticky_add,
     sticky_add_overlay_rect,
 )
+from .widgets.theme import (
+    apply_catalog_table_style,
+    apply_page_layout,
+    apply_type_card_style,
+    apply_wizard_page_style,
+    empty_title_css,
+    mark_primary_button,
+    muted_label_css,
+    page_heading_css,
+    selected_row_fill,
+    type_card_subtitle_css,
+    type_card_title_css,
+)
+from .widgets.type_icons import type_icon_pixmap
 
 
 def objects_need_sticky_add(n_objects, viewport_height, row_height, add_height=None):
@@ -52,16 +88,50 @@ def add_object_overlay_rect(
     )
 
 MESH_TYPES = (
-    ("Spheres", "Sphere", "Solid or wireframe spheres"),
-    ("Boxes", "Box", "Axis-aligned or centered boxes"),
-    ("Surface", "Surface", "Connolly SAS, marching-cubes SES, PyMOL Gaussian, or accessible ASA"),
-    ("Arrows", "Arrows", "Directed arrow glyphs"),
+    ("Spheres", "Sphere", "Points rendered as solid or wireframe spheres.", "sphere"),
+    ("Boxes", "Box", "Axis-aligned or centered boxes around points.", "cube"),
+    ("Surface", "Surface", "Gaussian, marching-cubes, or solvent-accessible surfaces.", "surface"),
+    ("Arrows", "Arrows", "Arrows or lines between points, solid or dashed.", "arrow"),
 )
 
-_OBJECT_COLUMNS = ("Name", "Type", "# Points", "COM")
+ADD_VISUAL_LABEL = "Add Visual"
+ADD_VISUAL_BUTTON = "+ Add Visual"
+ADD_VISUAL_TIP = "Create a new visual."
+OBJECT_COLUMNS = ("Name", "Type", "Visible", "Actions")
+EMPTY_LIBRARY_TITLE = "No visual objects yet"
+EMPTY_LIBRARY_HINT = "Add spheres, boxes, surfaces, or arrows"
+_COL_NAME = 0
+_COL_TYPE = 1
+_COL_VISIBLE = 2
+_COL_ACTIONS = 3
 _PAGE_LIBRARY = 0
 _PAGE_TYPES = 1
+_LIBRARY_EMPTY = 0
+_LIBRARY_LIST = 1
 _ADD_ROW_ID = "__pmv_add_object__"
+_EDIT_BUTTON_TEXT = "..."
+
+
+def library_shows_empty_state(n_objects):
+    return int(n_objects) <= 0
+
+
+def _swatch_icon(QtGui, rgb):
+    if QtGui is None or rgb is None or len(rgb) < 3:
+        return None
+    try:
+        r, g, b = [max(0, min(255, int(round(float(c) * 255.0)))) for c in rgb[:3]]
+    except (TypeError, ValueError):
+        return None
+    pix = QtGui.QPixmap(12, 12)
+    pix.fill(QtGui.QColor(r, g, b))
+    return QtGui.QIcon(pix)
+
+
+def _ignore_mouse(QtCore, widget):
+    flag = getattr(QtCore.Qt, "WA_TransparentForMouseEvents", None)
+    if flag is not None:
+        widget.setAttribute(flag, True)
 
 
 class AddVisualWindow:
@@ -77,6 +147,7 @@ class AddVisualWindow:
         self._arrow_page = None
         self._surface_page = None
         self._objects_table = None
+        self._library_body = None
         self._add_object_overlay = None
         self._object_count = 0
         self._editing_obj = None
@@ -88,7 +159,7 @@ class AddVisualWindow:
     def show(self):
         QtCore, _, QtWidgets = qt_modules()
         if QtWidgets is None:
-            self.wizard.prompt = ["Open Objects Menu requires the PyMOL Qt UI"]
+            self.wizard.prompt = ["Open 3D Objects Menu requires the PyMOL Qt UI"]
             return
 
         self._discard_window()
@@ -97,9 +168,9 @@ class AddVisualWindow:
             self._open_window(QtCore, QtWidgets)
         except Exception as exc:
             self._reset_window()
-            self.wizard.prompt = ["Open Objects Menu failed: %s" % exc]
+            self.wizard.prompt = ["Open 3D Objects Menu failed: %s" % exc]
             try:
-                QtWidgets.QMessageBox.warning(
+                overlay_warning(
                     None,
                     "PyMOLViz",
                     "Could not open Visuals:\n\n%s" % exc,
@@ -109,6 +180,7 @@ class AddVisualWindow:
 
     def _discard_window(self):
         self._restore_editing_visual()
+        hide_exported_point_labels(self.wizard.cmd)
         window = self._window
         self._reset_window()
         if window is None:
@@ -120,23 +192,25 @@ class AddVisualWindow:
             pass
 
     def _open_window(self, QtCore, QtWidgets):
-        anchor = find_pymol_window(QtWidgets)
-        window = QtWidgets.QDialog(anchor)
+        window = QtWidgets.QDialog()
         window.setWindowTitle("PyMOLViz Visuals")
         window.setModal(False)
-        configure_tool_window(window, anchor=anchor)
+        configure_tool_window(window)
         window.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
         window.resize(640, 720)
+        configure_resizable_window(window)
 
         root = QtWidgets.QVBoxLayout(window)
+        apply_page_layout(root)
+        apply_wizard_page_style(window)
         stack = QtWidgets.QStackedWidget()
         self._stack = stack
 
         stack.addWidget(self._build_library_page(QtCore, QtWidgets))
-        stack.addWidget(self._build_type_page(QtWidgets))
+        stack.addWidget(self._build_type_page(QtCore, QtWidgets))
         stack.setCurrentIndex(_PAGE_LIBRARY)
 
-        root.addWidget(stack)
+        root.addWidget(stack, stretch=1)
         window.destroyed.connect(self._on_destroyed)
         self._window = window
         self._refresh_objects_table()
@@ -162,6 +236,7 @@ class AddVisualWindow:
         self._arrow_page = None
         self._surface_page = None
         self._objects_table = None
+        self._library_body = None
         self._add_object_overlay = None
         self._object_count = 0
         self._editing_obj = None
@@ -220,39 +295,64 @@ class AddVisualWindow:
 
     def _build_library_page(self, QtCore, QtWidgets):
         page = QtWidgets.QWidget()
+        apply_wizard_page_style(page)
         layout = QtWidgets.QVBoxLayout(page)
+        apply_page_layout(layout)
 
-        title = QtWidgets.QLabel("PyMOLViz")
-        title.setStyleSheet("font-size: 16px; font-weight: 600;")
-        subtitle = QtWidgets.QLabel(
-            "Objects added with PyMOLViz. Double-click a row to edit."
-        )
+        title = QtWidgets.QLabel("<b>Visuals</b>")
+        title.setStyleSheet(page_heading_css())
+        subtitle = QtWidgets.QLabel("Visual objects in this PyMOL session.")
         subtitle.setWordWrap(True)
+        subtitle.setStyleSheet(muted_label_css())
 
-        group = QtWidgets.QGroupBox("Objects")
-        group_layout = QtWidgets.QVBoxLayout(group)
+        group = make_section("Objects", expanding=True)
+        group_layout = group.layout
+        group_layout.setContentsMargins(8, 8, 8, 8)
         group_layout.setSpacing(0)
-        table = QtWidgets.QTableWidget(0, len(_OBJECT_COLUMNS))
-        table.setHorizontalHeaderLabels(list(_OBJECT_COLUMNS))
+        body = QtWidgets.QStackedWidget()
+        self._library_body = body
+
+        table_page = QtWidgets.QWidget()
+        table_layout = QtWidgets.QVBoxLayout(table_page)
+        table_layout.setContentsMargins(0, 0, 0, 0)
+        table_layout.setSpacing(0)
+        table = QtWidgets.QTableWidget(0, len(OBJECT_COLUMNS))
+        table.setHorizontalHeaderLabels(list(OBJECT_COLUMNS))
         table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         table.verticalHeader().setVisible(False)
         table.setShowGrid(False)
-        table.setAlternatingRowColors(True)
+        table.setAlternatingRowColors(False)
+        table.setFrameShape(getattr(QtWidgets.QFrame, "NoFrame", 0))
+        table.verticalHeader().setDefaultSectionSize(LIBRARY_ROW_MIN_HEIGHT)
+        table.verticalHeader().setMinimumSectionSize(LIBRARY_ROW_MIN_HEIGHT)
         header = table.horizontalHeader()
-        header.setStretchLastSection(True)
-        header.setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        header.setVisible(True)
+        header.setStretchLastSection(False)
+        header.setHighlightSections(False)
+        header.setSectionResizeMode(_COL_NAME, QtWidgets.QHeaderView.Stretch)
+        header.setSectionResizeMode(_COL_TYPE, QtWidgets.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(_COL_VISIBLE, QtWidgets.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(_COL_ACTIONS, QtWidgets.QHeaderView.ResizeToContents)
+        apply_catalog_table_style(table)
+        align_left = getattr(QtCore.Qt, "AlignLeft", None)
+        vcenter = getattr(QtCore.Qt, "AlignVCenter", None)
+        if align_left is not None and vcenter is not None:
+            header.setDefaultAlignment(align_left | vcenter)
         table.cellClicked.connect(self._on_object_clicked)
         table.cellDoubleClicked.connect(self._on_object_activated)
+        table.itemSelectionChanged.connect(self._sync_row_bands)
         table.setToolTip("Double-click a row to adjust that CGO.")
-        group_layout.addWidget(table, stretch=1)
+        table_layout.addWidget(table, stretch=1)
+        apply_expanding_list_policy(table, QtWidgets)
+        apply_expanding_list_policy(body, QtWidgets)
         self._objects_table = table
         self._add_object_overlay = StickyAddOverlay(
-            group,
+            table_page,
             table,
-            text="+ Add Object",
-            tooltip="Create a new visual.",
+            text=ADD_VISUAL_BUTTON,
+            tooltip=ADD_VISUAL_TIP,
             on_click=lambda: self._goto(_PAGE_TYPES),
             count=lambda: int(self._object_count),
             row_height=lambda: self._row_height(),
@@ -261,45 +361,146 @@ class AddVisualWindow:
         )
         self._add_object_overlay.attach()
 
+        body.addWidget(self._build_empty_state(QtCore, QtWidgets))
+        body.addWidget(table_page)
+        body.setCurrentIndex(_LIBRARY_EMPTY)
+        group_layout.addWidget(body, stretch=1)
+
         layout.addWidget(title)
         layout.addWidget(subtitle)
-        layout.addWidget(group, stretch=1)
+        scroll, body_layout = make_scrolling_body(page)
+        body_layout.addWidget(group.widget, stretch=1)
+        layout.addWidget(scroll, stretch=1)
         return page
 
-    def _build_type_page(self, QtWidgets):
+    def _build_empty_state(self, QtCore, QtWidgets):
         page = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(page)
+        layout.addStretch(1)
 
-        header = QtWidgets.QHBoxLayout()
-        back = QtWidgets.QPushButton("← Back")
-        back.setFlat(True)
-        back.setToolTip("Return to the object list.")
-        back.clicked.connect(lambda: self._goto(_PAGE_LIBRARY))
-        title = QtWidgets.QLabel("Add Object")
-        title.setStyleSheet("font-size: 16px; font-weight: 600;")
-        header.addWidget(back)
-        header.addWidget(title)
-        header.addStretch(1)
+        title = QtWidgets.QLabel(EMPTY_LIBRARY_TITLE)
+        title.setAlignment(QtCore.Qt.AlignCenter)
+        title.setStyleSheet(empty_title_css())
+        hint = QtWidgets.QLabel(EMPTY_LIBRARY_HINT)
+        hint.setAlignment(QtCore.Qt.AlignCenter)
+        hint.setWordWrap(True)
+        hint.setStyleSheet(muted_label_css())
 
-        subtitle = QtWidgets.QLabel("Select a type to place.")
+        btn = QtWidgets.QPushButton(ADD_VISUAL_BUTTON)
+        btn.setAutoDefault(False)
+        btn.setDefault(False)
+        btn.setMinimumWidth(180)
+        mark_primary_button(btn)
+        hand = getattr(QtCore.Qt, "PointingHandCursor", None)
+        if hand is not None:
+            btn.setCursor(hand)
+        btn.clicked.connect(lambda: self._goto(_PAGE_TYPES))
+        apply_required_tooltips(
+            [(btn, ADD_VISUAL_TIP, ADD_VISUAL_BUTTON)],
+            context="AddVisualWindow",
+        )
+        btn_row = QtWidgets.QHBoxLayout()
+        btn_row.addStretch(1)
+        btn_row.addWidget(btn)
+        btn_row.addStretch(1)
+
+        layout.addWidget(title)
+        layout.addWidget(hint)
+        layout.addSpacing(12)
+        layout.addLayout(btn_row)
+        layout.addStretch(1)
+        return page
+
+    def _build_type_page(self, QtCore, QtWidgets):
+        page = QtWidgets.QWidget()
+        apply_wizard_page_style(page)
+        layout = QtWidgets.QVBoxLayout(page)
+        apply_page_layout(layout)
+
+        header, back, _title = make_page_header(
+            QtWidgets,
+            lambda: self._goto(_PAGE_LIBRARY),
+            (CRUMB_VISUALS, CRUMB_ADD_OBJECT),
+            "Return to the visual list.",
+        )
+
+        subtitle = QtWidgets.QLabel("Choose a visual type.")
         subtitle.setWordWrap(True)
+        subtitle.setStyleSheet(muted_label_css())
 
         layout.addLayout(header)
         layout.addWidget(subtitle)
-        layout.addSpacing(8)
 
-        for name, kind, hint in MESH_TYPES:
-            row = QtWidgets.QVBoxLayout()
-            btn = QtWidgets.QPushButton(name)
-            btn.clicked.connect(lambda _checked=False, n=name, k=kind: self._on_mesh_type(n, k))
-            label = QtWidgets.QLabel(hint)
-            label.setStyleSheet("color: gray; margin-bottom: 4px;")
-            row.addWidget(btn)
-            row.addWidget(label)
-            layout.addLayout(row)
-
-        layout.addStretch(1)
+        scroll, body = make_scrolling_body(page)
+        for name, kind, hint, icon_key in MESH_TYPES:
+            body.addWidget(
+                self._build_type_card(QtCore, QtWidgets, name, kind, hint, icon_key)
+            )
+        body.addStretch(1)
+        layout.addWidget(scroll, stretch=1)
+        apply_required_tooltips(
+            [(back, "Return to the visual list.", "Back")],
+            context="AddVisualWindow",
+        )
         return page
+
+    def _build_type_card(self, QtCore, QtWidgets, name, kind, hint, icon_key):
+        _, QtGui, _ = qt_modules()
+        btn = QtWidgets.QPushButton()
+        apply_type_card_style(btn)
+        btn.setAutoDefault(False)
+        btn.setDefault(False)
+        expanding = getattr(QtWidgets.QSizePolicy, "Expanding", None)
+        preferred = getattr(QtWidgets.QSizePolicy, "Preferred", None)
+        if expanding is not None and preferred is not None:
+            btn.setSizePolicy(expanding, preferred)
+        hand = getattr(QtCore.Qt, "PointingHandCursor", None)
+        if hand is not None:
+            btn.setCursor(hand)
+        btn.setMinimumHeight(56)
+
+        inner = QtWidgets.QHBoxLayout(btn)
+        inner.setContentsMargins(12, 10, 12, 10)
+        inner.setSpacing(12)
+
+        glyph = QtWidgets.QLabel()
+        pix = type_icon_pixmap(
+            icon_key,
+            QtGui,
+            QtCore,
+            QtWidgets,
+            color=type_card_icon_rgb(icon_key),
+        )
+        if pix is not None:
+            glyph.setPixmap(pix)
+        glyph.setFixedSize(32, 32)
+        _ignore_mouse(QtCore, glyph)
+
+        text = QtWidgets.QVBoxLayout()
+        text.setSpacing(2)
+        title = QtWidgets.QLabel(name)
+        title.setStyleSheet(type_card_title_css())
+        subtitle = QtWidgets.QLabel(hint)
+        subtitle.setWordWrap(True)
+        subtitle.setStyleSheet(type_card_subtitle_css())
+        _ignore_mouse(QtCore, title)
+        _ignore_mouse(QtCore, subtitle)
+        text.addWidget(title)
+        text.addWidget(subtitle)
+
+        align = getattr(QtCore.Qt, "AlignVCenter", None)
+        if align is not None:
+            inner.addWidget(glyph, 0, align)
+        else:
+            inner.addWidget(glyph)
+        inner.addLayout(text, 1)
+
+        btn.clicked.connect(lambda _checked=False, n=name, k=kind: self._on_mesh_type(n, k))
+        apply_required_tooltips(
+            [(btn, hint, name)],
+            context="AddVisualWindow",
+        )
+        return btn
 
     def _refresh_objects_table(self):
         table = self._objects_table
@@ -307,19 +508,127 @@ class AddVisualWindow:
             return
         from ..runtime.session import all_objects
 
-        QtCore, _, QtWidgets = qt_modules()
+        QtCore, QtGui, QtWidgets = qt_modules()
         rows = object_rows(all_objects())
         self._object_count = len(rows)
         table.clearSpans()
+        table.setRowCount(0)
         table.setRowCount(len(rows))
         for i, row in enumerate(rows):
-            values = (row["name"], row["type"], str(row["n_points"]), row["com"])
-            for col, value in enumerate(values):
-                item = QtWidgets.QTableWidgetItem(str(value))
-                if col == 0:
-                    item.setData(QtCore.Qt.UserRole, row["id"])
-                table.setItem(i, col, item)
+            self._fill_object_row(table, i, row, QtCore, QtGui, QtWidgets)
+        if rows:
+            table.resizeRowsToContents()
+            for i in range(table.rowCount()):
+                if table.rowHeight(i) < LIBRARY_ROW_MIN_HEIGHT:
+                    table.setRowHeight(i, LIBRARY_ROW_MIN_HEIGHT)
+        self._sync_row_bands()
         self._sync_add_object_row()
+
+    def _fill_object_row(self, table, index, row, QtCore, QtGui, QtWidgets):
+        selected = table.currentRow() == index
+        band = cell_band_css(selected_row_fill(selected=selected))
+        name_item = QtWidgets.QTableWidgetItem(str(row["name"]))
+        name_item.setData(QtCore.Qt.UserRole, row["id"])
+        icon = _swatch_icon(QtGui, row.get("color"))
+        if icon is not None:
+            name_item.setIcon(icon)
+        tip_parts = [row["type"]]
+        if row.get("n_points"):
+            tip_parts.append("%s points" % row["n_points"])
+        if row.get("com"):
+            tip_parts.append("COM %s" % row["com"])
+        name_item.setToolTip(" · ".join(tip_parts))
+        table.setItem(index, _COL_NAME, name_item)
+        table.setCellWidget(
+            index,
+            _COL_TYPE,
+            make_kind_cell(
+                QtCore,
+                QtWidgets,
+                row.get("type"),
+                band,
+                min_height=LIBRARY_ROW_MIN_HEIGHT,
+            ),
+        )
+
+        obj = self._session_object(row["id"])
+        visible = True if obj is None else visual_is_enabled(self.wizard.cmd, obj)
+        table.setCellWidget(
+            index,
+            _COL_VISIBLE,
+            self._visibility_cell(QtCore, QtWidgets, row["id"], visible, band),
+        )
+        table.setCellWidget(
+            index,
+            _COL_ACTIONS,
+            self._actions_cell(
+                QtWidgets, row["id"], row["name"], row.get("editor"), band,
+            ),
+        )
+
+    def _sync_row_bands(self):
+        table = self._objects_table
+        if table is None:
+            return
+        try:
+            current = int(table.currentRow())
+        except RuntimeError:
+            return
+        for index in range(table.rowCount()):
+            band = cell_band_css(selected_row_fill(selected=(index == current)))
+            for col in (_COL_TYPE, _COL_VISIBLE, _COL_ACTIONS):
+                widget = table.cellWidget(index, col)
+                if widget is None:
+                    continue
+                try:
+                    widget.setStyleSheet(band)
+                except RuntimeError:
+                    pass
+
+    def _visibility_cell(self, QtCore, QtWidgets, obj_id, checked, band):
+        wrap = make_lib_cell(QtWidgets, band, min_height=LIBRARY_ROW_MIN_HEIGHT)
+        layout = QtWidgets.QHBoxLayout(wrap)
+        layout.setContentsMargins(0, 6, 0, 6)
+        layout.setAlignment(QtCore.Qt.AlignCenter)
+        checkbox = QtWidgets.QCheckBox()
+        checkbox.setChecked(bool(checked))
+        checkbox.toggled.connect(
+            lambda on, oid=obj_id: self._on_visibility_toggled(oid, on)
+        )
+        apply_required_tooltips(
+            [(checkbox, "Show or hide this object in the viewer.", "Visible")],
+            context="AddVisualWindow",
+        )
+        layout.addWidget(checkbox)
+        return wrap
+
+    def _actions_cell(self, QtWidgets, obj_id, name, editor, band):
+        wrap = make_lib_cell(QtWidgets, band, min_height=LIBRARY_ROW_MIN_HEIGHT)
+        layout = QtWidgets.QHBoxLayout(wrap)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
+        edit = make_row_icon_button(
+            QtWidgets,
+            _EDIT_BUTTON_TEXT,
+            "Open the builder for this object.",
+            "Edit",
+            lambda *_a, oid=obj_id: self._edit_object_id(oid),
+            "AddVisualWindow",
+        )
+        edit.setEnabled(bool(editor))
+        delete = make_row_icon_button(
+            QtWidgets,
+            "",
+            "Remove this object from the session.",
+            "Delete",
+            lambda *_a, oid=obj_id, label=name: self._on_delete_object(oid, label),
+            "AddVisualWindow",
+            icon="trash",
+        )
+        layout.addWidget(edit)
+        layout.addWidget(delete)
+        layout.addStretch(1)
+        return wrap
 
     def _row_height(self):
         table = self._objects_table
@@ -335,7 +644,7 @@ class AddVisualWindow:
         table = self._objects_table
         if table is None:
             return None
-        item = table.item(row, 0)
+        item = table.item(row, _COL_NAME)
         if item is None:
             return None
         QtCore, _, _ = qt_modules()
@@ -347,7 +656,17 @@ class AddVisualWindow:
     def _sync_add_object_row(self):
         overlay = self._add_object_overlay
         table = self._objects_table
+        body = self._library_body
+        empty = library_shows_empty_state(self._object_count)
+        if body is not None:
+            body.setCurrentIndex(_LIBRARY_EMPTY if empty else _LIBRARY_LIST)
         if overlay is None or table is None:
+            return
+        if empty:
+            try:
+                overlay.widget.hide()
+            except RuntimeError:
+                pass
             return
         n_objects = int(self._object_count)
         if table.rowCount() != n_objects:
@@ -364,26 +683,58 @@ class AddVisualWindow:
 
         return session_get(obj_id)
 
-    def _on_object_activated(self, row, _column):
+    def _on_visibility_toggled(self, obj_id, checked):
+        obj = self._session_object(obj_id)
+        if obj is None:
+            return
+        set_visual_enabled(self.wizard.cmd, obj, bool(checked))
+
+    def _on_delete_object(self, obj_id, name):
+        obj = self._session_object(obj_id)
+        if obj is None:
+            return
+        if not self._confirm_delete(name or "this object"):
+            return
+        delete_visual(self.wizard.cmd, obj)
+        self._refresh_objects_table()
+
+    def _confirm_delete(self, name):
+        _, _, QtWidgets = qt_modules()
+        if QtWidgets is None:
+            return True
+        result = overlay_question(
+            self._window,
+            "Delete object",
+            "Delete %s from this session?" % name,
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        return result == QtWidgets.QMessageBox.Yes
+
+    def _edit_object_id(self, obj_id):
+        obj = self._session_object(obj_id)
+        if obj is None:
+            return
+        self._open_object_editor(obj)
+
+    def _on_object_activated(self, row, column):
+        if column in (_COL_VISIBLE, _COL_ACTIONS):
+            return
         marker = self._row_marker(row)
         if marker == _ADD_ROW_ID:
             self._goto(_PAGE_TYPES)
             return
-        table = self._objects_table
-        if table is None:
-            return
-        item = table.item(row, 0)
-        if item is None:
-            return
-        QtCore, _, QtWidgets = qt_modules()
-        obj_id = item.data(QtCore.Qt.UserRole)
-        obj = self._session_object(obj_id)
+        obj = self._session_object(marker)
         if obj is None:
             return
+        self._open_object_editor(obj)
+
+    def _open_object_editor(self, obj):
         kind = editor_kind(obj)
+        _, _, QtWidgets = qt_modules()
         if not kind:
             if QtWidgets is not None:
-                QtWidgets.QMessageBox.information(
+                overlay_information(
                     self._window,
                     "Edit object",
                     "No editor for %s yet." % type(obj).__name__,
@@ -415,7 +766,7 @@ class AddVisualWindow:
             self.wizard.prompt = ["Mesh builder failed: %s" % exc]
             _, _, QtWidgets = qt_modules()
             if QtWidgets is not None:
-                QtWidgets.QMessageBox.warning(
+                overlay_warning(
                     self._window,
                     "PyMOLViz",
                     "Could not open %s builder:\n\n%s" % (kind, exc),
@@ -446,6 +797,7 @@ class AddVisualWindow:
         self._goto(_PAGE_TYPES)
 
     def _on_builder_saved(self):
+        hide_exported_point_labels(self.wizard.cmd)
         self._editing_obj = None
         self._refresh_objects_table()
         self._goto(_PAGE_LIBRARY)
@@ -474,6 +826,7 @@ class AddVisualWindow:
         self._reset_window()
 
     def _cleanup_builder_previews(self):
+        hide_exported_point_labels(self.wizard.cmd)
         if self._sphere_page is not None:
             self._sphere_page.cleanup_preview()
         if self._box_page is not None:

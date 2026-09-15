@@ -3,6 +3,15 @@ import numpy as np
 
 from ..points import as_point_source, resolve_xyz
 from ..util.geometries import icosphere
+from ..util.mesh_clip import normalize_clip_planes
+from .clippable import (
+    apply_source_clips,
+    clipped_geometry,
+    clone_clip_state,
+    set_clip_planes as apply_clip_planes,
+    shift_source_vertices,
+    store_source_geometry,
+)
 
 _UNIT_ICOSPHERE = {}
 
@@ -53,6 +62,8 @@ class Sphere(Mesh):
         *args,
         **kwargs
     ) -> None:
+        clip_planes = kwargs.pop("clip_planes", None)
+        enabled = kwargs.pop("enabled", True)
         if frequency is None and subdivisions is not None:
             frequency = 2 ** max(0, int(subdivisions))
         if frequency is None:
@@ -64,15 +75,30 @@ class Sphere(Mesh):
         self.subdivisions = int(subdivisions) if subdivisions is not None else None
         self.wireframe = bool(wireframe)
         self.resolution = int(resolution)
+        self.enabled = bool(enabled)
         pos = resolve_xyz(self.position)
         vertices, normals, faces = _build_sphere_mesh(pos, self.geom_radius, self.frequency)
+        store_source_geometry(self, vertices, normals, faces)
+        self.clip_planes = normalize_clip_planes(clip_planes)
+        vertices, normals, faces = clipped_geometry(self)
         super().__init__(vertices, color, normals, faces, *args, **kwargs)
         self.radius = self.geom_radius
+
+    def set_clip_planes(self, planes) -> None:
+        apply_clip_planes(self, planes)
+
+    def shift_vertices(self, delta) -> None:
+        if shift_source_vertices(self, delta):
+            return
+        super().shift_vertices(delta)
+
+    def clone_baked(self):
+        return clone_clip_state(self, super().clone_baked())
 
     def rebuild(self, context=None) -> None:
         pos = resolve_xyz(self.position, context)
         vertices, normals, faces = _build_sphere_mesh(pos, self.geom_radius, self.frequency)
-        self.vertices = vertices
-        self.normals = normals
-        self.faces = faces
-        self.invalidate_cgo_cache()
+        store_source_geometry(self, vertices, normals, faces)
+        apply_source_clips(self)
+        from ..util.field_sample import paint_mesh_by_field
+        paint_mesh_by_field(self)

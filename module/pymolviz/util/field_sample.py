@@ -29,6 +29,7 @@ SURFACE_COLORMAPS = (
     "onwhite",
     "onwhite_r",
 )
+FIELD_COLORMAPS = SURFACE_COLORMAPS
 
 
 def resolve_grid(obj):
@@ -40,21 +41,43 @@ def resolve_grid(obj):
     nested = getattr(obj, "grid_data", None)
     if nested is not None and type(nested).__name__ == "GridData":
         return nested
+    if type(obj).__name__ == "Field":
+        try:
+            from ..fields.field import ensure_brick
+
+            return ensure_brick(obj)
+        except Exception:
+            return None
     return None
+
+
+def forget_native_grid(field_id) -> None:
+    """Drop a cached native PyMOL map wrapper."""
+    if not field_id:
+        return
+    _NATIVE_GRIDS.pop(str(field_id), None)
 
 
 def remember_field(obj) -> None:
     """Keep a sampleable field in the live session catalog for the Surface wizard."""
-    if resolve_grid(obj) is None:
+    if resolve_grid(obj) is None and type(obj).__name__ != "Field":
         return
     name = str(getattr(obj, "_name", None) or "")
     if name.startswith("cbar_dummy"):
         return
     try:
-        from ..runtime.session import add
-        add(obj)
+        from ..fields.field import as_field, intern_field
+
+        field = as_field(obj)
+        if field is None:
+            return
+        intern_field(field)
     except Exception:
-        pass
+        try:
+            from ..runtime.session import add
+            add(obj)
+        except Exception:
+            pass
 
 
 def resolve_grid_from_session(field_id):
@@ -73,6 +96,78 @@ def resolve_grid_from_session(field_id):
         pass
     name = key[len(PYMOL_MAP_ID_PREFIX):] if key.startswith(PYMOL_MAP_ID_PREFIX) else key
     return resolve_grid(grid_from_pymol_map(name))
+
+
+def resolve_field_from_session(field_id):
+    """Return the session Field for ``field_id``, or None."""
+    if not field_id:
+        return None
+    try:
+        from ..runtime.session import get
+
+        obj = get(str(field_id))
+    except Exception:
+        obj = None
+    if obj is not None and type(obj).__name__ == "Field":
+        return obj
+    try:
+        from ..fields.field import as_field
+
+        return as_field(obj) if obj is not None else None
+    except Exception:
+        return None
+
+
+def is_rgb_color_field(field) -> bool:
+    if field is None:
+        return False
+    from ..fields.identity import GEN_NEAREST_COLOR, KIND_VECTOR, normalize_kind
+
+    gen = getattr(field, "generator", None) or {}
+    if str(gen.get("type") or "") == GEN_NEAREST_COLOR:
+        return True
+    return normalize_kind(getattr(field, "kind", None)) == KIND_VECTOR and bool(
+        getattr(field, "categories", None)
+    )
+
+
+def rgb_from_color_categories(values, categories):
+    """Map color-index voxels onto snapshotted RGB (no named colormap)."""
+    colors = []
+    for item in categories or ():
+        try:
+            colors.append([float(item[0]), float(item[1]), float(item[2])])
+        except (TypeError, ValueError, IndexError):
+            continue
+    values = np.asarray(values, dtype=float).reshape(-1)
+    if not colors:
+        return np.zeros((int(values.shape[0]), 3), dtype=float)
+    palette = np.asarray(colors, dtype=float).reshape(-1, 3)
+    n = int(palette.shape[0])
+    if n == 1:
+        return np.broadcast_to(palette[0], (int(values.shape[0]), 3)).copy()
+    v = np.clip(values, 0.0, float(n - 1))
+    lo = np.floor(v).astype(int)
+    hi = np.minimum(lo + 1, n - 1)
+    t = (v - lo)[:, None]
+    return palette[lo] * (1.0 - t) + palette[hi] * t
+
+
+def rgb_from_color_field(values, field):
+    """Map sampled color-field scalars through spatial RGB stops when present."""
+    stops = getattr(field, "color_stops", None)
+    if not stops:
+        grid = getattr(field, "grid_data", None)
+        stops = getattr(grid, "color_stops", None) if grid is not None else None
+    if stops:
+        from ..ColorMap import ColorMap
+
+        try:
+            cmap = ColorMap(list(stops))
+            return np.asarray(cmap.get_color(values)[:, :3], dtype=float)
+        except Exception:
+            pass
+    return rgb_from_color_categories(values, getattr(field, "categories", None))
 
 
 def _pymol_cmd(cmd=None):
@@ -161,6 +256,11 @@ def grid_from_pymol_map(name, cmd=None):
         return None
     if values.ndim != 3 or values.size == 0:
         return None
+    try:
+        cmd.set("map_auto_expand_sym", 0)
+        cmd.set("map_auto_expand_sym", 0, name)
+    except Exception:
+        pass
     origin = np.zeros(3, dtype=float)
     step = np.ones(3, dtype=float)
     try:
@@ -187,6 +287,17 @@ def grid_from_pymol_map(name, cmd=None):
     )
     grid._name = name
     grid.id = key
+    try:
+        parsed = None
+        getter = getattr(cmd, "get_symmetry", None)
+        if callable(getter):
+            from ..fields.crystal import parse_cell_params, _is_dummy_cell, _cell_is_orthogonal, attach_crystal_axis_frame
+
+            parsed = parse_cell_params(getter(name))
+            if parsed is not None and not _is_dummy_cell(parsed[0]) and not _cell_is_orthogonal(parsed[0]):
+                attach_crystal_axis_frame(grid, parsed[0])
+    except Exception:
+        pass
     _NATIVE_GRIDS[key] = grid
     return grid
 
@@ -214,33 +325,104 @@ def discover_fields(objects: Optional[Iterable] = None, cmd=None) -> list:
             objects = all_objects()
         except Exception:
             objects = []
+    from ..fields.field import as_field
+
     out = []
     seen_ids = set()
     seen_names = set()
     for obj in objects:
-        if resolve_grid(obj) is None:
+        if type(obj).__name__ in ("Volume", "IsoVolume", "IsoSurface", "IsoMesh"):
             continue
-        oid = str(getattr(obj, "id", "") or "")
+        field = as_field(obj) if type(obj).__name__ == "Field" or resolve_grid(obj) is not None else None
+        if field is None:
+            continue
+        oid = str(getattr(field, "id", "") or "")
         if oid:
             if oid in seen_ids:
                 continue
             seen_ids.add(oid)
-        for name in _field_names(obj):
+        for name in _field_names(field):
             seen_names.add(name)
-        out.append(obj)
+        out.append(field)
     for name in iter_pymol_field_names(cmd):
         if name in seen_names:
             continue
         grid = grid_from_pymol_map(name, cmd=cmd)
         if grid is None:
             continue
-        oid = str(grid.id)
+        field = as_field(grid)
+        if field is None:
+            continue
+        oid = str(getattr(field, "id", "") or "")
         if oid in seen_ids:
             continue
         seen_ids.add(oid)
         seen_names.add(name)
-        out.append(grid)
+        out.append(field)
     return out
+
+
+def field_label(obj) -> str:
+    """User-facing name for a sampleable field."""
+    for attr in ("_name", "name"):
+        val = getattr(obj, attr, None)
+        if val:
+            text = str(val)
+            if text:
+                return text
+    oid = str(getattr(obj, "id", "") or "")
+    if oid.startswith(PYMOL_MAP_ID_PREFIX):
+        return oid[len(PYMOL_MAP_ID_PREFIX):]
+    return oid or "field"
+
+
+def field_picker_label(obj) -> str:
+    """Combo label: name, kind, grid size, units — no raw ids."""
+    name = field_label(obj) or "field"
+    parts = [name]
+    kind = getattr(obj, "kind", None)
+    if kind:
+        parts.append(str(kind))
+    grid = resolve_grid(obj)
+    if grid is not None:
+        counts = np.asarray(getattr(grid, "step_counts", None), dtype=int).reshape(-1)
+        if counts.size >= 3:
+            shape = (int(counts[0]) + 1, int(counts[1]) + 1, int(counts[2]) + 1)
+            parts.append("%dx%dx%d" % shape)
+    units = getattr(obj, "units", None)
+    if units:
+        parts.append(str(units))
+    return " · ".join(parts)
+
+
+def field_choices(objects: Optional[Iterable] = None, cmd=None) -> list:
+    """``[(field_id, label), ...]`` for currently sampleable fields."""
+    out = []
+    seen = set()
+    for obj in discover_fields(objects, cmd=cmd):
+        oid = str(getattr(obj, "id", "") or "")
+        if not oid or oid in seen:
+            continue
+        seen.add(oid)
+        out.append((oid, field_label(obj)))
+    return out
+
+
+def sample_rgb_at(xyz, field_id, colormap=DEFAULT_SURFACE_COLORMAP, clims=None, smooth=None):
+    """RGB at one point, or None if the field cannot be sampled."""
+    grid = resolve_grid_from_session(field_id)
+    if grid is None:
+        return None
+    if smooth is None:
+        smooth = SURFACE_FIELD_SMOOTH
+    values = sample_grid(grid, [xyz], smooth=smooth)
+    field = resolve_field_from_session(field_id)
+    if is_rgb_color_field(field):
+        rgb = rgb_from_color_field(values, field)
+    else:
+        rgb, _ = rgb_from_scalars(values, colormap, clims)
+    row = np.asarray(rgb, dtype=float).reshape(-1, 3)[0]
+    return (float(row[0]), float(row[1]), float(row[2]))
 
 
 # Voxel-space Gaussian used when painting a fine mesh from a coarse map.
@@ -303,7 +485,10 @@ def sample_grid(grid, xyz, smooth=0.0) -> np.ndarray:
     field = grid_field_for_sample(grid, smooth)
     origin = np.asarray(grid.origin, dtype=float).reshape(3)
     step = np.asarray(grid.step_sizes, dtype=float).reshape(3)
-    return sample_regular_grid(field, origin, step, xyz)
+    from ..fields.domain import grid_world_to_local
+
+    local = grid_world_to_local(grid, xyz)
+    return sample_regular_grid(field, origin, step, local)
 
 
 def sample_regular_grid(values, origin, step_sizes, xyz) -> np.ndarray:
@@ -606,6 +791,25 @@ def refine_mesh_for_field(
 def rgb_from_scalars(values, colormap=DEFAULT_SURFACE_COLORMAP, clims=None):
     """Map scalars to RGB via :class:`pymolviz.ColorMap`. Returns ``(rgb, (vmin, vmax))``."""
     values = np.asarray(values, dtype=float).reshape(-1)
+    from .colormap_spec import coerce_definition, map_scalars, uses_stop_sampling
+
+    defn = coerce_definition(colormap)
+    if defn is not None and uses_stop_sampling(defn):
+        if clims is None:
+            finite = np.isfinite(values)
+            if np.any(finite):
+                vmin = float(np.min(values[finite]))
+                vmax = float(np.max(values[finite]))
+            else:
+                vmin, vmax = 0.0, 1.0
+        else:
+            vmin, vmax = float(clims[0]), float(clims[1])
+        if abs(vmax - vmin) < 1e-15:
+            vmax = vmin + 1.0
+        rgba = map_scalars(values, defn, vmin, vmax)
+        return rgba[:, :3], (vmin, vmax)
+    if defn is not None:
+        colormap = defn.preset or DEFAULT_SURFACE_COLORMAP
     finite = np.isfinite(values)
     if clims is None:
         if np.any(finite):
@@ -638,3 +842,283 @@ def normalize_clims(clims) -> Optional[List[float]]:
     if hi < lo:
         lo, hi = hi, lo
     return [lo, hi]
+
+
+def _linear_midpoint(a, b, na, nb):
+    a = np.asarray(a, dtype=float).reshape(3)
+    b = np.asarray(b, dtype=float).reshape(3)
+    na = np.asarray(na, dtype=float).reshape(3)
+    nb = np.asarray(nb, dtype=float).reshape(3)
+    return 0.5 * (a + b), 0.5 * (na + nb)
+
+
+def _field_projector(mesh):
+    kind = type(mesh).__name__
+    if kind == "Sphere":
+        try:
+            from ..points import resolve_xyz
+            center = resolve_xyz(getattr(mesh, "position", None))
+            radius = float(getattr(mesh, "geom_radius", getattr(mesh, "radius", 0.0)))
+            return union_sphere_midpoint_projector([center], [radius])
+        except Exception:
+            return None
+    if kind == "CenteredBox":
+        return _linear_midpoint
+    return None
+
+
+def _point_color_paint_key(vertices, centers, colors, influence_radii):
+    verts = np.asarray(vertices, dtype=float).reshape(-1, 3)
+    centers = np.asarray(centers, dtype=float).reshape(-1, 3)
+    colors = np.asarray(colors, dtype=float).reshape(-1, 3)
+    radii = np.asarray(influence_radii, dtype=float).reshape(-1)
+    vmean = tuple(np.round(verts.mean(axis=0), 5).tolist()) if verts.size else ()
+    return (
+        int(verts.shape[0]),
+        vmean,
+        tuple(np.round(centers, 5).ravel().tolist()),
+        tuple(np.round(colors, 5).ravel().tolist()),
+        tuple(np.round(radii, 5).tolist()),
+    )
+
+
+def paint_mesh_by_point_colors(mesh, centers, colors, influence_radii) -> bool:
+    """Blend anchor RGB onto mesh vertices using squared falloff inside each sphere.
+
+    Each anchor *i* has center ``centers[i]``, color ``colors[i]``, and influence
+    radius ``influence_radii[i]`` (typically atom radius + probe used for the
+    solvent surface).  For vertex *v* at distance ``d_i`` from anchor *i*,
+
+        w_i = max(0, 1 - d_i / r_i)^2
+
+    Weights are normalized per vertex; if all weights vanish, the nearest anchor
+    wins (hard region assignment).
+
+    Returns False when vertices/centers/colors are unchanged (no CGO invalidate).
+    """
+    vertices = np.asarray(getattr(mesh, "vertices", []), dtype=float).reshape(-1, 3)
+    if vertices.shape[0] == 0:
+        return False
+    centers = np.asarray(centers, dtype=float).reshape(-1, 3)
+    colors = np.asarray(colors, dtype=float).reshape(-1, 3)
+    radii = np.maximum(np.asarray(influence_radii, dtype=float).reshape(-1), 1e-6)
+    if centers.shape[0] == 0:
+        return False
+    key = _point_color_paint_key(vertices, centers, colors, radii)
+    if getattr(mesh, "_point_color_paint_key", None) == key:
+        return False
+    if centers.shape[0] == 1:
+        mesh.color = np.broadcast_to(colors[0], (vertices.shape[0], 3)).copy()
+        mesh.bypass_colormap = True
+        mesh._point_color_paint_key = key
+        if hasattr(mesh, "invalidate_cgo_cache"):
+            mesh.invalidate_cgo_cache()
+        return True
+    diff = vertices[:, None, :] - centers[None, :, :]
+    dist = np.linalg.norm(diff, axis=2)
+    t = np.clip(1.0 - dist / radii[None, :], 0.0, 1.0)
+    weights = t * t
+    sums = weights.sum(axis=1, keepdims=True)
+    zero = sums.squeeze(-1) < 1e-12
+    if np.any(zero):
+        nearest = np.argmin(dist, axis=1)
+        weights[zero] = 0.0
+        weights[zero, nearest[zero]] = 1.0
+        sums = weights.sum(axis=1, keepdims=True)
+    rgb = (weights @ colors) / np.maximum(sums, 1e-12)
+    mesh.color = rgb
+    mesh.bypass_colormap = True
+    mesh._point_color_paint_key = key
+    if hasattr(mesh, "invalidate_cgo_cache"):
+        mesh.invalidate_cgo_cache()
+    return True
+
+
+def paint_surface_mesh_from_anchors(mesh, context=None) -> bool:
+    """Re-paint a Surface from ``point_sources`` and stored ``point_colors``."""
+    if type(mesh).__name__ != "Surface":
+        return False
+    point_colors = getattr(mesh, "point_colors", None)
+    if not point_colors:
+        return False
+    from ..points import resolve_xyz
+    from .solvent_surface import (
+        normalize_point_enabled,
+        normalize_point_radii,
+        resolve_atom_radii,
+    )
+
+    sources = list(getattr(mesh, "point_sources", None) or ())
+    flags = normalize_point_enabled(getattr(mesh, "point_enabled", None), len(sources))
+    if flags is None:
+        flags = [True] * len(sources)
+    radii_all = normalize_point_radii(getattr(mesh, "point_radii", None), len(sources))
+    centers = []
+    colors = []
+    active_sources = []
+    active_radii = []
+    for i, (src, on) in enumerate(zip(sources, flags)):
+        if not on or i >= len(point_colors):
+            continue
+        centers.append(resolve_xyz(src, context))
+        colors.append(point_colors[i][:3])
+        active_sources.append(src)
+        active_radii.append(radii_all[i] if radii_all is not None else None)
+    if not centers:
+        return False
+    atom_radii = resolve_atom_radii(
+        active_sources,
+        len(active_sources),
+        float(getattr(mesh, "atom_radius", 1.5)),
+        getattr(mesh, "radius_mode", "uniform"),
+        float(getattr(mesh, "vdw_scale", 1.0) or 1.0),
+        active_radii,
+        context,
+    )
+    probe = float(getattr(mesh, "probe_radius", 1.4))
+    influence = [float(r) + probe for r in atom_radii]
+    return paint_mesh_by_point_colors(mesh, centers, colors, influence)
+
+
+def clear_mesh_field(mesh) -> None:
+    mesh.field_id = None
+    mesh.field_colormap = None
+    mesh.field_colormap_spec = None
+    mesh.field_clims = None
+    mesh.field_clim_mode = None
+
+
+def _store_mesh_colormap(mesh, colormap, spec=None) -> None:
+    from .colormap_spec import persist_colormap_attrs
+
+    name, stored = persist_colormap_attrs(colormap, spec)
+    mesh.field_colormap = name
+    mesh.field_colormap_spec = stored
+
+
+def _paint_arrows_by_field(mesh, grid, field_id, colormap, clims, spec=None) -> bool:
+    from .colormap_spec import sampling_colormap
+
+    verts = np.asarray(getattr(mesh, "vertices", []), dtype=float).reshape(-1, 3)
+    if verts.shape[0] < 2:
+        return False
+    pairs = verts.reshape(-1, 2, 3)
+    mids = 0.5 * (pairs[:, 0] + pairs[:, 1])
+    values = sample_grid(grid, mids, smooth=0.0)
+    rgb, used = rgb_from_scalars(values, sampling_colormap(colormap, spec), clims)
+    mesh.color = rgb
+    mesh.bypass_colormap = True
+    mesh.field_id = str(field_id)
+    _store_mesh_colormap(mesh, colormap, spec)
+    mesh.field_clims = list(used)
+    if hasattr(mesh, "invalidate_cgo_cache"):
+        mesh.invalidate_cgo_cache()
+    return True
+
+
+def paint_mesh_by_field(
+    mesh,
+    field_id=None,
+    colormap=None,
+    clims=None,
+    refine=True,
+    smooth=None,
+    colormap_spec=None,
+    clim_mode=None,
+) -> bool:
+    """Sample ``field_id`` at mesh vertices and store per-vertex RGB.
+
+    Returns False if the field is missing or the mesh has no vertices.
+    """
+    from .colormap_spec import sampling_colormap
+
+    field_id = field_id if field_id is not None else getattr(mesh, "field_id", None)
+    if not field_id:
+        return False
+    if colormap_spec is None:
+        colormap_spec = getattr(mesh, "field_colormap_spec", None)
+    grid = resolve_grid_from_session(field_id)
+    if grid is None:
+        mesh.field_id = str(field_id)
+        if colormap is not None or colormap_spec is not None:
+            _store_mesh_colormap(mesh, colormap, colormap_spec)
+        if clims is not None:
+            mesh.field_clims = normalize_clims(clims)
+        if clim_mode:
+            mesh.field_clim_mode = str(clim_mode)
+        return False
+    colormap = (
+        colormap
+        if colormap is not None
+        else (getattr(mesh, "field_colormap", None) or DEFAULT_SURFACE_COLORMAP)
+    )
+    if clims is None:
+        clims = getattr(mesh, "field_clims", None)
+    clims = normalize_clims(clims)
+    if clim_mode:
+        mesh.field_clim_mode = str(clim_mode)
+    kind = type(mesh).__name__
+    if kind == "Arrows":
+        return _paint_arrows_by_field(mesh, grid, field_id, colormap, clims, spec=colormap_spec)
+    vertices = np.asarray(getattr(mesh, "vertices", []), dtype=float).reshape(-1, 3)
+    if vertices.shape[0] == 0:
+        return False
+    if smooth is None:
+        smooth = SURFACE_FIELD_SMOOTH if kind in ("Surface", "Sphere") else 0.0
+    values = sample_grid(grid, vertices, smooth=smooth)
+    faces = getattr(mesh, "faces", None)
+    normals = getattr(mesh, "normals", None)
+    if refine and faces is not None and np.asarray(faces).size:
+        vertices, normals, faces, values = refine_mesh_for_field(
+            vertices,
+            normals,
+            faces,
+            values,
+            grid=grid,
+            project=_field_projector(mesh),
+            smooth=smooth,
+        )
+        mesh.vertices = vertices
+        if normals is not None:
+            mesh.normals = normals
+        mesh.faces = faces
+    field = resolve_field_from_session(field_id)
+    if is_rgb_color_field(field):
+        rgb = rgb_from_color_field(values, field)
+        stops = getattr(field, "color_stops", None) or getattr(grid, "color_stops", None)
+        if stops:
+            used = [float(stops[0][0]), float(stops[-1][0])]
+        else:
+            ncat = max(len(getattr(field, "categories", None) or []) - 1, 1)
+            used = [0.0, float(ncat)]
+        cmap_name = None
+        colormap_spec = None
+    else:
+        rgb, used = rgb_from_scalars(values, sampling_colormap(colormap, colormap_spec), clims)
+        cmap_name = True
+    mesh.color = rgb
+    mesh.bypass_colormap = True
+    mesh.field_id = str(field_id)
+    if cmap_name:
+        _store_mesh_colormap(mesh, colormap, colormap_spec)
+    mesh.field_clims = list(used)
+    if hasattr(mesh, "invalidate_cgo_cache"):
+        mesh.invalidate_cgo_cache()
+    return True
+
+
+def apply_stored_field_color(mesh, data=None, refine=True) -> bool:
+    """Copy field attrs from a persistence dict (optional) and paint."""
+    if data:
+        field_id = data.get("field_id")
+        if field_id:
+            mesh.field_id = str(field_id)
+            cmap = data.get("field_colormap")
+            spec = data.get("field_colormap_spec")
+            if spec or cmap:
+                _store_mesh_colormap(mesh, cmap, spec)
+            mesh.field_clims = normalize_clims(data.get("field_clims"))
+            mode = data.get("field_clim_mode")
+            if mode:
+                mesh.field_clim_mode = str(mode)
+    return paint_mesh_by_field(mesh, refine=refine)

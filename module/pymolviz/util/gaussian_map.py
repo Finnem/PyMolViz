@@ -12,6 +12,8 @@ import math
 
 import numpy as np
 
+from .array_backend import array_module, as_numpy
+
 # Default PyMOL settings (SettingInfo.h / creating.py).
 DEFAULT_GAUSSIAN_RESOLUTION = 2.0
 DEFAULT_GAUSSIAN_B_FLOOR = 20.0
@@ -121,18 +123,58 @@ def paint_gaussian_density(
     occupancies=None,
     resolution=DEFAULT_GAUSSIAN_RESOLUTION,
     b_floor=DEFAULT_GAUSSIAN_B_FLOOR,
+    backend=None,
 ) -> np.ndarray:
-    """Splat PyMOL Gaussian density onto a cubic lattice. High inside atoms."""
+    """Splat PyMOL Gaussian density onto a cubic lattice. High inside atoms.
+
+    ``backend`` is ``None`` (auto CuPy/NumPy), ``"numpy"``, or ``"cupy"``.
+    The returned field is always a NumPy array.
+    """
     nx, ny, nz = (int(shape[0]), int(shape[1]), int(shape[2]))
-    field = np.zeros((nx, ny, nz), dtype=float)
+    empty = np.zeros((nx, ny, nz), dtype=float)
     centers = np.asarray(centers, dtype=float).reshape(-1, 3)
     n = int(centers.shape[0])
     if n == 0 or h <= 0.0 or nx < 1 or ny < 1 or nz < 1:
-        return field
+        return empty
+    xp = array_module(prefer=backend)
+    try:
+        return as_numpy(
+            _paint_gaussian_density_xp(
+                xp, (nx, ny, nz), origin, h, centers, elements,
+                b_factors, occupancies, resolution, b_floor,
+            )
+        )
+    except Exception:
+        if xp is np:
+            raise
+        return as_numpy(
+            _paint_gaussian_density_xp(
+                np, (nx, ny, nz), origin, h, centers, elements,
+                b_factors, occupancies, resolution, b_floor,
+            )
+        )
+
+
+def _paint_gaussian_density_xp(
+    xp,
+    shape,
+    origin,
+    h,
+    centers,
+    elements,
+    b_factors,
+    occupancies,
+    resolution,
+    b_floor,
+):
+    nx, ny, nz = shape
+    field = xp.zeros((nx, ny, nz), dtype=float)
     origin = np.asarray(origin, dtype=float).reshape(3)
     h = float(h)
     blur = gaussian_blur_factor(resolution)
+    blur2 = blur * blur
     floor = float(b_floor)
+    n = int(centers.shape[0])
     if b_factors is None:
         b_factors = np.full(n, floor, dtype=float)
     else:
@@ -149,43 +191,54 @@ def paint_gaussian_density(
             occupancies = np.repeat(occupancies, n)
         elif occupancies.size != n:
             occupancies = np.resize(occupancies, n)
-    limits = np.array((nx - 1, ny - 1, nz - 1), dtype=np.int32)
+    limx, limy, limz = nx - 1, ny - 1, nz - 1
+    inv_h = 1.0 / h
+    term_cache = {}
     for i in range(n):
         occup = float(occupancies[i])
-        bfact = float(b_factors[i]) + 0.0
+        bfact = float(b_factors[i])
         if bfact < floor:
             bfact = floor
         if bfact <= _R_SMALL4 or occup <= _R_SMALL4:
             continue
         elem = elements[i] if i < len(elements) else "C"
-        amps, kappas, rcut = atom_gaussian_terms(elem, bfact, occup, blur)
+        cache_key = (str(elem or "C").strip().upper(), bfact, occup)
+        packed = term_cache.get(cache_key)
+        if packed is None:
+            packed = atom_gaussian_terms(elem, bfact, occup, blur)
+            term_cache[cache_key] = packed
+        amps, kappas, rcut = packed
         center = centers[i]
         extent = rcut / blur if blur > 1e-12 else rcut
-        lo = np.floor((center - extent - origin) / h).astype(np.int32)
-        hi = np.ceil((center + extent - origin) / h).astype(np.int32)
-        lo = np.clip(lo, 0, limits)
-        hi = np.clip(hi, 0, limits)
-        if int(hi[0]) < int(lo[0]) or int(hi[1]) < int(lo[1]) or int(hi[2]) < int(lo[2]):
+        lo0 = int(np.clip(math.floor((center[0] - extent - origin[0]) * inv_h), 0, limx))
+        lo1 = int(np.clip(math.floor((center[1] - extent - origin[1]) * inv_h), 0, limy))
+        lo2 = int(np.clip(math.floor((center[2] - extent - origin[2]) * inv_h), 0, limz))
+        hi0 = int(np.clip(math.ceil((center[0] + extent - origin[0]) * inv_h), 0, limx))
+        hi1 = int(np.clip(math.ceil((center[1] + extent - origin[1]) * inv_h), 0, limy))
+        hi2 = int(np.clip(math.ceil((center[2] + extent - origin[2]) * inv_h), 0, limz))
+        if hi0 < lo0 or hi1 < lo1 or hi2 < lo2:
             continue
-        xs = np.arange(int(lo[0]), int(hi[0]) + 1)
-        ys = np.arange(int(lo[1]), int(hi[1]) + 1)
-        zs = np.arange(int(lo[2]), int(hi[2]) + 1)
-        if xs.size == 0 or ys.size == 0 or zs.size == 0:
+        xs = origin[0] + xp.arange(lo0, hi0 + 1, dtype=float) * h - float(center[0])
+        ys = origin[1] + xp.arange(lo1, hi1 + 1, dtype=float) * h - float(center[1])
+        zs = origin[2] + xp.arange(lo2, hi2 + 1, dtype=float) * h - float(center[2])
+        xs2 = xs * xs
+        ys2 = ys * ys
+        zs2 = zs * zs
+        rcut2 = float(rcut) * float(rcut)
+        dist2 = blur2 * (
+            xs2[:, None, None] + ys2[None, :, None] + zs2[None, None, :]
+        )
+        keep = dist2 < rcut2
+        if not bool(xp.any(keep)):
             continue
-        ii, jj, kk = np.meshgrid(xs, ys, zs, indexing="ij")
-        xyz = origin + np.stack((ii, jj, kk), axis=-1) * h
-        delta = xyz - center
-        dist = np.linalg.norm(delta, axis=-1) * blur
-        keep = dist < rcut
-        if not np.any(keep):
-            continue
-        dist = np.maximum(dist, _R_SMALL8)
-        d2 = dist * dist
-        partial = np.zeros(dist.shape, dtype=float)
+        partial = xp.zeros(dist2.shape, dtype=float)
         for amp, kappa in zip(amps, kappas):
-            partial += float(amp) * np.exp(-float(kappa) * d2)
-        partial *= blur
-        field[ii, jj, kk] += np.where(keep, partial, 0.0)
+            kblur = float(kappa) * blur2
+            gx = xp.exp(-kblur * xs2)
+            gy = xp.exp(-kblur * ys2)
+            gz = xp.exp(-kblur * zs2)
+            partial += float(amp) * gx[:, None, None] * gy[None, :, None] * gz[None, None, :]
+        field[lo0:hi0 + 1, lo1:hi1 + 1, lo2:hi2 + 1] += xp.where(keep, partial * blur, 0.0)
     return field
 
 
@@ -200,3 +253,76 @@ def normalize_gaussian_map(density: np.ndarray) -> np.ndarray:
     if stdev < _R_SMALL8:
         stdev = _R_SMALL8
     return (values - mean) / stdev
+
+
+def gaussian_pad_radius(elements, resolution=DEFAULT_GAUSSIAN_RESOLUTION, b_floor=DEFAULT_GAUSSIAN_B_FLOOR) -> float:
+    """Half-extent of the Cromer–Mann splat window, plus a small safety margin."""
+    blur = gaussian_blur_factor(resolution)
+    extent = max(float(resolution), 1.0)
+    seen = set()
+    for elem in elements or ():
+        key = str(elem or "C").strip().upper()
+        if key in seen:
+            continue
+        seen.add(key)
+        _amps, _kappas, rcut = atom_gaussian_terms(elem, b_floor, 1.0, blur)
+        real = rcut / blur if blur > 1e-12 else rcut
+        if real > extent:
+            extent = real
+    return float(extent)
+
+
+def gaussian_density_brick(
+    centers,
+    elements,
+    spacing,
+    *,
+    resolution=DEFAULT_GAUSSIAN_RESOLUTION,
+    b_floor=DEFAULT_GAUSSIAN_B_FLOOR,
+    max_voxels=9600000,
+    _depth=0,
+):
+    """Normalized PyMOL Gaussian map as ``(origin, step, density)``, or None.
+
+    ``density`` is zero-mean / unit-stdev, matching ``map_new gaussian`` so an
+    isolevel of 1.0 is the usual blob surface.
+    """
+    pts = np.asarray(centers, dtype=float).reshape(-1, 3)
+    n = int(pts.shape[0])
+    h = float(spacing)
+    if n == 0 or h < 1e-8:
+        return None
+    elems = [str(e or "C") for e in list(elements or [])]
+    if len(elems) < n:
+        elems.extend(["C"] * (n - len(elems)))
+    elif len(elems) > n:
+        elems = elems[:n]
+    pad = gaussian_pad_radius(elems, resolution, b_floor) + 2.0 * h
+    origin = np.min(pts, axis=0) - pad
+    hi = np.max(pts, axis=0) + pad
+    shape = np.floor((hi - origin) / h).astype(np.int32) + 3
+    shape = np.maximum(shape, 2)
+    n_vox = int(shape[0]) * int(shape[1]) * int(shape[2])
+    if n_vox > int(max_voxels) and _depth < 8:
+        scale = (float(n_vox) / float(max_voxels)) ** (1.0 / 3.0)
+        return gaussian_density_brick(
+            pts, elems, h * max(scale, 1.12),
+            resolution=resolution, b_floor=b_floor, max_voxels=max_voxels,
+            _depth=_depth + 1,
+        )
+    try:
+        density = paint_gaussian_density(
+            shape, origin, h, pts, elems,
+            resolution=resolution, b_floor=b_floor,
+        )
+    except MemoryError:
+        if _depth < 8:
+            return gaussian_density_brick(
+                pts, elems, h * 1.25,
+                resolution=resolution, b_floor=b_floor, max_voxels=max_voxels,
+                _depth=_depth + 1,
+            )
+        return None
+    if not np.any(np.abs(density) > 1e-12):
+        return None
+    return origin, h, normalize_gaussian_map(density)

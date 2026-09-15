@@ -25,6 +25,7 @@ _POINT_SOURCE_TYPES = {
 }
 
 _DISPLAYABLE_TYPES: Optional[Dict[str, type]] = None
+_INFLIGHT: Dict[str, Any] = {}
 
 
 class SerializationError(ValueError):
@@ -139,6 +140,24 @@ def _base_fields(obj) -> dict:
 def _common_mesh_fields(obj) -> dict:
     data = _base_fields(obj)
     data["color"] = persist_color(obj)
+    field_id = getattr(obj, "field_id", None)
+    if field_id:
+        data["field_id"] = str(field_id)
+        cmap = getattr(obj, "field_colormap", None)
+        if cmap:
+            data["field_colormap"] = str(cmap)
+        spec = getattr(obj, "field_colormap_spec", None)
+        if spec:
+            data["field_colormap_spec"] = spec
+        clims = getattr(obj, "field_clims", None)
+        if clims is not None:
+            from .util.field_sample import normalize_clims
+            normalized = normalize_clims(clims)
+            if normalized is not None:
+                data["field_clims"] = normalized
+        clim_mode = getattr(obj, "field_clim_mode", None)
+        if clim_mode:
+            data["field_clim_mode"] = str(clim_mode)
     return data
 
 
@@ -157,6 +176,8 @@ def _line_style_dict(obj) -> dict:
             "dash": "Solid",
             "dash_scale": 1.0,
             "margin": 0.0,
+            "start_margin": 0.0,
+            "end_margin": 0.0,
             "start_head": "None",
             "end_head": "Arrow",
             "ends": "Arrow",
@@ -174,10 +195,19 @@ def _line_style_dict(obj) -> dict:
         "dash": getattr(style, "dash", "Solid"),
         "dash_scale": float(getattr(style, "dash_scale", 1.0)),
         "margin": float(getattr(style, "margin", 0.0)),
+        "start_margin": float(getattr(style, "start_margin", getattr(style, "margin", 0.0))),
+        "end_margin": float(getattr(style, "end_margin", getattr(style, "margin", 0.0))),
         "start_head": start_head or "None",
         "end_head": end_head or "Arrow",
         "ends": ends,
     }
+
+
+def _attach_clip_planes(obj, data: dict) -> None:
+    from .util.mesh_clip import normalize_clip_planes
+    planes = normalize_clip_planes(getattr(obj, "clip_planes", None))
+    if planes:
+        data["clip_planes"] = planes
 
 
 def _dump_sphere(obj) -> dict:
@@ -189,7 +219,12 @@ def _dump_sphere(obj) -> dict:
         "subdivisions": obj.subdivisions,
         "resolution": int(getattr(obj, "resolution", 20)),
         "wireframe": bool(getattr(obj, "wireframe", False)),
+        "enabled": bool(getattr(obj, "enabled", True)),
     })
+    from .util.mesh_clip import normalize_clip_planes
+    planes = normalize_clip_planes(getattr(obj, "clip_planes", None))
+    if planes:
+        data["clip_planes"] = planes
     return data
 
 
@@ -202,6 +237,8 @@ def _load_sphere(cls, data: dict):
         subdivisions=data.get("subdivisions"),
         resolution=data.get("resolution", 20),
         wireframe=data.get("wireframe", False),
+        clip_planes=data.get("clip_planes"),
+        enabled=data.get("enabled", True),
         name=data.get("name"),
         obj_id=data.get("id"),
         state=data.get("state", 1),
@@ -242,7 +279,12 @@ def _dump_box(obj) -> dict:
         "center": obj.center.to_dict(),
         "extent": [float(v) for v in obj.extent],
         "wireframe": bool(getattr(obj, "wireframe", False)),
+        "enabled": bool(getattr(obj, "enabled", True)),
     })
+    from .util.mesh_clip import normalize_clip_planes
+    planes = normalize_clip_planes(getattr(obj, "clip_planes", None))
+    if planes:
+        data["clip_planes"] = planes
     return data
 
 
@@ -252,6 +294,8 @@ def _load_box(cls, data: dict):
         data["extent"],
         color=data.get("color"),
         wireframe=data.get("wireframe", False),
+        clip_planes=data.get("clip_planes"),
+        enabled=data.get("enabled", True),
         name=data.get("name"),
         obj_id=data.get("id"),
         state=data.get("state", 1),
@@ -323,6 +367,10 @@ def _dump_arrows(obj) -> dict:
     mask = getattr(obj, "arrow_mask", None)
     if mask is not None:
         data["arrow_mask"] = [bool(v) for v in np.asarray(mask).reshape(-1)]
+    head_radius = getattr(obj, "head_radius", None)
+    if head_radius is not None:
+        data["head_radius"] = float(head_radius)
+    _attach_clip_planes(obj, data)
     return data
 
 
@@ -347,6 +395,8 @@ def _load_arrows(cls, data: dict):
         shaft_radius=data.get("shaft_radius", 0.045),
         use_styled_cgo=data.get("use_styled_cgo", False),
         arrow_mask=data.get("arrow_mask"),
+        head_radius=data.get("head_radius"),
+        clip_planes=data.get("clip_planes"),
         bypass_colormap=True,
     )
     if data.get("pair_radii"):
@@ -485,6 +535,27 @@ def _dump_surface(obj) -> dict:
         "vdw_scale": float(getattr(obj, "vdw_scale", DEFAULT_VDW_SCALE) or DEFAULT_VDW_SCALE),
         "point_radii": normalize_point_radii(getattr(obj, "point_radii", None), n),
     })
+    from .util.solvent_surface import normalize_point_enabled
+    enabled = normalize_point_enabled(getattr(obj, "point_enabled", None), n)
+    if enabled is not None:
+        data["point_enabled"] = enabled
+    point_colors = getattr(obj, "point_colors", None)
+    if point_colors and not getattr(obj, "field_id", None):
+        data["point_colors"] = [
+            [float(c) for c in row[:3]] for row in point_colors
+        ]
+    created_from = getattr(obj, "created_from", None)
+    if created_from:
+        data["created_from"] = dict(created_from)
+        src_v = getattr(obj, "_source_vertices", None)
+        src_n = getattr(obj, "_source_normals", None)
+        src_f = getattr(obj, "_source_faces", None)
+        if src_v is not None:
+            data["source_vertices"] = persist_matrix(src_v)
+        if src_n is not None:
+            data["source_normals"] = persist_matrix(src_n)
+        if src_f is not None:
+            data["source_faces"] = [[int(i) for i in face] for face in np.asarray(src_f)]
     from .util.mesh_clip import normalize_clip_planes
     planes = normalize_clip_planes(getattr(obj, "clip_planes", None))
     if planes:
@@ -495,7 +566,7 @@ def _dump_surface(obj) -> dict:
 def _load_surface(cls, data: dict):
     from .util.solvent_surface import DEFAULT_ALGORITHM
 
-    return cls(
+    surface = cls(
         _sources_from_dict(data["points"]),
         atom_radius=data.get("atom_radius", 1.5),
         probe_radius=data.get("probe_radius", 1.4),
@@ -505,6 +576,7 @@ def _load_surface(cls, data: dict):
         radius_mode=data.get("radius_mode", "uniform"),
         vdw_scale=data.get("vdw_scale", 1.0),
         point_radii=data.get("point_radii"),
+        point_enabled=data.get("point_enabled"),
         clip_planes=data.get("clip_planes"),
         color=data.get("color"),
         name=data.get("name"),
@@ -512,7 +584,19 @@ def _load_surface(cls, data: dict):
         state=data.get("state", 1),
         transparency=data.get("transparency", 0),
         bypass_colormap=True,
+        created_from=data.get("created_from"),
+        source_vertices=data.get("source_vertices"),
+        source_normals=data.get("source_normals"),
+        source_faces=data.get("source_faces"),
     )
+    point_colors = data.get("point_colors")
+    if point_colors and not data.get("field_id"):
+        surface.point_colors = [
+            (float(row[0]), float(row[1]), float(row[2])) for row in point_colors
+        ]
+        from .util.field_sample import paint_surface_mesh_from_anchors
+        paint_surface_mesh_from_anchors(surface)
+    return surface
 
 
 def _dump_tube(obj) -> dict:
@@ -596,6 +680,7 @@ def _dump_collection(obj) -> dict:
     data = _base_fields(obj)
     data["schema"] = SCHEMA_VERSION
     data["objects"] = [displayable_to_dict(child) for child in obj]
+    data["specular"] = bool(getattr(obj, "specular", True))
     return data
 
 
@@ -607,19 +692,242 @@ def _load_collection(cls, data: dict):
         state=data.get("state", 1),
         transparency=data.get("transparency", 0),
         obj_id=data.get("id"),
+        specular=bool(data.get("specular", True)),
     )
     return obj
 
 
+def _dump_field(obj) -> dict:
+    from .fields.identity import (
+        GEN_DISTANCE,
+        GEN_GAUSSIAN,
+        GEN_IMPORTED,
+        GEN_NEAREST_COLOR,
+        GEN_NEAREST_PROP,
+        GEN_PYMOL_MAP,
+        GEN_SIGNED_VDW,
+        canonical_field_spec,
+    )
+
+    data = {
+        "type": "Field",
+        "id": str(obj.id),
+        "name": obj._name,
+        "kind": str(getattr(obj, "kind", "scalar") or "scalar"),
+        "units": getattr(obj, "units", None),
+        "generator": dict(getattr(obj, "generator", None) or {}),
+        "domain": obj.domain.to_dict() if getattr(obj, "domain", None) is not None else {},
+        "provenance": dict(getattr(obj, "provenance", None) or {}),
+        "spec": canonical_field_spec(obj),
+    }
+    color_fid = getattr(obj, "default_color_field_id", None) or (
+        (getattr(obj, "provenance", None) or {}).get("default_color_field_id")
+    )
+    if color_fid:
+        data["default_color_field_id"] = str(color_fid)
+    categories = getattr(obj, "categories", None)
+    if categories:
+        dumped = []
+        for item in categories:
+            if isinstance(item, (list, tuple)):
+                dumped.append([float(v) for v in item])
+            else:
+                dumped.append(str(item))
+        data["categories"] = dumped
+    gen_type = str((getattr(obj, "generator", None) or {}).get("type") or "")
+    grid = getattr(obj, "grid_data", None)
+    store_brick = gen_type == GEN_IMPORTED or (
+        grid is not None
+        and gen_type not in (
+            GEN_PYMOL_MAP,
+            GEN_GAUSSIAN,
+            GEN_DISTANCE,
+            GEN_SIGNED_VDW,
+            GEN_NEAREST_PROP,
+            GEN_NEAREST_COLOR,
+        )
+    )
+    if store_brick and grid is not None:
+        data["brick"] = {
+            "values": [float(v) for v in np.asarray(grid.values, dtype=float).reshape(-1)],
+            "step_sizes": persist_vector(grid.step_sizes),
+            "step_counts": [int(v) for v in np.asarray(grid.step_counts).reshape(-1)],
+            "origin": persist_vector(grid.origin),
+            "name": getattr(grid, "_name", None) or getattr(grid, "name", None),
+        }
+    return data
+
+
+def _load_field(cls, data: dict):
+    from .fields.domain import Domain
+    from .volumetric.GridData import GridData
+
+    grid = None
+    brick = data.get("brick")
+    if brick:
+        grid = GridData(
+            brick["values"],
+            step_sizes=brick.get("step_sizes"),
+            step_counts=brick.get("step_counts"),
+            origin=brick.get("origin"),
+            name=brick.get("name") or data.get("name"),
+        )
+        if brick.get("name"):
+            grid._name = brick["name"]
+    field = cls(
+        name=data.get("name"),
+        kind=data.get("kind"),
+        units=data.get("units"),
+        generator=data.get("generator"),
+        domain=Domain.from_dict(data.get("domain")),
+        provenance=data.get("provenance"),
+        grid_data=grid,
+        categories=data.get("categories"),
+        obj_id=data.get("id"),
+        default_color_field_id=data.get("default_color_field_id"),
+    )
+    if data.get("name"):
+        field._name = data["name"]
+    from .fields.field import remember_wrap
+
+    remember_wrap(field)
+    return field
+
+
+def _colormap_name(obj) -> Optional[str]:
+    cmap = getattr(obj, "colormap", None)
+    if cmap is None:
+        return None
+    if isinstance(cmap, str):
+        return cmap
+    name = getattr(cmap, "name", None) or getattr(cmap, "_name", None)
+    if name:
+        return str(name)
+    inner = getattr(cmap, "colormap", None)
+    if isinstance(inner, str):
+        return inner
+    return None
+
+
 def _dump_volumetric(obj) -> dict:
-    """Displayable.id only — volumetric objects are not live-followed."""
-    return _base_fields(obj)
+    data = _base_fields(obj)
+    geom = getattr(obj, "geometry_field_id", None)
+    if geom:
+        data["geometry_field_id"] = str(geom)
+    color_fid = getattr(obj, "color_field_id", None)
+    if color_fid:
+        data["color_field_id"] = str(color_fid)
+    cmap = _colormap_name(obj)
+    if cmap:
+        data["colormap"] = cmap
+    spec = getattr(obj, "colormap_spec", None)
+    if spec:
+        data["colormap_spec"] = spec
+    isovalues = getattr(obj, "isovalues", None)
+    if isovalues:
+        from .fields.isovalues import normalize_isovalues
+        data["isovalues"] = normalize_isovalues(isovalues)
+    if getattr(obj, "level", None) is not None:
+        data["level"] = float(obj.level)
+    if getattr(obj, "side", None) is not None:
+        data["side"] = int(obj.side)
+    color = getattr(obj, "color", None)
+    if color is not None and not hasattr(color, "name"):
+        try:
+            data["color"] = [float(color[0]), float(color[1]), float(color[2])]
+        except (TypeError, IndexError, ValueError):
+            pass
+    aabb = getattr(obj, "clip_aabb", None)
+    if aabb:
+        data["clip_aabb"] = aabb
+    stops = getattr(obj, "transfer_stops", None)
+    if stops:
+        data["transfer_stops"] = list(stops)
+    if getattr(obj, "clims", None) is not None:
+        data["clims"] = [float(v) for v in np.asarray(obj.clims, dtype=float).reshape(-1)]
+    if getattr(obj, "alphas", None) is not None:
+        data["alphas"] = [float(v) for v in np.asarray(obj.alphas, dtype=float).reshape(-1)]
+    return data
+
+
+def _resolve_geometry_grid(data: dict):
+    from .fields.field import ensure_brick
+    from .runtime.session import get as session_get
+    from .util.field_sample import resolve_grid_from_session
+
+    fid = data.get("geometry_field_id") or data.get("field_id")
+    if not fid:
+        return None, None
+    key = str(fid)
+    field = session_get(key)
+    if field is None:
+        field = _INFLIGHT.get(key)
+    if field is not None:
+        return field, ensure_brick(field)
+    grid = resolve_grid_from_session(fid)
+    return field, grid
+
+
+def _load_volumetric(cls, data: dict):
+    field, grid = _resolve_geometry_grid(data)
+    if grid is None:
+        from .volumetric.GridData import GridData
+
+        grid = GridData(
+            np.zeros(8),
+            step_sizes=(1.0, 1.0, 1.0),
+            step_counts=(1, 1, 1),
+            origin=(0.0, 0.0, 0.0),
+            name=data.get("name") or "field",
+        )
+    geom_id = data.get("geometry_field_id")
+    if not geom_id and field is not None:
+        geom_id = field.id
+    name = data.get("name")
+    obj_id = data.get("id")
+    kind = data.get("type")
+    from .util.colormap_spec import volume_colormap_arg
+
+    cmap = volume_colormap_arg(data.get("colormap", "RdYlBu_r"), data.get("colormap_spec"))
+    kwargs = dict(
+        geometry_field_id=geom_id,
+        color_field_id=data.get("color_field_id"),
+        clip_aabb=data.get("clip_aabb"),
+    )
+    if kind in ("Volume", "IsoVolume"):
+        visual = cls(
+            grid,
+            name=name,
+            colormap=cmap,
+            alphas=data.get("alphas"),
+            clims=data.get("clims"),
+            transfer_stops=data.get("transfer_stops"),
+            **kwargs
+        )
+    else:
+        visual = cls(
+            grid,
+            float(data.get("level", 0.0) or 0.0),
+            name=name,
+            color=data.get("color"),
+            transparency=data.get("transparency", 0),
+            side=int(data.get("side", 1) or 1),
+            isovalues=data.get("isovalues"),
+            **kwargs
+        )
+    if obj_id:
+        visual.id = str(obj_id)
+    spec = data.get("colormap_spec")
+    if spec:
+        visual.colormap_spec = spec
+    return visual
 
 
 def _ensure_displayable_types() -> Dict[str, type]:
     global _DISPLAYABLE_TYPES
     if _DISPLAYABLE_TYPES is not None:
         return _DISPLAYABLE_TYPES
+    from .fields.field import Field
     from .meshes.Arrows import Arrows
     from .meshes.CenteredBox import CenteredBox
     from .meshes.CGOCollection import CGOCollection
@@ -656,6 +964,7 @@ def _ensure_displayable_types() -> Dict[str, type]:
         "IsoMesh": IsoMesh,
         "IsoVolume": IsoVolume,
         "Volume": Volume,
+        "Field": Field,
     }
     return _DISPLAYABLE_TYPES
 
@@ -678,6 +987,7 @@ _DUMPERS: Dict[str, Callable] = {
     "IsoMesh": _dump_volumetric,
     "IsoVolume": _dump_volumetric,
     "Volume": _dump_volumetric,
+    "Field": _dump_field,
 }
 
 _LOADERS: Dict[str, Callable] = {
@@ -694,6 +1004,11 @@ _LOADERS: Dict[str, Callable] = {
     "PolylineTube": _load_tube,
     "Rotation_Indicator": _load_rotation,
     "CGOCollection": _load_collection,
+    "IsoSurface": _load_volumetric,
+    "IsoMesh": _load_volumetric,
+    "IsoVolume": _load_volumetric,
+    "Volume": _load_volumetric,
+    "Field": _load_field,
 }
 
 
@@ -720,12 +1035,15 @@ def displayable_from_dict(data: dict):
     cls = registry.get(typ)
     loader = _LOADERS.get(typ)
     if cls is None or loader is None:
-        if typ in ("IsoSurface", "IsoMesh", "IsoVolume", "Volume"):
-            raise SerializationError(
-                "Volumetric type %r is not restored from session (id-only persistence)" % typ
-            )
         raise SerializationError("Unknown Displayable type %r" % typ)
-    return loader(cls, data)
+    obj = loader(cls, data)
+    oid = getattr(obj, "id", None)
+    if oid:
+        _INFLIGHT[str(oid)] = obj
+    if typ not in ("CGOCollection", "Field", "IsoSurface", "IsoMesh", "IsoVolume", "Volume"):
+        from .util.field_sample import apply_stored_field_color
+        apply_stored_field_color(obj, data)
+    return obj
 
 
 def to_dict(obj) -> dict:
@@ -746,9 +1064,12 @@ def from_dict(data: dict):
 
 def session_document(objects) -> dict:
     """Plain session blob for ``pymol.session.pymolviz``."""
+    objects = list(objects)
+    fields = [obj for obj in objects if type(obj).__name__ == "Field"]
+    rest = [obj for obj in objects if type(obj).__name__ != "Field"]
     doc = {
         "schema": SCHEMA_VERSION,
-        "objects": [displayable_to_dict(obj) for obj in objects],
+        "objects": [displayable_to_dict(obj) for obj in fields + rest],
     }
     assert_plain(doc)
     return doc
@@ -758,6 +1079,7 @@ def session_from_document(data: dict) -> list:
     """Deserialize objects from a session document."""
     if not isinstance(data, dict):
         return []
+    _INFLIGHT.clear()
     out = []
     for item in data.get("objects", []):
         if not isinstance(item, dict):

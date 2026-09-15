@@ -52,6 +52,14 @@ class Points(Displayable):
 
         self.vertices = np.array(vertices, dtype=float).reshape(-1, 3)
         self.bypass_colormap = bypass_colormap
+        self.field_id = kwargs.pop("field_id", None) or None
+        if self.field_id:
+            self.field_id = str(self.field_id)
+        self.field_colormap = kwargs.pop("field_colormap", None) or None
+        from ..util.field_sample import normalize_clims
+        self.field_clims = normalize_clims(kwargs.pop("field_clims", None))
+        self.field_clim_mode = kwargs.pop("field_clim_mode", None) or None
+        self.field_colormap_spec = kwargs.pop("field_colormap_spec", None) or None
         if bypass_colormap:
             self.color = np.array(color)
         else:
@@ -129,6 +137,10 @@ class Points(Displayable):
         pair_spans = getattr(self, "_pair_spans", None)
         if pair_spans is not None:
             cloned._pair_spans = list(pair_spans)
+        for attr in ("pair_radii", "pair_heads", "pair_styles"):
+            val = getattr(self, attr, None)
+            if isinstance(val, list):
+                setattr(cloned, attr, list(val))
         return cloned
 
     def rebuild(self, context=None) -> None:

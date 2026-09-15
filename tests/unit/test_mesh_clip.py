@@ -7,6 +7,7 @@ import pytest
 
 from pymolviz.meshes.Surface import Surface
 from pymolviz.util.mesh_clip import (
+    apply_clip_plane_pose,
     clip_mesh_by_planes,
     clip_plane_from_view,
     clip_triangle_mesh,
@@ -72,11 +73,39 @@ def test_normalize_clip_planes_unit_normal_and_drop_zero():
     assert planes[0]["scale"] == pytest.approx(6.0)
 
 
+def test_apply_clip_plane_pose_normalizes_and_rejects_zero():
+    plane = {"origin": [0.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0], "scale": 5.0}
+    assert apply_clip_plane_pose(plane, (1, 2, 3), (0, 0, 4))
+    assert plane["origin"] == pytest.approx([1.0, 2.0, 3.0])
+    assert plane["normal"] == pytest.approx([0.0, 0.0, 1.0])
+    assert plane["scale"] == pytest.approx(5.0)
+    assert not apply_clip_plane_pose(plane, (9, 9, 9), (0, 0, 0))
+    assert plane["origin"] == pytest.approx([1.0, 2.0, 3.0])
+    assert plane["normal"] == pytest.approx([0.0, 0.0, 1.0])
+
+
 def test_clip_plane_from_view_keep_side_toward_camera():
     plane = clip_plane_from_view(_identity_view((0.0, 0.0, 0.0)), [(0.0, 0.0, 0.0)])
     assert plane["normal"] == pytest.approx([0.0, 0.0, 1.0])
     assert plane["origin"][2] == pytest.approx(0.0)
     assert plane["scale"] >= 4.0
+
+
+def test_clip_plane_from_view_goes_through_geometry_not_camera_origin():
+    plane = clip_plane_from_view(
+        _identity_view((0.0, 0.0, 50.0)),
+        [(0.0, 0.0, 0.0), (2.0, 0.0, 0.0), (0.0, 2.0, 0.0)],
+    )
+    assert plane["origin"][2] == pytest.approx(0.0)
+    assert plane["origin"][0] == pytest.approx(1.0, abs=0.05)
+    assert plane["origin"][1] == pytest.approx(1.0, abs=0.05)
+    assert plane["normal"] == pytest.approx([0.0, 0.0, 1.0])
+
+
+def test_clip_plane_from_view_origin_is_in_plane_aabb_center():
+    pts = [(10.0, 1.0, 0.0), (10.0, -1.0, 0.0), (0.0, 0.0, 0.0)]
+    plane = clip_plane_from_view(_identity_view((0.0, 0.0, 40.0)), pts)
+    assert plane["origin"] == pytest.approx([5.0, 0.0, 0.0], abs=1e-6)
 
 
 def test_oriented_clip_normal_tilt_and_turn():
@@ -167,7 +196,7 @@ def test_sequential_planes_clip_to_positive_octant():
 
 def test_surface_clip_planes_keep_halfspace_without_remesh_source():
     mesh = Surface(
-        [(0.0, 0.0, 0.0)], algorithm="ASA", quality=1, bypass_colormap=True,
+        [(0.0, 0.0, 0.0)], algorithm="GAUSS", quality=1, bypass_colormap=True,
     )
     n_faces = int(mesh.faces.shape[0])
     source_faces = int(mesh._source_faces.shape[0])
@@ -185,18 +214,126 @@ def test_surface_clip_planes_keep_halfspace_without_remesh_source():
 def test_retarget_surface_applies_clip_without_new_surface():
     points = [_point("a", (0.0, 0.0, 0.0))]
     coll = build_surface_collection(
-        points, 1.5, 1.4, "ASA", 1, False, "pmv_surface",
+        points, 1.5, 1.4, "GAUSS", 1, False, "pmv_surface",
     )
     mesh = coll[0]
     n_faces = int(mesh.faces.shape[0])
     planes = [{"origin": [0.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0], "scale": 5.0}]
     assert retarget_surface_collection(
-        coll, points, 1.5, 1.4, "ASA", 1, False, clip_planes=planes,
+        coll, points, 1.5, 1.4, "GAUSS", 1, False, clip_planes=planes,
     )
     assert coll[0] is mesh
     assert mesh.faces.shape[0] < n_faces
     assert np.all(np.asarray(mesh.vertices)[:, 2] >= -1e-5)
     assert retarget_surface_collection(
-        coll, points, 1.5, 1.4, "ASA", 1, False, clip_planes=planes,
+        coll, points, 1.5, 1.4, "GAUSS", 1, False, clip_planes=planes,
     )
     assert coll[0] is mesh
+
+
+def test_retarget_surface_clip_repaints_per_point_colors():
+    pts = [
+        _point("a", (0.0, 0.0, 0.0), color=(1.0, 0.0, 0.0)),
+        _point("b", (6.0, 0.0, 0.0), color=(0.0, 0.0, 1.0)),
+    ]
+    coll = build_surface_collection(pts, 1.5, 1.4, "GAUSS", 1, False, "pmv_surface")
+    mesh = coll[0]
+    planes = [{"origin": [0.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0], "scale": 5.0}]
+    assert retarget_surface_collection(
+        coll, pts, 1.5, 1.4, "GAUSS", 1, False, clip_planes=planes,
+    )
+    colors = np.asarray(mesh.color, dtype=float).reshape(-1, 3)
+    verts = np.asarray(mesh.vertices, dtype=float).reshape(-1, 3)
+    assert colors.shape[0] == verts.shape[0]
+    assert colors.shape[0] > 1
+    assert not np.allclose(colors, colors[0])
+    near_a = np.linalg.norm(verts[:, :2], axis=1) < 2.0
+    near_b = np.linalg.norm(verts[:, :2] - np.array([6.0, 0.0]), axis=1) < 2.0
+    if np.any(near_a):
+        assert float(colors[near_a, 0].mean()) > float(colors[near_a, 2].mean())
+    if np.any(near_b):
+        assert float(colors[near_b, 2].mean()) > float(colors[near_b, 0].mean())
+
+
+def test_sphere_honors_clip_planes():
+    from pymolviz.meshes.Sphere import Sphere
+
+    sphere = Sphere(
+        FixedPoint((0.0, 0.0, 0.0)), 1.0,
+        bypass_colormap=True, frequency=2,
+        clip_planes=[{"origin": [0, 0, 0], "normal": [0, 0, 1], "scale": 3}],
+    )
+    assert sphere.faces.shape[0] > 0
+    assert np.all(np.asarray(sphere.vertices)[:, 2] >= -1e-5)
+    sphere.set_clip_planes([{"origin": [0, 0, 0], "normal": [0, 0, -1], "scale": 3}])
+    assert np.all(np.asarray(sphere.vertices)[:, 2] <= 1e-5)
+
+
+def test_box_honors_clip_planes():
+    from pymolviz.meshes.CenteredBox import CenteredBox
+
+    box = CenteredBox(
+        FixedPoint((0.0, 0.0, 0.0)), (2.0, 2.0, 2.0),
+        bypass_colormap=True,
+        clip_planes=[{"origin": [0, 0, 0], "normal": [0, 0, 1], "scale": 3}],
+    )
+    assert box.faces.shape[0] > 0
+    assert np.all(np.asarray(box.vertices)[:, 2] >= -1e-5)
+
+
+def test_clip_segment_by_planes_shortens_or_drops():
+    from pymolviz.util.mesh_clip import clip_segment_by_planes
+
+    kept = clip_segment_by_planes(
+        (0.0, 0.0, -1.0), (0.0, 0.0, 1.0),
+        [{"origin": [0, 0, 0], "normal": [0, 0, 1], "scale": 3}],
+    )
+    assert kept is not None
+    start, end = kept
+    assert start[2] == pytest.approx(0.0)
+    assert end[2] == pytest.approx(1.0)
+    dropped = clip_segment_by_planes(
+        (0.0, 0.0, -2.0), (0.0, 0.0, -1.0),
+        [{"origin": [0, 0, 0], "normal": [0, 0, 1], "scale": 3}],
+    )
+    assert dropped is None
+
+
+def test_disabled_sphere_emits_empty_cgo():
+    from pymolviz.meshes.Sphere import Sphere
+
+    sphere = Sphere(
+        FixedPoint((0.0, 0.0, 0.0)), 1.0,
+        bypass_colormap=True, frequency=2, enabled=False,
+    )
+    assert sphere._create_CGO_list() == []
+
+
+def test_surface_point_enabled_omits_disabled_from_mesh_but_keeps_sources():
+    from pymolviz.meshes.Surface import Surface
+
+    mesh = Surface(
+        [FixedPoint((0.0, 0.0, 0.0)), FixedPoint((4.0, 0.0, 0.0))],
+        algorithm="GAUSS", quality=1, bypass_colormap=True,
+        point_enabled=[True, False],
+    )
+    assert len(mesh.point_sources) == 2
+    assert mesh.point_enabled == [True, False]
+    xs = np.asarray(mesh._source_vertices, dtype=float).reshape(-1, 3)[:, 0]
+    assert np.all(xs < 2.0)
+
+
+def test_build_surface_collection_persists_disabled_sources():
+    points = [
+        _point("a", (0.0, 0.0, 0.0)),
+        _point("b", (4.0, 0.0, 0.0)),
+    ]
+    points[1] = points[1].with_enabled(False)
+    coll = build_surface_collection(
+        points, 1.5, 1.4, "GAUSS", 1, False, "pmv_surface",
+    )
+    mesh = coll[0]
+    assert len(mesh.point_sources) == 2
+    assert mesh.point_enabled == [True, False]
+
+
