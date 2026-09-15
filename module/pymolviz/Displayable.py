@@ -94,8 +94,9 @@ class Displayable():
         from .Script import Script
         return Script([self])
 
-    def write(self, filename):
-        self.to_script().write(filename)
+    def write(self, filename, format=None):
+        from .io import save
+        save(self, filename, format=format)
 
 
 def call_load(obj, cmd=None):

@@ -5,12 +5,18 @@ from dataclasses import replace
 from ..util.colormap_spec import (
     ColormapDefinition,
     FieldColorMapping,
-    create_custom_preset,
     custom_colormap_rows,
     custom_preset_definition,
     delete_custom_preset,
     mapping_for_custom_preset,
     save_custom_preset,
+)
+from .catalog import (
+    KIND_CMAP,
+    KIND_CMAP_HEADER,
+    KIND_CMAP_USER,
+    colormap_catalog_rows,
+    session_colormap_users,
 )
 from .builders.colormap_dialog import _ramp_image, open_colormap_editor
 from .pick import (
@@ -28,10 +34,12 @@ from .widgets.catalog_chrome import (
     make_lib_cell,
     make_row_icon_button,
 )
+from .widgets.nest import make_nest_branch
 from .widgets.section import make_section
 from .widgets.scrolling import configure_resizable_window, make_scrolling_body
 from .widgets.sticky_add import StickyAddOverlay
 from .widgets.theme import (
+    HEADER,
     apply_catalog_table_style,
     apply_page_layout,
     apply_wizard_page_style,
@@ -49,13 +57,18 @@ EDIT_COLORMAP_TIP = "Edit this custom colormap."
 DELETE_COLORMAP_TIP = "Delete this custom colormap."
 EMPTY_LIBRARY_TITLE = "No custom colormaps yet"
 EMPTY_LIBRARY_HINT = "Add a colormap to reuse it across fields and visuals"
-COLUMNS = ("Name", "Colormap", "Actions")
-_COL_NAME = 0
-_COL_RAMP = 1
-_COL_ACTIONS = 2
+EXPAND_TIP = "Show objects in this session that use this colormap."
+EXPAND_EMPTY_TIP = "No objects in this session use this colormap."
+COLUMNS = ("", "Name", "Colormap", "Actions")
+_COL_TOGGLE = 0
+_COL_NAME = 1
+_COL_RAMP = 2
+_COL_ACTIONS = 3
 _LIBRARY_EMPTY = 0
 _LIBRARY_LIST = 1
 _CONTEXT = "ColormapMenuWindow"
+_ROLE_KIND = "kind"
+_ROLE_NAME = "name"
 
 
 def _ignore_mouse(QtCore, widget):
@@ -75,6 +88,8 @@ class ColormapMenuWindow:
         self._add_overlay = None
         self._map_count = 0
         self._editor = None
+        self._expanded = set()
+        self._row_meta = []
 
     def show(self):
         QtCore, _, QtWidgets = qt_modules()
@@ -145,6 +160,8 @@ class ColormapMenuWindow:
         self._add_overlay = None
         self._map_count = 0
         self._editor = None
+        self._expanded = set()
+        self._row_meta = []
 
     def _build_library_page(self, QtCore, QtWidgets):
         page = QtWidgets.QWidget()
@@ -185,6 +202,7 @@ class ColormapMenuWindow:
         header.setVisible(True)
         header.setStretchLastSection(False)
         header.setHighlightSections(False)
+        header.setSectionResizeMode(_COL_TOGGLE, QtWidgets.QHeaderView.ResizeToContents)
         header.setSectionResizeMode(_COL_NAME, QtWidgets.QHeaderView.Stretch)
         header.setSectionResizeMode(_COL_RAMP, QtWidgets.QHeaderView.Stretch)
         header.setSectionResizeMode(_COL_ACTIONS, QtWidgets.QHeaderView.ResizeToContents)
@@ -285,14 +303,26 @@ class ColormapMenuWindow:
         if table is None:
             return
         QtCore, QtGui, QtWidgets = qt_modules()
-        rows = custom_colormap_rows()
-        self._map_count = len(rows)
+        rows = colormap_catalog_rows(
+            custom_colormap_rows(),
+            session_colormap_users(),
+            expanded=self._expanded,
+        )
+        maps = [row for row in rows if row.get("kind") == KIND_CMAP]
+        self._map_count = len(maps)
+        self._row_meta = list(rows)
         table.clearSpans()
         table.setRowCount(0)
         table.setRowCount(len(rows))
         for i, row in enumerate(rows):
-            self._fill_row(table, i, row, QtCore, QtGui, QtWidgets)
-        if rows:
+            kind = row.get("kind")
+            if kind == KIND_CMAP_HEADER:
+                self._fill_header_row(table, i, row, QtCore, QtWidgets)
+            elif kind == KIND_CMAP_USER:
+                self._fill_user_row(table, i, row, QtCore, QtWidgets)
+            else:
+                self._fill_row(table, i, row, QtCore, QtGui, QtWidgets)
+        if maps:
             if self._library_body is not None:
                 self._library_body.setCurrentIndex(_LIBRARY_LIST)
             overlay = self._add_overlay
@@ -312,13 +342,79 @@ class ColormapMenuWindow:
                     pass
         self._sync_row_bands()
 
+    def _set_row_marker(self, table, index, kind, name, QtCore, QtWidgets):
+        item = QtWidgets.QTableWidgetItem(str(name or ""))
+        item.setData(QtCore.Qt.UserRole, (kind, name))
+        flags = item.flags()
+        selectable = getattr(QtCore.Qt, "ItemIsSelectable", None)
+        enabled = getattr(QtCore.Qt, "ItemIsEnabled", None)
+        if kind != KIND_CMAP and selectable is not None and enabled is not None:
+            item.setFlags(enabled)
+        table.setItem(index, _COL_NAME, item)
+        return item
+
+    def _fill_header_row(self, table, index, row, QtCore, QtWidgets):
+        ncols = table.columnCount()
+        label = QtWidgets.QLabel(str(row.get("name") or ""))
+        label.setStyleSheet("font-weight: 600; padding: 4px 8px;")
+        wrap = make_lib_cell(QtWidgets, cell_band_css(HEADER))
+        inner = QtWidgets.QHBoxLayout(wrap)
+        inner.setContentsMargins(8, 4, 8, 4)
+        inner.addWidget(label)
+        table.setSpan(index, 0, 1, ncols)
+        table.setCellWidget(index, 0, wrap)
+
+    def _fill_user_row(self, table, index, row, QtCore, QtWidgets):
+        band = cell_band_css(selected_row_fill(selected=False))
+        nest = make_nest_branch(row)
+        wrap = make_lib_cell(QtWidgets, band)
+        inner = QtWidgets.QHBoxLayout(wrap)
+        inner.setContentsMargins(4, 2, 4, 2)
+        if nest is not None:
+            inner.addWidget(nest)
+        type_text = str(row.get("type") or "")
+        name = str(row.get("name") or "")
+        text = "%s · %s" % (type_text, name) if type_text else name
+        label = QtWidgets.QLabel(text)
+        label.setStyleSheet(muted_label_css())
+        inner.addWidget(label, stretch=1)
+        table.setCellWidget(index, _COL_TOGGLE, wrap)
+        item = QtWidgets.QTableWidgetItem(name)
+        enabled = getattr(QtCore.Qt, "ItemIsEnabled", None)
+        if enabled is not None:
+            item.setFlags(enabled)
+        table.setItem(index, _COL_NAME, item)
+
     def _fill_row(self, table, index, row, QtCore, QtGui, QtWidgets):
         name = str(row["name"])
+        used = bool(row.get("used"))
+        users = list(row.get("users") or [])
         band = cell_band_css(selected_row_fill(selected=False))
-        name_item = QtWidgets.QTableWidgetItem(name)
-        name_item.setData(QtCore.Qt.UserRole, name)
-        name_item.setToolTip("Edit %s" % name)
-        table.setItem(index, _COL_NAME, name_item)
+        opened = name in self._expanded
+        toggle = QtWidgets.QPushButton("▾" if opened else "▸")
+        toggle.setObjectName("pmvColormapUsersToggle")
+        toggle.setAutoDefault(False)
+        toggle.setDefault(False)
+        toggle.setFixedSize(28, 28)
+        toggle.setEnabled(used)
+        tip = EXPAND_TIP if used else EXPAND_EMPTY_TIP
+        toggle.setToolTip(tip)
+        no_focus = getattr(QtCore.Qt, "NoFocus", None)
+        if no_focus is not None:
+            toggle.setFocusPolicy(no_focus)
+        toggle.clicked.connect(lambda *_a, n=name: self._toggle_users(n))
+        apply_required_tooltips([(toggle, tip, "Show colormap users")], context=_CONTEXT)
+        twrap = make_lib_cell(QtWidgets, band)
+        tlayout = QtWidgets.QHBoxLayout(twrap)
+        tlayout.setContentsMargins(4, 4, 0, 4)
+        tlayout.addWidget(toggle)
+        table.setCellWidget(index, _COL_TOGGLE, twrap)
+
+        item = self._set_row_marker(table, index, KIND_CMAP, name, QtCore, QtWidgets)
+        if used:
+            item.setToolTip("%s · %d object(s) in this session" % (name, len(users)))
+        else:
+            item.setToolTip("Edit %s" % name)
 
         defn = ColormapDefinition.from_dict(row.get("definition") or {})
         ramp = QtWidgets.QLabel()
@@ -326,17 +422,27 @@ class ColormapMenuWindow:
         if pix is not None:
             ramp.setPixmap(pix)
             ramp.setScaledContents(True)
-        wrap = make_lib_cell(QtWidgets, band)
-        inner = QtWidgets.QHBoxLayout(wrap)
+        rwrap = make_lib_cell(QtWidgets, band)
+        inner = QtWidgets.QHBoxLayout(rwrap)
         inner.setContentsMargins(8, 8, 8, 8)
         inner.addWidget(ramp, stretch=1)
         _ignore_mouse(QtCore, ramp)
-        table.setCellWidget(index, _COL_RAMP, wrap)
+        table.setCellWidget(index, _COL_RAMP, rwrap)
         table.setCellWidget(
             index,
             _COL_ACTIONS,
             self._actions_cell(QtWidgets, name, band),
         )
+
+    def _toggle_users(self, name):
+        key = str(name or "")
+        if not key:
+            return
+        if key in self._expanded:
+            self._expanded.discard(key)
+        else:
+            self._expanded.add(key)
+        self._refresh_table()
 
     def _actions_cell(self, QtWidgets, name, band):
         wrap = make_lib_cell(QtWidgets, band)
@@ -368,39 +474,53 @@ class ColormapMenuWindow:
         except Exception:
             pass
         for row in range(table.rowCount()):
+            meta = self._row_meta[row] if row < len(self._row_meta) else None
+            if (meta or {}).get("kind") == KIND_CMAP_HEADER:
+                continue
             fill = selected_row_fill(selected=(row in selected))
             band = cell_band_css(fill)
-            for col in (_COL_RAMP, _COL_ACTIONS):
+            for col in (_COL_TOGGLE, _COL_RAMP, _COL_ACTIONS):
                 widget = table.cellWidget(row, col)
                 if widget is not None:
                     widget.setStyleSheet(band)
 
     def _row_name(self, row):
-        table = self._table
-        if table is None:
+        if row < 0 or row >= len(self._row_meta):
             return None
-        item = table.item(row, _COL_NAME)
-        if item is None:
+        meta = self._row_meta[row]
+        if meta.get("kind") != KIND_CMAP:
             return None
-        QtCore, _, _ = qt_modules()
-        name = item.data(QtCore.Qt.UserRole)
-        return str(name) if name else None
+        return str(meta.get("name") or "") or None
 
     def _on_row_activated(self, row, column):
-        if column == _COL_ACTIONS:
+        if column in (_COL_ACTIONS, _COL_TOGGLE):
+            return
+        if row < 0 or row >= len(self._row_meta):
+            return
+        if self._row_meta[row].get("kind") != KIND_CMAP:
             return
         name = self._row_name(row)
         if name:
             self._edit_colormap(name)
 
     def _add_colormap(self):
+        from dataclasses import replace
+
+        from ..util.colormap_spec import definition_from_preset, unused_custom_preset_name
+        from ..util.field_sample import DEFAULT_SURFACE_COLORMAP
+
         try:
-            name = create_custom_preset()
+            name = unused_custom_preset_name()
+            defn = replace(
+                definition_from_preset(DEFAULT_SURFACE_COLORMAP),
+                customized=True,
+                preset=name,
+            )
         except Exception as exc:
             overlay_warning(self._window, "PyMOLViz", "Could not add colormap:\n\n%s" % exc)
             return
-        self._refresh_table()
-        self._edit_colormap(name)
+        mapping = FieldColorMapping(colormap=defn)
+        self._edit_colormap_mapping(mapping, fallback_name=name)
 
     def _edit_colormap(self, name):
         mapping = mapping_for_custom_preset(name)
@@ -411,12 +531,15 @@ class ColormapMenuWindow:
                 self._refresh_table()
                 return
             mapping = FieldColorMapping(colormap=replace(defn, customized=True, preset=name))
+        self._edit_colormap_mapping(mapping, fallback_name=name)
+
+    def _edit_colormap_mapping(self, mapping, fallback_name):
         cmd = getattr(self.wizard, "cmd", None)
 
         def persist(updated):
             if updated is None:
                 return
-            preset = updated.colormap.preset or name
+            preset = updated.colormap.preset or fallback_name
             save_custom_preset(preset, updated.colormap)
             self._refresh_table()
 

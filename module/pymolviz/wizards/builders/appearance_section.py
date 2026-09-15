@@ -6,7 +6,9 @@ from typing import Callable, List, Optional, Sequence, Tuple
 
 from ...util.field_sample import DEFAULT_SURFACE_COLORMAP
 from ..pick import qt_modules
+from ..widgets.ascii_locale import configure_committed_spin
 from ..widgets.section import make_section
+from ..widgets.switch import make_switch
 from ..widgets.theme import apply_secondary_button_style
 from .colormap_editor import ColormapEditor, colormap_range_mode_labels
 from .colors import (
@@ -21,6 +23,12 @@ from .colors import (
 )
 from .field_picker import FieldPickerWidget
 from .points import VisualPoint, apply_global_color, assign_distinct_colors, infer_color_mode
+from .preview_mode import (
+    DEFAULT_PREVIEW_MODE,
+    PREVIEW_OFF,
+    PreviewModeRadios,
+    preview_is_on,
+)
 from .surface_params import COLOR_MODE_FIELD, COLOR_MODE_PER_POINT, COLOR_MODE_UNIFORM, color_mode_shows
 
 COLOR_ALL_LABEL = "Color All"
@@ -31,11 +39,8 @@ COLOR_MODE_PER_POINT_LABEL = "Per-point"
 COLOR_MODE_FIELD_LABEL = "From field"
 CLIM_MODE_AUTO_LABEL, CLIM_MODE_CUSTOM_LABEL, CLIM_MODE_SYMMETRIC_LABEL, CLIM_MODE_PERCENTILE_LABEL = colormap_range_mode_labels()
 DEFAULT_LIVE_PREVIEW_TIP = (
-    "When on, show a live preview in the viewer. When off, hide it."
-)
-SPECULAR_TIP = (
-    "Shiny highlights on this visual only. Off keeps shape shading without "
-    "the glare, baked into this object (PyMOL has no per-object specular setting)."
+    "No preview hides the live object. Simple preview uses a cheaper stand-in. "
+    "Full preview matches what Done will create."
 )
 
 
@@ -108,9 +113,8 @@ class AppearanceSection:
         *,
         show_wireframe: bool = True,
         show_quality: bool = True,
-        show_specular: bool = True,
         show_per_point: bool = True,
-        show_live_preview: bool = False,
+        show_live_preview: bool = True,
         live_preview_tooltip: str = "",
         quality_range: Tuple[int, int] = (1, 5),
         quality_tooltip: str = "",
@@ -123,10 +127,8 @@ class AppearanceSection:
         self._context = context
         self._on_changed = on_changed or (lambda: None)
         self._on_preview = on_preview
-        self._on_look_changed = on_look_changed
         self._show_wireframe = bool(show_wireframe)
         self._show_quality = bool(show_quality)
-        self._show_specular = bool(show_specular)
         self._show_per_point = bool(show_per_point)
         self._show_live_preview = bool(show_live_preview)
         self._live_preview_tooltip = str(live_preview_tooltip or DEFAULT_LIVE_PREVIEW_TIP)
@@ -137,7 +139,6 @@ class AppearanceSection:
         self._widget = None
         self._wireframe = None
         self._quality = None
-        self._specular = None
         self._color_all_btn = None
         self._color_sel_btn = None
         self._reset_colors_btn = None
@@ -147,6 +148,7 @@ class AppearanceSection:
         self._field_picker = None
         self._cmap_editor = None
         self._live_preview = None
+        self._preview_mode = None
         self._field_row = None
         self._syncing = False
         self._build()
@@ -171,15 +173,6 @@ class AppearanceSection:
     def set_wireframe(self, checked: bool) -> None:
         if self._wireframe is not None:
             self._wireframe.setChecked(bool(checked))
-
-    def specular(self) -> bool:
-        if self._specular is None:
-            return True
-        return bool(self._specular.isChecked())
-
-    def set_specular(self, checked: bool) -> None:
-        if self._specular is not None:
-            self._specular.setChecked(bool(checked))
 
     def quality(self) -> int:
         if self._quality is None:
@@ -248,18 +241,26 @@ class AppearanceSection:
     def colormap_spec(self):
         return self._colormap_spec()
 
+    def preview_mode(self) -> str:
+        if self._preview_mode is not None:
+            return self._preview_mode.mode()
+        return DEFAULT_PREVIEW_MODE
+
+    def set_preview_mode(self, mode) -> None:
+        if self._preview_mode is not None:
+            self._preview_mode.set_mode(mode)
+
     def live_preview(self) -> bool:
-        if self._live_preview is None:
-            return False
-        return bool(self._live_preview.isChecked())
+        return preview_is_on(self.preview_mode())
 
     def set_live_preview(self, checked: bool) -> None:
-        if self._live_preview is not None:
-            self._live_preview.setChecked(bool(checked))
+        self.set_preview_mode(DEFAULT_PREVIEW_MODE if checked else PREVIEW_OFF)
 
     @property
     def live_preview_checkbox(self):
-        return self._live_preview
+        if self._preview_mode is not None:
+            return self._preview_mode.widget
+        return None
 
     def clim_mode(self) -> str:
         return self._clim_mode_value()
@@ -328,12 +329,10 @@ class AppearanceSection:
             tips.append((self._field_picker.widget, "Field used to color this object."))
         if self._cmap_editor is not None:
             tips.extend((w, t) for w, t, *_rest in self._cmap_editor.tooltips())
-        if self._live_preview is not None:
-            tips.append((self._live_preview, self._live_preview_tooltip))
+        if self._preview_mode is not None:
+            tips.extend((w, t) for w, t, *_rest in self._preview_mode.tooltips())
         if self._wireframe is not None:
             tips.append((self._wireframe, "Draw triangle meshes as wireframe cages instead of filled surfaces."))
-        if self._specular is not None:
-            tips.append((self._specular, SPECULAR_TIP))
         if self._quality is not None:
             tips.append((self._quality, self._quality_tooltip or "Mesh detail level."))
         return tips
@@ -454,11 +453,10 @@ class AppearanceSection:
             mode_row.addWidget(self._mode_per_point)
         mode_row.addWidget(self._mode_field)
         mode_row.addStretch(1)
+
         if self._show_live_preview:
-            self._live_preview = QtWidgets.QCheckBox("Live preview")
-            self._live_preview.setObjectName("pmvLivePreview")
-            self._live_preview.toggled.connect(lambda *_: self._emit_preview())
-            layout.addWidget(self._live_preview)
+            self._preview_mode = PreviewModeRadios(on_changed=lambda *_: self._emit_preview())
+            layout.addWidget(self._preview_mode.widget)
 
         layout.addLayout(mode_row)
 
@@ -506,15 +504,9 @@ class AppearanceSection:
         look_row = QtWidgets.QHBoxLayout()
         look_row.setSpacing(12)
         if self._show_wireframe:
-            self._wireframe = QtWidgets.QCheckBox("Wireframe")
+            self._wireframe = make_switch("Wireframe")
             self._wireframe.toggled.connect(lambda *_: self._on_changed())
             look_row.addWidget(self._wireframe)
-
-        if self._show_specular:
-            self._specular = QtWidgets.QCheckBox("Specular")
-            self._specular.setChecked(True)
-            self._specular.toggled.connect(lambda *_: self._emit_look_changed())
-            look_row.addWidget(self._specular)
 
         look_row.addStretch(1)
 
@@ -524,10 +516,11 @@ class AppearanceSection:
             lo, hi = self._quality_range
             self._quality.setRange(int(lo), int(hi))
             self._quality.setValue(int(lo) if int(lo) <= 3 <= int(hi) else int(lo))
+            configure_committed_spin(self._quality)
             self._quality.valueChanged.connect(lambda *_: self._on_changed())
             look_row.addWidget(self._quality)
 
-        if self._show_wireframe or self._show_specular or self._show_quality:
+        if self._show_wireframe or self._show_quality:
             layout.addLayout(look_row)
         self._widget = section.widget
         self._sync_mode_widgets()
@@ -541,12 +534,6 @@ class AppearanceSection:
         if isinstance(rows, (list, tuple)):
             return [int(i) for i in rows]
         return []
-
-    def _emit_look_changed(self):
-        if self._on_look_changed is not None:
-            self._on_look_changed()
-            return
-        self._on_changed()
 
     def _color_all(self) -> None:
         self._pick_for_rows(list(range(len(self._points))))

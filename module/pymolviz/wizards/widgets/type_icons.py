@@ -312,13 +312,26 @@ def source_icon_kind(source: str) -> str:
     token = str(source or "").strip().lower()
     if token in ("camera", "manual"):
         return "camera"
+    if token in ("fresh", "fresh_selection"):
+        return "fresh"
     return "selection"
 
 
 SOURCE_ICON_SIZE = 16
 
 
-def source_icon_pixmap(source, QtGui, QtCore, QtWidgets=None, size=SOURCE_ICON_SIZE):
+def apply_source_icon(button, source, QtGui, QtCore, QtWidgets=None, size=SOURCE_ICON_SIZE, color=None):
+    """Put the selection or camera glyph on a button next to its label."""
+    if button is None or QtGui is None or QtCore is None:
+        return
+    pix = source_icon_pixmap(source, QtGui, QtCore, QtWidgets, size=size, color=color)
+    if pix is None:
+        return
+    button.setIcon(QtGui.QIcon(pix))
+    button.setIconSize(QtCore.QSize(int(size), int(size)))
+
+
+def source_icon_pixmap(source, QtGui, QtCore, QtWidgets=None, size=SOURCE_ICON_SIZE, color=None):
     """16px glyph for Add-from mode: selection (atom pick) or camera."""
     if QtGui is None or QtCore is None:
         return None
@@ -334,10 +347,10 @@ def source_icon_pixmap(source, QtGui, QtCore, QtWidgets=None, size=SOURCE_ICON_S
             )
         if aa is not None:
             painter.setRenderHint(aa, True)
-        color = _scheme_icon_color(QtGui, QtWidgets)
+        paint = _explicit_color(QtGui, color) or _scheme_icon_color(QtGui, QtWidgets)
         drawer = _SOURCE_DRAWERS.get(kind)
         if drawer is not None:
-            drawer(painter, QtGui, QtCore, float(size), color)
+            drawer(painter, QtGui, QtCore, float(size), paint)
     finally:
         painter.end()
     return pix
@@ -359,6 +372,22 @@ def _draw_selection_source(painter, QtGui, QtCore, size, color):
     painter.drawEllipse(QtCore.QRectF(12 * s, 12 * s, 8 * s, 8 * s))
 
 
+def _draw_fresh_source(painter, QtGui, QtCore, size, color):
+    """Empty dashed pick box with a plus — pick after Add."""
+    pen = _pen(QtGui, QtCore, color, size, 1.45)
+    dash = getattr(QtCore.Qt, "DashLine", None)
+    if dash is not None:
+        pen.setStyle(dash)
+    painter.setPen(pen)
+    painter.setBrush(QtGui.QBrush(QtGui.QColor(0, 0, 0, 0)))
+    s = size / 32.0
+    radius = 3.2 * s
+    painter.drawRoundedRect(QtCore.QRectF(4.5 * s, 4.5 * s, 23 * s, 23 * s), radius, radius)
+    painter.setPen(_pen(QtGui, QtCore, color, size, 1.7))
+    painter.drawLine(_pt(QtCore, size, 16.0, 10.5), _pt(QtCore, size, 16.0, 21.5))
+    painter.drawLine(_pt(QtCore, size, 10.5, 16.0), _pt(QtCore, size, 21.5, 16.0))
+
+
 def _draw_camera_source(painter, QtGui, QtCore, size, color):
     """Camera body, lens, and viewfinder in the Visuals glyph language."""
     painter.setPen(_pen(QtGui, QtCore, color, size, 1.45))
@@ -372,9 +401,67 @@ def _draw_camera_source(painter, QtGui, QtCore, size, color):
     painter.drawEllipse(QtCore.QRectF(10.4 * s, 15.4 * s, 5.2 * s, 5.2 * s))
 
 
+def _draw_forward(painter, QtGui, QtCore, size, color):
+    """Left-to-right shaft with a head — start on the left, end on the right."""
+    painter.setPen(_pen(QtGui, QtCore, color, size, 1.8))
+    painter.setBrush(_fill(color, QtGui, 120))
+    _draw_arrow_mark(painter, QtGui, QtCore, size, 5.0, 16.0, 27.0, 16.0, head_len=8.0, head_half=3.6)
+
+
+def _draw_snap(painter, QtGui, QtCore, size, color):
+    """Horseshoe magnet pulling toward a nearby atom."""
+    painter.setPen(_pen(QtGui, QtCore, color, size, 1.7))
+    painter.setBrush(QtGui.QBrush(QtGui.QColor(0, 0, 0, 0)))
+    s = size / 32.0
+    painter.drawArc(QtCore.QRectF(5.0 * s, 7.0 * s, 14.0 * s, 14.0 * s), 0 * 16, 180 * 16)
+    painter.drawLine(_pt(QtCore, size, 5.0, 14.0), _pt(QtCore, size, 5.0, 24.0))
+    painter.drawLine(_pt(QtCore, size, 19.0, 14.0), _pt(QtCore, size, 19.0, 24.0))
+    painter.setBrush(_fill(color, QtGui, 55))
+    painter.drawRect(QtCore.QRectF(3.4 * s, 22.5 * s, 3.4 * s, 4.0 * s))
+    painter.drawRect(QtCore.QRectF(17.2 * s, 22.5 * s, 3.4 * s, 4.0 * s))
+    painter.setPen(_pen(QtGui, QtCore, color, size, 1.2))
+    painter.drawLine(_pt(QtCore, size, 20.5, 13.5), _pt(QtCore, size, 23.2, 11.8))
+    painter.drawLine(_pt(QtCore, size, 20.8, 16.0), _pt(QtCore, size, 23.5, 16.0))
+    painter.drawLine(_pt(QtCore, size, 20.5, 18.5), _pt(QtCore, size, 23.2, 20.2))
+    painter.setPen(_pen(QtGui, QtCore, color, size, 1.35))
+    painter.setBrush(_fill(color, QtGui, 90))
+    painter.drawEllipse(QtCore.QRectF(23.2 * s, 12.5 * s, 6.5 * s, 6.5 * s))
+
+
+def _draw_zoom(painter, QtGui, QtCore, size, color):
+    """Magnifying glass."""
+    painter.setPen(_pen(QtGui, QtCore, color, size, 1.7))
+    painter.setBrush(_fill(color, QtGui, 28))
+    s = size / 32.0
+    painter.drawEllipse(QtCore.QRectF(5.5 * s, 5.5 * s, 16.5 * s, 16.5 * s))
+    painter.setBrush(QtGui.QBrush(QtGui.QColor(0, 0, 0, 0)))
+    painter.setPen(_pen(QtGui, QtCore, color, size, 2.2))
+    painter.drawLine(_pt(QtCore, size, 18.8, 19.2), _pt(QtCore, size, 27.0, 27.0))
+
+
+def _draw_anchor(painter, QtGui, QtCore, size, color):
+    """Ship's anchor: ring, stock, shank, and flukes."""
+    painter.setPen(_pen(QtGui, QtCore, color, size, 1.6))
+    painter.setBrush(QtGui.QBrush(QtGui.QColor(0, 0, 0, 0)))
+    s = size / 32.0
+    painter.drawEllipse(QtCore.QRectF(12.2 * s, 3.8 * s, 7.6 * s, 7.6 * s))
+    painter.setPen(_pen(QtGui, QtCore, color, size, 1.8))
+    painter.drawLine(_pt(QtCore, size, 16.0, 11.2), _pt(QtCore, size, 16.0, 24.5))
+    painter.drawLine(_pt(QtCore, size, 9.5, 14.2), _pt(QtCore, size, 22.5, 14.2))
+    painter.drawArc(QtCore.QRectF(6.5 * s, 16.5 * s, 19.0 * s, 13.0 * s), 200 * 16, 140 * 16)
+    painter.setBrush(_fill(color, QtGui, 110))
+    _draw_arrow_mark(
+        painter, QtGui, QtCore, size, 9.2, 23.0, 6.2, 26.8, head_len=4.2, head_half=2.0,
+    )
+    _draw_arrow_mark(
+        painter, QtGui, QtCore, size, 22.8, 23.0, 25.8, 26.8, head_len=4.2, head_half=2.0,
+    )
+
+
 _SOURCE_DRAWERS = {
     "selection": _draw_selection_source,
     "camera": _draw_camera_source,
+    "fresh": _draw_fresh_source,
 }
 
 
@@ -392,4 +479,8 @@ _ACTION_DRAWERS = {
     "plus": _draw_plus,
     "gear": _draw_gear,
     "lattice": _draw_lattice,
+    "forward": _draw_forward,
+    "snap": _draw_snap,
+    "zoom": _draw_zoom,
+    "anchor": _draw_anchor,
 }

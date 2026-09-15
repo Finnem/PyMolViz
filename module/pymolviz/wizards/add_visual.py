@@ -24,6 +24,8 @@ from .widgets.breadcrumb import (
 )
 from .widgets.section import make_section
 from .widgets.scrolling import (
+    WINDOW_DEFAULT_HEIGHT,
+    WINDOW_DEFAULT_WIDTH,
     apply_expanding_list_policy,
     configure_resizable_window,
     make_scrolling_body,
@@ -53,6 +55,7 @@ from .widgets.theme import (
     type_card_subtitle_css,
     type_card_title_css,
 )
+from .widgets.switch import make_switch
 from .widgets.type_icons import type_icon_pixmap
 
 
@@ -197,7 +200,7 @@ class AddVisualWindow:
         window.setModal(False)
         configure_tool_window(window)
         window.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
-        window.resize(640, 720)
+        window.resize(WINDOW_DEFAULT_WIDTH, WINDOW_DEFAULT_HEIGHT)
         configure_resizable_window(window)
 
         root = QtWidgets.QVBoxLayout(window)
@@ -506,9 +509,11 @@ class AddVisualWindow:
         table = self._objects_table
         if table is None:
             return
+        from ..runtime.presence import sync_session_with_pymol
         from ..runtime.session import all_objects
 
         QtCore, QtGui, QtWidgets = qt_modules()
+        sync_session_with_pymol(self.wizard.cmd)
         rows = object_rows(all_objects())
         self._object_count = len(rows)
         table.clearSpans()
@@ -590,7 +595,7 @@ class AddVisualWindow:
         layout = QtWidgets.QHBoxLayout(wrap)
         layout.setContentsMargins(0, 6, 0, 6)
         layout.setAlignment(QtCore.Qt.AlignCenter)
-        checkbox = QtWidgets.QCheckBox()
+        checkbox = make_switch(compact=True)
         checkbox.setChecked(bool(checked))
         checkbox.toggled.connect(
             lambda on, oid=obj_id: self._on_visibility_toggled(oid, on)

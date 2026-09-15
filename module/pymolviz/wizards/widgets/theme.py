@@ -14,6 +14,7 @@ HEADER_INK = (28, 36, 48)
 BORDER = (196, 210, 220)
 ROW = (255, 255, 255)
 SELECTED = (219, 238, 249)
+DETAIL = (237, 247, 252)
 MUTED = (110, 122, 134)
 INK = (25, 28, 35)
 PRIMARY = (42, 130, 236)
@@ -149,6 +150,29 @@ def primary_button_css(object_name="pmvPrimary") -> str:
         " min-height: 36px; }"
         "%s:hover { background: %s; }"
         "%s:pressed { background: %s; padding-top: 11px; padding-bottom: 9px; }"
+        "%s:disabled { background: %s; color: %s; }"
+        % (
+            sel,
+            rgb_css(PRIMARY),
+            sel,
+            rgb_css(PRIMARY_HOVER),
+            sel,
+            rgb_css(PRIMARY_PRESSED),
+            sel,
+            rgb_css(DASH),
+            rgb_css(ROW),
+        )
+    )
+
+
+def compact_primary_button_css(object_name="pmvCommit") -> str:
+    sel = _button_selector(object_name)
+    return (
+        "%s { background: %s; color: white; border: none;"
+        " border-radius: 6px; padding: 2px 12px; font-weight: 600; font-size: 12px;"
+        " min-height: 18px; max-height: 18px; }"
+        "%s:hover { background: %s; }"
+        "%s:pressed { background: %s; }"
         "%s:disabled { background: %s; color: %s; }"
         % (
             sel,
@@ -336,7 +360,7 @@ def action_bar_css() -> str:
 def swatch_button_css(fill_css, extra="") -> str:
     return (
         "QPushButton { background: %s; border: 1px solid %s;"
-        " border-radius: 3px;%s }"
+        " border-radius: 3px; padding: 0px;%s }"
         "QPushButton:hover { border: 1px solid %s; }"
         % (fill_css, rgb_css(BORDER), extra, rgb_css(INK))
     )
@@ -344,15 +368,8 @@ def swatch_button_css(fill_css, extra="") -> str:
 
 def _control_css() -> str:
     return (
-        "QWidget#pmvWizardPage QCheckBox, QWidget#pmvWizardPage QRadioButton {"
+        "QWidget#pmvWizardPage QRadioButton {"
         " color: %s; spacing: 6px; }"
-        "QWidget#pmvWizardPage QCheckBox::indicator {"
-        " width: 14px; height: 14px; border: 1px solid %s;"
-        " border-radius: 3px; background: %s; }"
-        "QWidget#pmvWizardPage QCheckBox::indicator:hover {"
-        " border: 1px solid %s; }"
-        "QWidget#pmvWizardPage QCheckBox::indicator:checked {"
-        " background: %s; border: 1px solid %s; }"
         "QWidget#pmvWizardPage QRadioButton::indicator {"
         " width: 14px; height: 14px; border: 1px solid %s;"
         " border-radius: 8px; background: %s; }"
@@ -362,11 +379,6 @@ def _control_css() -> str:
         " background: %s; border: 1px solid %s; }"
         % (
             rgb_css(INK),
-            rgb_css(BORDER),
-            rgb_css(ROW),
-            rgb_css(PRIMARY),
-            rgb_css(PRIMARY),
-            rgb_css(PRIMARY),
             rgb_css(BORDER),
             rgb_css(ROW),
             rgb_css(PRIMARY),
@@ -382,21 +394,52 @@ def wizard_page_css() -> str:
     return (
         "QWidget#pmvWizardPage { background: %s; }"
         "QWidget#pmvWizardPage QLineEdit { padding: 4px 8px; border-radius: 4px; }"
-        "QWidget#pmvWizardPage QComboBox { padding: 3px 6px; border-radius: 4px; }"
+        "QWidget#pmvWizardPage QComboBox {"
+        " padding: 3px 6px; border-radius: 4px;"
+        " background: %s; border: 1px solid %s; }"
+        "QWidget#pmvWizardPage QComboBox:hover,"
+        "QWidget#pmvWizardPage QComboBox:focus {"
+        " border: 1px solid %s; }"
+        "QWidget#pmvWizardPage QComboBox::drop-down {"
+        " subcontrol-origin: padding; subcontrol-position: top right;"
+        " width: 18px; border: none; }"
+        "QWidget#pmvWizardPage QComboBox QAbstractItemView {"
+        " background: %s; border: 1px solid %s;"
+        " selection-background-color: %s; }"
         "QWidget#pmvWizardPage QSpinBox, QWidget#pmvWizardPage QDoubleSpinBox {"
-        " padding: 3px 6px; border-radius: 4px; }"
+        " padding: 3px 6px; border-radius: 4px;"
+        " background: %s; border: 1px solid %s; }"
+        "QWidget#pmvWizardPage QSpinBox:hover, QWidget#pmvWizardPage QDoubleSpinBox:hover,"
+        "QWidget#pmvWizardPage QSpinBox:focus, QWidget#pmvWizardPage QDoubleSpinBox:focus {"
+        " border: 1px solid %s; }"
         "QWidget#pmvWizardPage QLineEdit#pmvObjectName,"
         "QWidget#pmvWizardPage QComboBox#%s {"
         " background: %s; border: 1px solid %s; border-radius: 4px; }"
         "QWidget#pmvWizardPage QLineEdit#pmvObjectName { padding: 3px 8px; }"
         "QWidget#pmvWizardPage QComboBox#%s { padding: 3px 8px 3px 6px; }"
         "%s"
-        % (rgb_css(PAGE), EDITABLE_FIELD, fill, edge, EDITABLE_FIELD, _control_css())
+        % (
+            rgb_css(PAGE),
+            fill,
+            edge,
+            rgb_css(PRIMARY),
+            fill,
+            edge,
+            rgb_css(SELECTED),
+            fill,
+            edge,
+            rgb_css(PRIMARY),
+            EDITABLE_FIELD,
+            fill,
+            edge,
+            EDITABLE_FIELD,
+            _control_css(),
+        )
     )
 
 
 def apply_wizard_page_style(widget) -> None:
-    """Page background, inputs, and checkbox/radio chrome."""
+    """Page background, inputs, and radio chrome. Boolean toggles paint as Switch."""
     if widget is None:
         return
     widget.setObjectName("pmvWizardPage")

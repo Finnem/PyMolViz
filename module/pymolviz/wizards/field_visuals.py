@@ -64,6 +64,7 @@ from .widgets.catalog_chrome import (
     rgb_css,
 )
 from .widgets.nest import make_nest_branch
+from .widgets.switch import make_switch
 from .widgets.sticky_add import (
     list_needs_sticky_add,
     sticky_add_overlay_rect,
@@ -120,6 +121,7 @@ FIELD_SOURCES = (
         "surface",
     ),
     ("PyMOL map", "map", "Load CCP4, MRC, DX, or other maps PyMOL can read.", "volume"),
+    ("PyMolViz file", "pmv", "Load a saved PyMolViz pack of fields and visuals.", "volume"),
     ("XYZ grid", "xyz", "Regular 3D values from an XYZ file.", "volume"),
     ("ORCA 3D", "orca", "ORCA 3D cube-style grid.", "volume"),
     ("MTZ map", "mtz", "Electron density from an MTZ reflection file.", "volume"),
@@ -156,6 +158,7 @@ _FILE_FILTERS = {
     "xyz": "XYZ grids (*.xyz);;All files (*)",
     "orca": "ORCA 3D (*.txt *.cube);;All files (*)",
     "mtz": "MTZ maps (*.mtz);;All files (*)",
+    "pmv": "PyMolViz (*.pmv);;All files (*)",
 }
 _COL_NAME = 0
 _COL_KIND = 1
@@ -174,8 +177,8 @@ _LIBRARY_LIST = 1
 _EDIT_BUTTON_TEXT = "..."
 SYMMETRIZE_BUTTON = "Symmetrize"
 SYMMETRIZE_TIP = (
-    "Place lattice copies of this map so the current selection lies inside. "
-    "Uses crystal translations (and space-group operators when known), not a free move."
+    "Choose an object or selection and extend this map's crystal cell around it. "
+    "Covered targets already lie inside the current map."
 )
 
 
@@ -217,6 +220,7 @@ class FieldVisualsWindow:
         self._from_selection_stack_index = None
         self._active_field_id = None
         self._editing_obj = None
+        self._extend_dialog = None
 
     def show(self):
         QtCore, _, QtWidgets = qt_modules()
@@ -242,6 +246,13 @@ class FieldVisualsWindow:
 
     def _discard_window(self):
         self._restore_editing_visual()
+        dialog = getattr(self, "_extend_dialog", None)
+        if dialog is not None:
+            try:
+                dialog.close()
+            except Exception:
+                pass
+            self._extend_dialog = None
         window = self._window
         self._reset_window()
         if window is None:
@@ -304,6 +315,7 @@ class FieldVisualsWindow:
         self._from_selection_stack_index = None
         self._active_field_id = None
         self._editing_obj = None
+        self._extend_dialog = None
 
     def _ensure_stack(self):
         """Catalog-only windows may never have built a QStackedWidget; Edit still needs one."""
@@ -637,9 +649,11 @@ class FieldVisualsWindow:
         table = self._fields_table
         if table is None:
             return
+        from ..runtime.presence import sync_session_with_pymol
         from ..runtime.session import all_objects
 
         QtCore, _, QtWidgets = qt_modules()
+        sync_session_with_pymol(self.wizard.cmd)
         rows = field_library_rows(all_objects(), cmd=self.wizard.cmd)
         self._field_count = field_library_field_count(rows)
         self._row_count = len(rows)
@@ -858,7 +872,7 @@ class FieldVisualsWindow:
         layout = QtWidgets.QHBoxLayout(wrap)
         layout.setContentsMargins(0, 6, 0, 6)
         layout.setAlignment(QtCore.Qt.AlignCenter)
-        checkbox = QtWidgets.QCheckBox()
+        checkbox = make_switch(compact=True)
         checkbox.setChecked(bool(checked))
         checkbox.toggled.connect(
             lambda on, r=row: self._on_visibility_toggled(r, on)
@@ -1116,12 +1130,33 @@ class FieldVisualsWindow:
         return result == QtWidgets.QMessageBox.Yes
 
     def _edit_row(self, row):
+        if row.get("kind") == KIND_FIELD:
+            obj = self._resolve_field(row.get("id"))
+            if obj is None:
+                return
+            self._open_field_editor(obj)
+            return
         if row.get("kind") != KIND_VISUAL:
             return
         obj = self._session_object(row.get("id"))
         if obj is None:
             return
         self._open_visual_editor(obj)
+
+    def _open_field_editor(self, obj):
+        try:
+            self._ensure_from_selection_page()
+            self._from_selection_page.load_object(obj)
+            self._goto(self._from_selection_stack_index)
+        except Exception as exc:
+            self.wizard.prompt = ["From Selection editor failed: %s" % exc]
+            _, _, QtWidgets = qt_modules()
+            if QtWidgets is not None:
+                overlay_warning(
+                    self._window,
+                    "PyMOLViz",
+                    "Could not open From Selection:\n\n%s" % exc,
+                )
 
     def _symmetrize_row(self, row):
         if row.get("kind") != KIND_FIELD:
@@ -1130,17 +1165,64 @@ class FieldVisualsWindow:
         if field is None:
             overlay_warning(self._window, "PyMOLViz", "Could not find that field.")
             return
-        from ..fields.crystal import CrystalError
+        from ..fields.crystal import (
+            CrystalError,
+            default_extend_target_name,
+            extend_target_rows,
+            map_world_aabb,
+        )
+        from ..fields.field import ensure_brick
+        from .builders.extend_cell_dialog import open_extend_cell_dialog
         from .builders.field_visual import symmetrize_field_to_selection
 
-        try:
-            _field, info = symmetrize_field_to_selection(self.wizard.cmd, field)
-        except CrystalError as exc:
-            overlay_warning(self._window, "PyMOLViz", str(exc))
+        cmd = self.wizard.cmd
+        grid = ensure_brick(field, cmd=cmd)
+        if grid is None:
+            overlay_warning(self._window, "PyMOLViz", "This field has no sampleable map yet.")
             return
-        except Exception as exc:
-            overlay_warning(self._window, "PyMOLViz", "Could not symmetrize the map:\n\n%s" % exc)
+        map_name = getattr(grid, "_name", None) or getattr(grid, "name", None)
+        targets = extend_target_rows(cmd, grid, skip_names=(map_name,))
+        if not targets:
+            overlay_warning(
+                self._window,
+                "PyMOLViz",
+                "No objects or selections with atoms to extend around.",
+            )
             return
+        map_lo, map_hi = map_world_aabb(grid)
+        current = default_extend_target_name(targets)
+        existing = getattr(self, "_extend_dialog", None)
+        if existing is not None:
+            try:
+                existing.close()
+            except Exception:
+                pass
+
+        def apply_around(name):
+            try:
+                wrapped, info = symmetrize_field_to_selection(cmd, field, selection=name)
+            except CrystalError as exc:
+                overlay_warning(self._window, "PyMOLViz", str(exc))
+                return
+            except Exception as exc:
+                overlay_warning(self._window, "PyMOLViz", "Could not symmetrize the map:\n\n%s" % exc)
+                return
+            self._after_symmetrize(row, wrapped, info)
+
+        opened = open_extend_cell_dialog(
+            self._window,
+            targets,
+            map_lo,
+            map_hi,
+            current=current,
+            on_extend=apply_around,
+        )
+        if opened is None:
+            apply_around(current)
+            return
+        self._extend_dialog = opened
+
+    def _after_symmetrize(self, row, wrapped, info):
         copied = "copied neighboring cells" if info.get("copied") else "moved by a lattice vector"
         try:
             self.wizard.prompt = ["Map %s (%s)." % (copied, row.get("name") or "field")]
@@ -1155,7 +1237,7 @@ class FieldVisualsWindow:
                 if callable(getter):
                     visible = bool(getter())
                 if visible:
-                    self._builder_page.notify_field_brick_changed(_field, info)
+                    self._builder_page.notify_field_brick_changed(wrapped, info)
             except Exception:
                 pass
         self._refresh_fields_table()

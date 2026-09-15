@@ -15,6 +15,7 @@ from ...util.line_style import (
 )
 from ..pick import qt_modules
 from ..tooltips import apply_required_tooltips
+from ..widgets.ascii_locale import apply_ascii_float_locale
 from ..widgets.section import make_section
 from ..widgets.theme import INK, ROW, qcolor
 
@@ -125,11 +126,13 @@ class LineOptionsWidget:
         self._scale.setSingleStep(0.1)
         self._scale.setValue(1.0)
         self._scale.setSuffix(" Å")
+        apply_ascii_float_locale(self._scale, QtCore)
         self._margin = QtWidgets.QDoubleSpinBox()
         self._margin.setRange(0.0, 20.0)
         self._margin.setSingleStep(0.1)
         self._margin.setValue(0.0)
         self._margin.setSuffix(" Å")
+        apply_ascii_float_locale(self._margin, QtCore)
         self._start_head = QtWidgets.QComboBox()
         self._end_head = QtWidgets.QComboBox()
         for name in HEAD_STYLES:

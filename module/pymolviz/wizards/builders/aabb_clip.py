@@ -1,58 +1,88 @@
-"""Axis-locked crop-face gizmos for field visual AABB clip."""
+"""Axis-locked gizmos for independently enabled X/Y/Z field clip planes."""
 
 from __future__ import annotations
 
 from typing import Callable, Optional, Sequence
 
-from ...fields.clip import aabb_corners, aabb_to_axis_planes, apply_axis_origin_to_aabb, normalize_clip_aabb
+from ...fields.clip import (
+    aabb_corners,
+    apply_origin_to_cardinal_planes,
+    cardinal_planes_to_gizmos,
+    normalize_cardinal_planes,
+)
 from ..pick import qt_modules, qt_widget_alive
 
 _CLIP_MESH_SETTLE_MS = 150
 
 
-class AabbClipGizmoController:
-    """Six cardinal crop planes; drag is locked to each face's axis."""
+class CardinalClipGizmoController:
+    """One gizmo per enabled cardinal plane; drag is locked to that axis."""
 
     def __init__(
         self,
         *,
         page,
         preview,
-        get_aabb: Callable[[], Optional[list]],
-        set_aabb: Callable[[Optional[list]], None],
+        get_planes: Callable[[], Sequence],
+        set_planes: Callable[[Sequence], None],
         span_points: Callable[[], Optional[Sequence]],
+        domain_aabb: Callable[[], Optional[list]],
         on_changed: Callable[[], None],
     ):
         self._page = page
         self._preview = preview
-        self._get_aabb = get_aabb
-        self._set_aabb = set_aabb
+        self._get_planes = get_planes
+        self._set_planes = set_planes
         self._span_points = span_points
+        self._domain_aabb = domain_aabb
         self._on_changed = on_changed
-        self.selected_index = 0
+        self.selected_axis = None
         self._drag_timer = None
         self._settle_timer = None
         self._mesh_clip_pending = False
         self._suspend = False
 
     def planes(self):
-        return aabb_to_axis_planes(self._get_aabb())
+        return cardinal_planes_to_gizmos(self._get_planes(), self._domain())
+
+    def _domain(self):
+        try:
+            return self._domain_aabb()
+        except Exception:
+            return None
+
+    def selected_index(self):
+        gizmos = self.planes()
+        if not gizmos:
+            return None
+        axis = self.selected_axis
+        if axis is None:
+            return None
+        for i, plane in enumerate(gizmos):
+            if int(plane.get("axis", -1)) == int(axis):
+                return i
+        return None
 
     def clear(self) -> None:
         self.stop_drag_poll()
         self._cancel_mesh_commit()
+        self.selected_axis = None
         if self._preview is not None and hasattr(self._preview, "set_gizmos"):
             self._preview.set_gizmos([], attach_drag=False, axis_lock=True)
         if self._preview is not None and hasattr(self._preview, "release_clip_drag"):
             self._preview.release_clip_drag()
 
-    def select_face(self, axis, is_hi) -> None:
-        axis = int(axis)
-        for i, plane in enumerate(self.planes()):
-            if int(plane.get("axis", -1)) == axis and bool(plane.get("hi")) is bool(is_hi):
-                self.selected_index = i
-                self.refresh_gizmos()
-                return
+    def relatch(self) -> None:
+        if self._preview is not None and hasattr(self._preview, "release_clip_drag"):
+            self._preview.release_clip_drag()
+
+    def select_axis(self, axis) -> None:
+        try:
+            self.selected_axis = int(axis)
+        except (TypeError, ValueError):
+            self.selected_axis = None
+        self.relatch()
+        self.refresh_gizmos()
 
     def clip_drag_live(self) -> bool:
         preview = self._preview
@@ -66,12 +96,12 @@ class AabbClipGizmoController:
     def refresh_gizmos(self, attach_drag=None) -> None:
         if self._preview is None or not hasattr(self._preview, "set_gizmos"):
             return
-        planes = self.planes()
-        if not planes:
+        gizmos = self.planes()
+        if not gizmos:
             self.clear()
             return
-        if self.selected_index is None or self.selected_index >= len(planes):
-            self.selected_index = 0
+        if self.selected_index() is None:
+            self.selected_axis = int(gizmos[0].get("axis", 0))
         if attach_drag is None:
             attach_drag = not self.clip_drag_live()
         span = None
@@ -79,10 +109,12 @@ class AabbClipGizmoController:
             span = self._span_points()
         except Exception:
             span = None
+        if span is None:
+            span = aabb_corners(self._domain())
         self._preview.set_gizmos(
-            planes,
-            selected_index=self.selected_index,
-            span_points=span if span is not None else aabb_corners(self._get_aabb()),
+            gizmos,
+            selected_index=self.selected_index(),
+            span_points=span,
             attach_drag=attach_drag,
             axis_lock=True,
         )
@@ -90,7 +122,7 @@ class AabbClipGizmoController:
 
     def sync_drag_poll(self) -> None:
         QtCore, _, _ = qt_modules()
-        if not self.planes():
+        if self.selected_index() is None:
             self.stop_drag_poll()
             self._commit_pending_clip_mesh()
             return
@@ -151,9 +183,9 @@ class AabbClipGizmoController:
     def _on_drag_tick(self):
         if self._suspend:
             return
-        planes = self.planes()
-        idx = self.selected_index
-        if not planes or idx is None or idx >= len(planes):
+        gizmos = self.planes()
+        idx = self.selected_index()
+        if not gizmos or idx is None or idx >= len(gizmos):
             self.stop_drag_poll()
             self._commit_pending_clip_mesh()
             return
@@ -163,16 +195,16 @@ class AabbClipGizmoController:
         if pose is None:
             return
         origin, _normal = pose
-        plane = planes[idx]
-        box = apply_axis_origin_to_aabb(
-            self._get_aabb(), plane.get("axis", 0), plane.get("hi"), origin,
+        axis = int(gizmos[idx].get("axis", 0))
+        current = normalize_cardinal_planes(self._get_planes())
+        updated = apply_origin_to_cardinal_planes(
+            current, axis, origin, self._domain(),
         )
-        current = normalize_clip_aabb(self._get_aabb())
-        if box is None or box == current:
+        if updated == current:
             return
         self._suspend = True
         try:
-            self._set_aabb(box)
+            self._set_planes(updated)
         finally:
             self._suspend = False
         self.refresh_gizmos(attach_drag=False)

@@ -327,7 +327,7 @@ def test_dashed_arrow_keeps_head():
     dashed_arrow = build_styled_arrow_cgo(
         start, end, color, 3, LineStyle(dash="Dashed", ends="Arrow"),
     )
-    assert dashed_none.count("BEGIN") >= 2
+    assert dashed_none.count("CONE") >= 2
     assert dashed_arrow.count("VERTEX") > dashed_none.count("VERTEX")
     squeezed_arrow = build_styled_arrow_cgo(
         start, (2.0, 0.0, 0.0), color, 3,

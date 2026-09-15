@@ -148,19 +148,21 @@ def domain_box_key(aabb, grid=None) -> Optional[tuple]:
 def build_domain_box_collection(aabb, name: str = PREVIEW_DOMAIN_NAME, grid=None) -> CGOCollection:
     """Ephemeral wire Domain: parallelepiped when the brick is sheared, else AABB."""
     from ...fields.domain import aabb_center_extent, aabb_has_extent, grid_has_crystal_shear, grid_world_edges
+    from ...meshes.Arrows import Arrows
     from ...meshes.CenteredBox import CenteredBox
-    from ...meshes.Lines import Lines
+    from ...util.line_style import LineStyle
 
     if grid is not None and grid_has_crystal_shear(grid):
         starts, ends = grid_world_edges(grid)
         if starts is not None and len(starts) == 12:
-            mesh = Lines(
+            mesh = Arrows(
                 starts=starts,
                 ends=ends,
                 color=_DOMAIN_BOX_COLOR,
                 bypass_colormap=True,
-                render_as="lines",
-                linewidth=2.0,
+                line_style=LineStyle(ends="None"),
+                quality=0,
+                shaft_radius=0.05,
                 name=name,
             )
             return CGOCollection([mesh], name=name)
@@ -210,21 +212,18 @@ def estimate_grid_iso_job(grid) -> dict:
 
 def _retarget_preview_maps(visual, *, color_src=None, clip_aabb=None):
     """Point geometry/color bricks at the temporary preview map names."""
-    from ...fields.clip import crop_grid_to_aabb, normalize_clip_aabb
+    from ...fields.clip import normalize_clip_aabb
     from ...volumetric.ColorRamp import ColorRamp
 
     if visual is None:
         return None
     brick = getattr(visual, "grid_data", None)
     box = normalize_clip_aabb(clip_aabb if clip_aabb is not None else getattr(visual, "clip_aabb", None))
-    if box is not None and brick is not None:
-        cropped = crop_grid_to_aabb(brick, box)
-        if cropped is None:
-            return None
-        brick = cropped
+    # Crop once in ``load_geometry_map`` from the full preview brick; pre-cropping
+    # here would apply world-space ``clip_aabb`` twice and breaks flip/slide.
     if brick is not None:
         visual.grid_data = named_grid_copy(brick, PREVIEW_GEOM_MAP_NAME)
-    visual.clip_aabb = None
+    visual.clip_aabb = box
     color = getattr(visual, "color", None)
     if issubclass(type(color), ColorRamp):
         data = getattr(color, "data", None)
@@ -251,6 +250,8 @@ def make_unregistered_preview_visual(
     iso_level=None,
     side="positive",
     clip_aabb=None,
+    selection=None,
+    carve=None,
     color=None,
     transparency=0.0,
     color_field_id=None,
@@ -292,7 +293,9 @@ def make_unregistered_preview_visual(
         color_field_id=color_field_id,
         color_src=color_src,
         isovalues=isovalues,
-        clip_aabb=None,
+        clip_aabb=clip_aabb,
+        selection=selection,
+        carve=carve,
         side=1,
         clims=clims,
     )
@@ -336,7 +339,7 @@ def load_preview_field_visual(cmd, visual) -> None:
     except Exception:
         pass
     geom = getattr(visual, "grid_data", None)
-    if geom is not None:
+    if geom is not None and getattr(visual, "clip_aabb", None) is None:
         load_grid_as_map(geom, getattr(geom, "_name", None) or geom.name, cmd=cmd)
     from ...volumetric.ColorRamp import ColorRamp
 
@@ -441,6 +444,8 @@ def build_grid_preview_visual(
     iso_level=None,
     side="positive",
     clip_aabb=None,
+    selection=None,
+    carve=None,
     color=(1.0, 1.0, 1.0),
     transparency=0.0,
     color_field_id=None,
@@ -458,6 +463,8 @@ def build_grid_preview_visual(
         iso_level=iso_level,
         side=side,
         clip_aabb=clip_aabb,
+        selection=selection,
+        carve=carve,
         color=color if color is not None else (1.0, 1.0, 1.0),
         transparency=transparency,
         color_field_id=color_field_id,
@@ -534,6 +541,8 @@ def field_visual_preview_key(
     iso_level,
     side="positive",
     clip_aabb=None,
+    selection=None,
+    carve=None,
     color_field_id=None,
     colormap=None,
     colormap_spec=None,
@@ -561,6 +570,8 @@ def field_visual_preview_key(
         round(float(iso_level), 5),
         str(side or ""),
         _aabb_key(clip_aabb),
+        str(selection or ""),
+        round(float(carve), 4) if carve is not None else None,
         str(color_field_id or ""),
         str(colormap or ""),
         _colormap_spec_key(colormap_spec),

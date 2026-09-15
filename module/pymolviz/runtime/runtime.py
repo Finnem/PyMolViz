@@ -88,11 +88,24 @@ class PyMOLRuntime:
 
         call_load(obj, self.cmd)
 
+    def _bind_field_visual(self, obj):
+        name = getattr(obj, "_name", None) or binding_name(obj)
+        kind = type(obj).__name__
+        representation = "volume" if kind in ("Volume", "IsoVolume") else kind.lower()
+        self.bindings.put(
+            PyMOLBinding(obj.id, str(name), representation, style_hash=style_hash(obj))
+        )
+        return str(name)
+
     def materialize(self, obj, rebuild=True):
         name = binding_name(obj)
         if not renders_cgo(obj):
             if type(obj).__name__ in FIELD_VISUAL_TYPES:
-                self._load_field_visual(obj)
+                from .presence import pause_presence_sync
+
+                with pause_presence_sync():
+                    self._load_field_visual(obj)
+                return self._bind_field_visual(obj)
             return name
         self._load(obj, name, replace=False, rebuild=rebuild)
         binding = PyMOLBinding(obj.id, name, "cgo", style_hash=style_hash(obj))
@@ -123,12 +136,24 @@ class PyMOLRuntime:
         return binding.pymol_name
 
     def remove(self, obj):
+        from .presence import pause_presence_sync
+
         binding = self.bindings.pop(obj.id)
-        name = binding.pymol_name if binding is not None else binding_name(obj)
-        try:
-            self.cmd.delete(name)
-        except Exception:
-            pass
+        names = set()
+        if binding is not None:
+            names.add(binding.pymol_name)
+        names.add(binding_name(obj))
+        stored = getattr(obj, "_name", None)
+        if stored:
+            names.add(str(stored))
+        with pause_presence_sync():
+            for name in names:
+                if not name:
+                    continue
+                try:
+                    self.cmd.delete(name)
+                except Exception:
+                    pass
 
     def reconcile(self, objects):
         try:
@@ -137,9 +162,11 @@ class PyMOLRuntime:
             existing = set()
         for obj in objects:
             if not renders_cgo(obj):
-                name = binding_name(obj)
-                if type(obj).__name__ in FIELD_VISUAL_TYPES and name not in existing:
-                    self._load_field_visual(obj)
+                if type(obj).__name__ in FIELD_VISUAL_TYPES:
+                    name = getattr(obj, "_name", None) or binding_name(obj)
+                    if name not in existing:
+                        self._load_field_visual(obj)
+                    self._bind_field_visual(obj)
                 continue
             name = binding_name(obj)
             if name in existing:

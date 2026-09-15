@@ -89,6 +89,32 @@ def test_object_row_surface_collection():
     assert row["editor"] == "Surface"
 
 
+def test_lines_collection_uses_arrow_editor():
+    from pymolviz.meshes.Arrows import Arrows
+    from pymolviz.util.line_style import LineStyle
+
+    lines = Arrows(
+        starts=[FixedPoint((0.0, 0.0, 0.0))],
+        ends=[FixedPoint((2.0, 0.0, 0.0))],
+        color=[(1.0, 0.0, 0.0)],
+        shaft_radius=0.12,
+        quality=0,
+        line_style=LineStyle(ends="None"),
+        bypass_colormap=True,
+    )
+    coll = CGOCollection([lines], name="pmv_lines", obj_id="coll_lines")
+    row = object_row(coll)
+    assert row["type"] == "Arrows"
+    assert row["editor"] == "Arrows"
+    assert row["n_points"] == 1
+    assert editor_kind(coll) == "Arrows"
+    assert type_label(coll) == "Arrows"
+    opts = lines.options()
+    assert opts["start_head"] == "None"
+    assert opts["end_head"] == "None"
+    assert opts["dash"] == "Solid"
+
+
 def test_accent_rgb_uses_explicit_bypass_color():
     sphere = Sphere(
         FixedPoint((0.0, 0.0, 0.0)),
@@ -101,4 +127,40 @@ def test_accent_rgb_uses_explicit_bypass_color():
     rgb = accent_rgb(coll)
     assert rgb is not None
     assert rgb == pytest.approx((0.2, 0.4, 0.8))
+
+
+def test_named_colormap_from_attrs_prefers_spec_preset():
+    from pymolviz.util.colormap_spec import named_colormap_from_attrs
+
+    assert named_colormap_from_attrs("viridis", {"preset": "Custom 1"}) == "Custom 1"
+    assert named_colormap_from_attrs("plasma", None) == "plasma"
+    assert named_colormap_from_attrs(None, None) is None
+
+
+def test_colormap_catalog_orders_session_maps_first():
+    from pymolviz.wizards.catalog import colormap_catalog_rows, session_colormap_users
+
+    class _Vol:
+        _name = "density"
+        colormap = "Zeta"
+        colormap_spec = {"preset": "Zeta"}
+
+    class Field:
+        def __init__(self):
+            self.id = "f1"
+
+    users = session_colormap_users([_Vol(), Field()])
+    assert users["Zeta"][0]["name"] == "density"
+    custom = [
+        {"name": "Zeta", "definition": {}},
+        {"name": "Alpha", "definition": {}},
+    ]
+    rows = colormap_catalog_rows(custom, users, expanded={"Zeta"})
+    names = [row["name"] for row in rows]
+    assert names[0] == "In this session"
+    assert names[1] == "Zeta"
+    assert rows[2]["kind"] == "user"
+    assert rows[2]["name"] == "density"
+    assert names[-2] == "Unused"
+    assert names[-1] == "Alpha"
 

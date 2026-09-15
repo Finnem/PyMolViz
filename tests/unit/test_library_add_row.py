@@ -102,6 +102,44 @@ def test_overlay_inline_when_empty_and_tall():
     assert margin == 0
 
 
+def test_overlay_pins_when_expanded_row_is_taller_than_uniform_height():
+    from pymolviz.wizards.widgets.sticky_add import sticky_add_overlay_rect
+
+    rect = sticky_add_overlay_rect(
+        table_width=200,
+        table_height=160,
+        viewport_x=0,
+        viewport_y=0,
+        viewport_height=160,
+        n_items=3,
+        row_height=28,
+        add_height=36,
+        content_height=28 + 28 + 120,
+    )
+    _x, y, _w, h, margin = rect
+    assert y == 160 - h
+    assert margin > 0
+
+
+def test_overlay_sits_below_expanded_content_when_there_is_room():
+    from pymolviz.wizards.widgets.sticky_add import sticky_add_overlay_rect
+
+    rect = sticky_add_overlay_rect(
+        table_width=200,
+        table_height=400,
+        viewport_x=0,
+        viewport_y=0,
+        viewport_height=400,
+        n_items=2,
+        row_height=28,
+        add_height=36,
+        content_height=28 + 140,
+    )
+    _x, y, _w, h, margin = rect
+    assert y == 28 + 140
+    assert margin == 0
+
+
 def test_add_object_not_sticky_until_viewport_is_known():
     assert objects_need_sticky_add(20, 0, 20) is False
     assert objects_need_sticky_add(20, 100, 0) is False
@@ -120,6 +158,37 @@ def test_unused_object_name_counts_up():
 def test_unused_object_name_keep_allows_current():
     taken = {"pmv_spheres", "pmv_spheres_1"}
     assert unused_object_name("pmv_spheres", taken=taken, keep="pmv_spheres") == "pmv_spheres"
+
+
+def test_unused_object_name_counts_session_fields(monkeypatch):
+    from types import SimpleNamespace
+
+    from pymolviz.runtime import session as session_mod
+
+    monkeypatch.setattr(
+        session_mod,
+        "all_objects",
+        lambda: [SimpleNamespace(_name="pmv_field", id="field-a")],
+    )
+    assert unused_object_name("pmv_field") == "pmv_field_1"
+    assert unused_object_name("pmv_field", keep="pmv_field") == "pmv_field"
+
+
+def test_unused_object_name_counts_session_field_visuals(monkeypatch):
+    from types import SimpleNamespace
+
+    from pymolviz.runtime import session as session_mod
+
+    monkeypatch.setattr(
+        session_mod,
+        "all_objects",
+        lambda: [
+            SimpleNamespace(_name="density_volume", id="vol-1"),
+            SimpleNamespace(_name="density_isosurface", id="iso-1"),
+        ],
+    )
+    assert unused_object_name("density_volume") == "density_volume_1"
+    assert unused_object_name("density_isosurface") == "density_isosurface_1"
 
 
 def test_add_object_types_are_plural_without_lines():
@@ -155,6 +224,10 @@ def test_type_icon_pixmap_skips_without_qt():
 
     assert source_icon_pixmap("camera", None, None) is None
     assert action_icon_pixmap("trash", None, None) is None
+    assert action_icon_pixmap("forward", None, None) is None
+    assert action_icon_pixmap("snap", None, None) is None
+    assert action_icon_pixmap("zoom", None, None) is None
+    assert action_icon_pixmap("anchor", None, None) is None
 
 
 def test_library_empty_state_copy():
@@ -229,7 +302,7 @@ def test_field_visuals_library_copy_and_types():
     assert abs(NEST_LINE_RGB[0] - NEST_LINE_RGB[1]) < 20
     assert NEST_LINE_RGB[2] < 220
     sources = [entry[1] for entry in FIELD_SOURCES]
-    assert sources == ["from_selection", "map", "xyz", "orca", "mtz", "derived"]
+    assert sources == ["from_selection", "map", "pmv", "xyz", "orca", "mtz", "derived"]
     from pymolviz.wizards.field_visuals import DISABLED_FIELD_SOURCES
     assert "derived" in DISABLED_FIELD_SOURCES
     kinds = [entry[1] for entry in FIELD_VISUAL_TYPES]

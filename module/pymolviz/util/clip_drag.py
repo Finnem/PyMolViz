@@ -172,8 +172,11 @@ def stop_clip_drag(cmd_, name: str = CLIP_DRAG_NAME, button_mode=None) -> None:
             pass
 
 
-def start_clip_drag(cmd_, center: Sequence[float], name: str = CLIP_DRAG_NAME):
+def start_clip_drag(cmd_, center: Sequence[float], name: str = CLIP_DRAG_NAME, *, native_widget=True):
     """Place a dummy sphere at ``center`` and enable the native drag widget.
+
+    ``native_widget=False`` keeps object TTT dragging without PyMOL's 3-axis
+    rings so a uniaxial CGO arrow can be the only handle.
 
     Returns the previous ``button_mode`` so the caller can restore it.
     """
@@ -197,14 +200,15 @@ def start_clip_drag(cmd_, center: Sequence[float], name: str = CLIP_DRAG_NAME):
         cmd_.hide("everything", name)
     except Exception:
         pass
-    try:
-        cmd_.show("spheres", name)
-    except Exception:
-        pass
-    try:
-        cmd_.set("sphere_scale", 0.35, name)
-    except Exception:
-        pass
+    if native_widget:
+        try:
+            cmd_.show("spheres", name)
+        except Exception:
+            pass
+        try:
+            cmd_.set("sphere_scale", 0.35, name)
+        except Exception:
+            pass
     try:
         cmd_.set("matrix_mode", 1, name)
     except TypeError:
@@ -215,10 +219,10 @@ def start_clip_drag(cmd_, center: Sequence[float], name: str = CLIP_DRAG_NAME):
     except Exception:
         pass
     try:
-        cmd_.drag(name, wizard=0, edit=1, mode=1)
+        cmd_.drag(name, wizard=0, edit=1 if native_widget else 0, mode=1)
     except TypeError:
         try:
-            cmd_.drag(name, wizard=0, edit=1)
+            cmd_.drag(name, wizard=0, edit=1 if native_widget else 0)
         except TypeError:
             try:
                 cmd_.drag(name)
@@ -226,5 +230,10 @@ def start_clip_drag(cmd_, center: Sequence[float], name: str = CLIP_DRAG_NAME):
                 pass
     except Exception:
         pass
+    if not native_widget:
+        try:
+            cmd_.edit_mode(0)
+        except Exception:
+            pass
     restore_view(cmd_, view)
     return old_mode

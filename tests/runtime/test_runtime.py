@@ -247,7 +247,8 @@ def test_reconcile_skips_field_and_loads_field_visual(runtime, fake_cmd):
     assert fake_cmd.object_types.get(visual.name) == "object:isosurface"
     assert binding_name(coll) in fake_cmd.objects
     assert runtime.bindings.get(field.id) is None
-    assert runtime.bindings.get(visual.id) is None
+    assert runtime.bindings.get(visual.id) is not None
+    assert runtime.bindings.get(visual.id).pymol_name == visual.name
     assert runtime.bindings.get(coll.id) is not None
     assert visual.geometry_field_id == str(field.id)
 
@@ -343,4 +344,5 @@ def test_from_selection_uniform_commit_binds_native_isosurface(runtime, fake_cmd
     assert field_calls["n"] == 0
     assert visual_calls["n"] == 0
     assert runtime.bindings.get(geom.id) is None
-    assert runtime.bindings.get(visual.id) is None
+    assert runtime.bindings.get(visual.id) is not None
+    assert runtime.bindings.get(visual.id).pymol_name == visual.name

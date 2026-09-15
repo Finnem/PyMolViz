@@ -16,11 +16,11 @@ LOGGER = logging.getLogger("pymolviz.wizards")
 
 HOOK_TO_SELECTION_TIP = (
     "When a new point already has an atom identity (selection, or a camera "
-    "snap hit), keep it attached so the visual follows if that atom moves. "
-    "Per-point Attach in the table overrides this for existing points."
+    "snap hit), keep it anchored so the visual follows if that atom moves. "
+    "Per-point Anchor in the table overrides this for existing points."
 )
 ANCHOR_TIP = (
-    "When checked, this point stays attached to its atom and follows if the atom moves. "
+    "When checked, this point stays anchored to its atom and follows if the atom moves. "
     "When unchecked, the position stays fixed at the current xyz."
 )
 SNAP_TO_ATOM_TIP = (
@@ -30,7 +30,7 @@ SNAP_TO_ATOM_TIP = (
 )
 UPDATE_TO_CAMERA_TIP = (
     "Move the selected table row(s) to the current camera/screen center "
-    "(uses Snap new points to atoms and Keep new points attached to atoms)."
+    "(uses Snap new points to atoms and Keep new points anchored to atoms)."
 )
 UPDATE_TO_SELECTION_TIP = (
     "Move the selected table row(s) onto the current PyMOL selection. "

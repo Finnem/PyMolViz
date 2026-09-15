@@ -421,3 +421,50 @@ def test_crystal_axis_map_resamples_onto_pdb_coordinates():
     assert interpolate_unit_cell(values, O, [peak])[0] == pytest.approx(
         interpolate_unit_cell(values, O, [mate])[0], abs=1e-6
     )
+
+
+def test_extend_target_rows_mark_coverage_and_skip_maps():
+    from pymolviz.fields.crystal import (
+        default_extend_target_name,
+        extend_target_rows,
+        point_coverage_status,
+    )
+
+    cmd = FakeCmd()
+    cmd.add_atom(FakeAtom("prot", 1, 5.0, 5.0, 5.0))
+    cmd.add_atom(FakeAtom("lig", 1, 50.0, 5.0, 5.0, name="C1"))
+    cmd.objects["prot"] = []
+    cmd.objects["lig"] = []
+    cmd.objects["density"] = []
+    cmd.object_types["prot"] = "object:molecule"
+    cmd.object_types["lig"] = "object:molecule"
+    cmd.object_types["density"] = "object:map"
+    cmd.select("pocket", "lig")
+    grid = _box_grid(counts=(10, 10, 10), step=1.0, name="density")
+    rows = extend_target_rows(cmd, grid, skip_names=("density",))
+    by_name = {row["name"]: row for row in rows}
+    assert "density" not in by_name
+    assert by_name["prot"]["status"] == "inside"
+    assert by_name["lig"]["status"] == "outside"
+    assert by_name["pocket"]["kind"] == "selection"
+    assert by_name["pocket"]["status"] == "outside"
+    assert default_extend_target_name(rows) == "lig"
+    assert point_coverage_status(grid, [[5.0, 5.0, 5.0], [50.0, 5.0, 5.0]]) == "partial"
+
+
+def test_coverage_sketch_uses_axis_of_largest_offset():
+    from pymolviz.fields.crystal import choose_coverage_axes, coverage_sketch
+
+    x_off = coverage_sketch(
+        (0.0, 0.0, 0.0), (10.0, 10.0, 10.0), (48.0, 4.0, 4.0), (52.0, 6.0, 6.0)
+    )
+    assert x_off["axes"][1] == 0
+    assert x_off["axis_names"][1] == "X"
+    assert x_off["target"]["y"] < x_off["map"]["y"]
+    z_off = coverage_sketch(
+        (0.0, 0.0, 0.0), (10.0, 10.0, 10.0), (2.0, 2.0, 40.0), (8.0, 8.0, 50.0)
+    )
+    assert z_off["axes"][1] == 2
+    assert z_off["axis_names"] == (z_off["axis_names"][0], "Z")
+    assert 2 in z_off["axes"]
+    assert choose_coverage_axes((0.0, 0.0, 0.0), (10.0, 10.0, 10.0)) == (0, 1)

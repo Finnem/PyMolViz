@@ -464,6 +464,20 @@ def _count_selection_atoms(cmd_, sele_expr: str, state: int = 0) -> int:
     return 0
 
 
+_PICK_SELECTION_NAMES = frozenset({"pk1", "pk2", "pk3", "pkmol", "pkbond"})
+
+
+def _can_iterate_selection(cmd_, sele_expr: str) -> bool:
+    """False for pick names that are not in the selection panel (avoids pk1 errors)."""
+    name = _unwrap_selection_name(sele_expr)
+    if name not in _PICK_SELECTION_NAMES:
+        return True
+    listed = _enabled_selection_names(cmd_)
+    if listed is None:
+        return False
+    return name in listed
+
+
 def _unwrap_selection_name(sele_expr: str) -> str:
     name = str(sele_expr).strip()
     if name.startswith("(") and name.endswith(")"):
@@ -506,7 +520,7 @@ def _selection_is_enabled(cmd_, sele_expr: str) -> bool:
         return False
     enabled = _enabled_selection_names(cmd_)
     if enabled is None:
-        return True
+        return name not in _PICK_SELECTION_NAMES
     return name in enabled
 
 
@@ -717,18 +731,20 @@ def camera_center_point(
     return VisualPoint(name, source, pos[0], pos[1], pos[2], point_source=FixedPoint(pos))
 
 
-def selection_points(
+def points_from_selection_expr(
     cmd_,
+    sele_expr: str,
     existing: Sequence[VisualPoint] = (),
-    interactive_only: bool = False,
     hook_to_selection: bool = True,
 ) -> List[VisualPoint]:
-    sele = _active_selection(cmd_, interactive_only=interactive_only)
-    if sele is None:
+    """VisualPoints for every atom in ``sele_expr`` (no active-selection filter)."""
+    if cmd_ is None or not str(sele_expr).strip():
+        return []
+    if not _can_iterate_selection(cmd_, sele_expr):
         return []
     state = _current_state(cmd_)
     atoms = []
-    if not _iterate_atoms(cmd_, sele, atoms, state):
+    if not _iterate_atoms(cmd_, sele_expr, atoms, state):
         return []
     used = {p.name for p in existing}
     out = []
@@ -765,6 +781,20 @@ def selection_points(
             atom_ref=ref,
         ))
     return out
+
+
+def selection_points(
+    cmd_,
+    existing: Sequence[VisualPoint] = (),
+    interactive_only: bool = False,
+    hook_to_selection: bool = True,
+) -> List[VisualPoint]:
+    sele = _active_selection(cmd_, interactive_only=interactive_only)
+    if sele is None:
+        return []
+    return points_from_selection_expr(
+        cmd_, sele, existing=existing, hook_to_selection=hook_to_selection,
+    )
 
 
 def apply_location(dst: VisualPoint, src: VisualPoint) -> VisualPoint:
@@ -905,9 +935,12 @@ def hide_exported_point_labels(cmd_) -> None:
 
 INSERT_SOURCE_SELECTION = "selection"
 INSERT_SOURCE_CAMERA = "camera"
+INSERT_SOURCE_FRESH = "fresh"
 INSERTION_NOTHING_SELECTED = (
-    "Nothing selected, select atoms or switch selection source."
+    "Nothing selected. Select atoms, or use Fresh selection to pick after Add."
 )
+INSERTION_FRESH_HINT = "Click Add, then select atoms in PyMOL."
+INSERTION_FRESH_WAITING = "Select atoms in PyMOL to add them."
 ADD_POINT_LABEL = "Add Point(s)"
 
 
@@ -1047,7 +1080,7 @@ def insertion_can_add(
     *,
     interactive_only: bool = True,
 ) -> bool:
-    if str(source) == INSERT_SOURCE_CAMERA:
+    if str(source) in (INSERT_SOURCE_CAMERA, INSERT_SOURCE_FRESH):
         return True
     return insertion_selection_count(cmd_, interactive_only=interactive_only) > 0
 
@@ -1060,6 +1093,8 @@ def insertion_preview_text(
     interactive_only: bool = True,
 ) -> str:
     """Live-preview copy. Callers must re-read via ``resolve_insertion_points`` on Add."""
+    if str(source) == INSERT_SOURCE_FRESH:
+        return INSERTION_FRESH_HINT
     if str(source) == INSERT_SOURCE_CAMERA:
         if bool(snap):
             atom = nearest_atom_at_view_center(cmd_)

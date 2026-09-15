@@ -4,19 +4,25 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
-from ...fields.clip import aabb_corners, normalize_clip_aabb, retarget_clip_aabb
-from ...fields.domain import aabb_has_extent, field_display_aabb
-from ...fields.isovalues import isovalues_for_side, primary_isovalue, primary_side
+from ...fields.clip import (
+    aabb_corners,
+    aabb_to_cardinal_planes,
+    cardinal_planes_to_aabb,
+    default_cardinal_plane,
+    normalize_cardinal_planes,
+    retarget_clip_aabb,
+)
+from ...fields.domain import field_display_aabb
+from ...fields.isovalues import isovalues_for_side
 from ...util.field_sample import field_label
 from .colormap_editor import ColormapEditor
 from ..pick import (
     DeferredCallback,
-    overlay_get_save_file_name,
     overlay_question,
     qt_modules,
     qt_widget_alive,
 )
-from ..tooltips import apply_required_tooltips, warn_missing_setting_tooltips
+from ..tooltips import FLIP_CLIP_TIP, apply_required_tooltips, warn_missing_setting_tooltips
 from ..widgets.action_bar import BuilderActionBar
 from ..widgets.ascii_locale import apply_ascii_float_locale
 from ..widgets.breadcrumb import (
@@ -33,6 +39,7 @@ from ..widgets.breadcrumb import (
 from ..widgets.name_section import BuilderNameSection
 from ..widgets.scrolling import bind_width_to_scroll_viewport, make_scrolling_body
 from ..widgets.section import make_section
+from ..widgets.switch import make_switch
 from ..widgets.theme import (
     apply_page_layout,
     apply_secondary_button_style,
@@ -51,13 +58,45 @@ from .field_visual import (
     convert_isosurface_visual,
     default_iso_level,
     default_visual_name,
+    field_visual_options,
     make_field_visual,
     persist_field_visual,
     resolve_field_grid,
 )
 from .object_names import unused_object_name
 from .preview import FieldVisualPreview
-from .aabb_clip import AabbClipGizmoController
+from .preview_mode import (
+    DEFAULT_PREVIEW_MODE,
+    read_preview_mode,
+    stamp_preview_mode,
+    PreviewModeRadios,
+    preview_grid,
+    preview_iso_kind,
+    preview_is_on,
+    preview_is_simple,
+)
+from .aabb_clip import CardinalClipGizmoController
+from .carve_around import CarveAroundWidget
+from .export import export_objects
+
+
+def _field_with_preview_grid(field, grid):
+    """Field-like object whose brick is a preview downsample of ``grid``."""
+    if field is None or grid is None:
+        return field
+    if getattr(field, "grid_data", None) is grid:
+        return field
+
+    class _PreviewField:
+        def __init__(self, src, brick):
+            object.__setattr__(self, "_src", src)
+            object.__setattr__(self, "grid_data", brick)
+
+        def __getattr__(self, name):
+            return getattr(self._src, name)
+
+    return _PreviewField(field, grid)
+
 
 _KIND_CRUMBS = {
     "Volume": CRUMB_VOLUME,
@@ -66,22 +105,33 @@ _KIND_CRUMBS = {
     "IsoMesh": CRUMB_ISOMESH,
 }
 _LIVE_PREVIEW_TIP = (
-    "When on, show the same native PyMOL IsoSurface, IsoMesh, or Volume that "
-    "Done creates. When off, hide the preview."
+    "No preview keeps the domain box only. Simple preview uses a coarser map "
+    "and IsoMesh. Full preview is the native IsoSurface, IsoMesh, or Volume."
 )
 _LEVEL_TIP = (
     "Isovalue in the field's native units. Used by IsoSurface and IsoMesh. "
     "Volume and IsoVolume use the colormap transfer, not this level."
 )
-_CLIP_CROP_TIP = (
-    "Crop the field to an axis-aligned box. Six preview planes sit on the "
-    "faces; drag a plane along its axis (X, Y, or Z only). Edit a min/max "
-    "value to select that face."
+_CLIP_TIP = (
+    "Clip the field with planes perpendicular to X, Y, and Z. Enable each "
+    "axis separately. Drag that plane along its axis, or edit the position. "
+    "Flip chooses which half to keep."
+)
+_CLIP_CROP_TIP = _CLIP_TIP
+_CLIP_ENABLE_TIPS = (
+    "Enable an X clipping plane. Drag it along X, or edit the position.",
+    "Enable a Y clipping plane. Drag it along Y, or edit the position.",
+    "Enable a Z clipping plane. Drag it along Z, or edit the position.",
+)
+_CLIP_POS_TIPS = (
+    "Position of the X clip plane in Ångströms.",
+    "Position of the Y clip plane in Ångströms.",
+    "Position of the Z clip plane in Ångströms.",
 )
 
 
 class FieldVisualBuilderPage:
-    """Name + type-specific options for a field visual, with optional live native preview."""
+    """Name, Geometry, Appearance, Options, and Modifiers for a field visual."""
 
     CONTEXT = "FieldVisualBuilderPage"
 
@@ -115,10 +165,12 @@ class FieldVisualBuilderPage:
         self._color_mode_field = None
         self._geometry_picker = None
         self._color_picker = None
-        self._clip_enabled = None
-        self._clip_lo = None
-        self._clip_hi = None
+        self._clip_axis_on = [None, None, None]
+        self._clip_axis_pos = [None, None, None]
+        self._clip_axis_flip = [None, None, None]
+        self._clip_axis_hi = [False, False, False]
         self._clip_gizmo = None
+        self._carve = None
         self._clip_spin_suspend = False
         self._convert_btn = None
         self._kind = "Volume"
@@ -128,7 +180,7 @@ class FieldVisualBuilderPage:
         self._level_geom_id = None
         self._deferred = DeferredCallback()
         self._preview = None
-        self._live_preview = None
+        self._preview_mode = None
         self._suspend_preview = False
         self._heavy_ok = None
         self._heavy_denied = None
@@ -191,10 +243,11 @@ class FieldVisualBuilderPage:
             self._color_mode_field.setChecked(True)
         elif self._color_mode_uniform is not None:
             self._color_mode_uniform.setChecked(True)
-        if self._clip_enabled is not None:
-            self._clip_enabled.setChecked(False)
-        if self._live_preview is not None:
-            self._live_preview.setChecked(False)
+        self._reset_clip_axes()
+        if self._carve is not None:
+            self._carve.reset()
+        if self._preview_mode is not None:
+            self._preview_mode.set_mode(DEFAULT_PREVIEW_MODE)
         self._heavy_ok = None
         self._heavy_denied = None
         self._level_geom_id = None
@@ -232,58 +285,45 @@ class FieldVisualBuilderPage:
             self._object_name.setText(str(name or ""))
         if self._action_bar is not None:
             self._action_bar.set_editing(True)
-        cmap = getattr(getattr(obj, "colormap", None), "preset", None)
-        if not cmap:
-            cmap = getattr(obj, "colormap", None)
-        spec = getattr(obj, "colormap_spec", None)
+        opts = field_visual_options(obj)
+        cmap = opts.get("colormap")
+        spec = opts.get("colormap_spec")
         if self._cmap_editor is not None and (isinstance(cmap, str) or spec):
-            range_mode = getattr(getattr(obj, "colormap", None), "range_mode", None)
-            clims = getattr(obj, "clims", None)
-            if clims is not None and len(clims) >= 2:
-                pair = (float(clims[0]), float(clims[-1]))
-            else:
-                pair = None
             name = cmap if isinstance(cmap, str) else ((spec or {}).get("preset") or "RdYlBu_r")
-            self._cmap_editor.set_colormap(name, range_mode=range_mode, clims=pair, spec=spec)
+            self._cmap_editor.set_colormap(
+                name,
+                range_mode=opts.get("range_mode"),
+                clims=opts.get("clims"),
+                spec=spec,
+            )
         if self._level is not None:
-            level = primary_isovalue(getattr(obj, "isovalues", None), default_level=float(getattr(obj, "level", 0) or 0))
-            self._level.setValue(float(level))
+            self._level.setValue(float(opts.get("level") or 0.0))
         if self._side is not None:
-            side = primary_side(getattr(obj, "isovalues", None), default_side=int(getattr(obj, "side", 1) or 1))
-            idx = 0 if side >= 0 else 1
-            entries = getattr(obj, "isovalues", None) or []
-            if len(entries) >= 2:
-                idx = 2
-            self._side.setCurrentIndex(idx)
+            self._side.setCurrentIndex(int(opts.get("side_index") or 0))
         if self._transparency is not None:
-            self._transparency.setValue(float(getattr(obj, "transparency", 0) or 0))
-        color = getattr(obj, "color", None)
-        if color is not None and not hasattr(color, "name"):
-            try:
-                self._color = (float(color[0]), float(color[1]), float(color[2]))
-            except (TypeError, IndexError, ValueError):
-                pass
+            self._transparency.setValue(float(opts.get("transparency") or 0.0))
+        if opts.get("color") is not None:
+            self._color = opts["color"]
         if self._geometry_picker is not None:
-            self._geometry_picker.refresh(geom_id or getattr(self._field, "id", None))
-        color_id = getattr(obj, "color_field_id", None)
+            self._geometry_picker.refresh(opts.get("geometry_field_id") or getattr(self._field, "id", None))
+        color_id = opts.get("color_field_id")
         if self._color_picker is not None:
             self._color_picker.refresh(color_id)
         if color_id and self._color_mode_field is not None:
             self._color_mode_field.setChecked(True)
         elif self._color_mode_uniform is not None:
             self._color_mode_uniform.setChecked(True)
-        aabb = getattr(obj, "clip_aabb", None)
-        if self._clip_enabled is not None:
-            self._clip_enabled.setChecked(bool(aabb))
-        if aabb and self._clip_lo and self._clip_hi:
-            for i in range(3):
-                self._clip_lo[i].setValue(float(aabb[0][i]))
-                self._clip_hi[i].setValue(float(aabb[1][i]))
+        aabb = opts.get("clip_aabb")
+        domain = self._field_domain_aabb(self._field, resolve_field_grid(self._field))
+        self._set_cardinal_planes(aabb_to_cardinal_planes(aabb, domain))
+        if self._carve is not None:
+            self._carve.set_carve(opts.get("selection"), opts.get("carve"))
+            self._carve.refresh(opts.get("selection"))
         field_name = field_label(self._field) if self._field is not None else ""
         crumbs = (field_name, self._crumb_leaf()) if field_name else (self._crumb_leaf(),)
         set_breadcrumb(self._title, edit_field_crumbs(*crumbs))
-        if self._live_preview is not None:
-            self._live_preview.setChecked(False)
+        if self._preview_mode is not None:
+            self._preview_mode.set_mode(read_preview_mode(obj))
         self._heavy_ok = None
         self._heavy_denied = None
         self._sync_form()
@@ -364,34 +404,85 @@ class FieldVisualBuilderPage:
                 self._level.setValue(default_iso_level(grid))
         self._level_geom_id = geom_id
         self._paint_color_button()
-        self._sync_clip_enabled()
+        self._sync_clip_axis_widgets()
 
-    def _sync_clip_enabled(self):
-        on = bool(self._clip_enabled.isChecked()) if self._clip_enabled is not None else False
-        for spin in list(self._clip_lo or ()) + list(self._clip_hi or ()):
-            spin.setEnabled(on)
+    def _any_clip_enabled(self) -> bool:
+        return any(
+            box is not None and box.isChecked()
+            for box in self._clip_axis_on
+        )
 
-    def _clip_aabb(self):
-        if self._clip_enabled is None or not self._clip_enabled.isChecked():
-            return None
-        if not self._clip_lo or not self._clip_hi:
-            return None
-        return normalize_clip_aabb([
-            [float(spin.value()) for spin in self._clip_lo],
-            [float(spin.value()) for spin in self._clip_hi],
-        ])
+    def _sync_clip_axis_widgets(self):
+        for axis in range(3):
+            on = bool(self._clip_axis_on[axis].isChecked()) if self._clip_axis_on[axis] is not None else False
+            if self._clip_axis_pos[axis] is not None:
+                self._clip_axis_pos[axis].setEnabled(on)
+            if self._clip_axis_flip[axis] is not None:
+                self._clip_axis_flip[axis].setEnabled(on)
 
-    def _set_clip_aabb(self, aabb):
-        box = normalize_clip_aabb(aabb)
-        if box is None or not self._clip_lo or not self._clip_hi:
-            return
+    def _reset_clip_axes(self):
         self._clip_spin_suspend = True
         try:
-            for i in range(3):
-                self._clip_lo[i].setValue(float(box[0][i]))
-                self._clip_hi[i].setValue(float(box[1][i]))
+            self._clip_axis_hi = [False, False, False]
+            for axis in range(3):
+                if self._clip_axis_on[axis] is not None:
+                    self._clip_axis_on[axis].setChecked(False)
         finally:
             self._clip_spin_suspend = False
+        self._sync_clip_axis_widgets()
+
+    def _cardinal_planes(self):
+        planes = []
+        for axis in range(3):
+            box = self._clip_axis_on[axis]
+            if box is None or not box.isChecked():
+                continue
+            spin = self._clip_axis_pos[axis]
+            position = float(spin.value()) if spin is not None else 0.0
+            planes.append({
+                "axis": axis,
+                "position": position,
+                "hi": bool(self._clip_axis_hi[axis]),
+            })
+        return normalize_cardinal_planes(planes)
+
+    def _set_cardinal_planes(self, planes):
+        by_axis = {int(p["axis"]): p for p in normalize_cardinal_planes(planes)}
+        self._clip_spin_suspend = True
+        try:
+            for axis in range(3):
+                plane = by_axis.get(axis)
+                on = plane is not None
+                if self._clip_axis_on[axis] is not None:
+                    self._clip_axis_on[axis].setChecked(on)
+                if plane is None:
+                    continue
+                self._clip_axis_hi[axis] = bool(plane["hi"])
+                if self._clip_axis_pos[axis] is not None:
+                    self._clip_axis_pos[axis].setValue(float(plane["position"]))
+        finally:
+            self._clip_spin_suspend = False
+        self._sync_clip_axis_widgets()
+
+    def _carve_args(self):
+        if self._carve is None:
+            return None, None
+        return self._carve.carve_args()
+
+    def _clip_aabb(self):
+        planes = self._cardinal_planes()
+        if not planes:
+            return None
+        field = self._selected_field()
+        grid = resolve_field_grid(field)
+        return cardinal_planes_to_aabb(planes, self._field_domain_aabb(field, grid))
+
+    def _set_clip_aabb(self, aabb):
+        field = self._selected_field()
+        grid = resolve_field_grid(field)
+        self._set_cardinal_planes(
+            aabb_to_cardinal_planes(aabb, self._field_domain_aabb(field, grid))
+        )
 
     def _clip_span_points(self):
         field = self._selected_field()
@@ -399,23 +490,12 @@ class FieldVisualBuilderPage:
         box = self._field_domain_aabb(field, grid)
         return aabb_corners(box)
 
-    def _ensure_clip_aabb(self):
-        box = self._clip_aabb()
-        if box is not None and aabb_has_extent(box):
-            return
-        field = self._selected_field()
-        grid = resolve_field_grid(field)
-        seeded = self._field_domain_aabb(field, grid)
-        if seeded is not None and aabb_has_extent(seeded):
-            self._set_clip_aabb(seeded)
-
     def _sync_clip_gizmos(self):
         if self._clip_gizmo is None:
             return
-        if self._clip_enabled is None or not self._clip_enabled.isChecked():
+        if not self._any_clip_enabled():
             self._clip_gizmo.clear()
             return
-        self._ensure_clip_aabb()
         self._clip_gizmo.refresh_gizmos()
 
     def _paint_color_button(self):
@@ -434,11 +514,11 @@ class FieldVisualBuilderPage:
         return str(data or "positive")
 
     def _live_preview_enabled(self) -> bool:
-        if self._clip_enabled is not None and self._clip_enabled.isChecked():
+        if self._any_clip_enabled():
             return True
-        if self._live_preview is None:
+        if self._preview_mode is None:
             return False
-        return bool(self._live_preview.isChecked())
+        return preview_is_on(self._preview_mode.mode())
 
     def _schedule_preview(self):
         if self._suspend_preview:
@@ -451,10 +531,56 @@ class FieldVisualBuilderPage:
         self._sync_form()
         self._schedule_preview()
 
-    def _on_clip_toggled(self):
-        self._sync_clip_enabled()
-        if self._clip_enabled is not None and self._clip_enabled.isChecked():
-            self._ensure_clip_aabb()
+    def _on_clip_axis_toggled(self, axis):
+        if self._clip_spin_suspend:
+            return
+        axis = int(axis)
+        box = self._clip_axis_on[axis] if 0 <= axis < 3 else None
+        on = bool(box.isChecked()) if box is not None else False
+        if on:
+            field = self._selected_field()
+            grid = resolve_field_grid(field)
+            seeded = default_cardinal_plane(axis, self._field_domain_aabb(field, grid))
+            self._clip_spin_suspend = True
+            try:
+                self._clip_axis_hi[axis] = bool(seeded["hi"])
+                if self._clip_axis_pos[axis] is not None:
+                    self._clip_axis_pos[axis].setValue(float(seeded["position"]))
+            finally:
+                self._clip_spin_suspend = False
+            if self._clip_gizmo is not None:
+                self._clip_gizmo.select_axis(axis)
+        elif self._clip_gizmo is not None:
+            if self._clip_gizmo.selected_axis == axis:
+                remaining = [i for i in range(3) if i != axis and self._clip_axis_on[i] is not None and self._clip_axis_on[i].isChecked()]
+                if remaining:
+                    self._clip_gizmo.select_axis(remaining[0])
+                else:
+                    self._clip_gizmo.clear()
+        self._sync_clip_axis_widgets()
+        self._sync_clip_gizmos()
+        self._schedule_preview()
+
+    def _on_clip_pos(self, axis):
+        if self._clip_spin_suspend:
+            return
+        if self._clip_gizmo is not None and self._any_clip_enabled():
+            self._clip_gizmo.select_axis(axis)
+        self._schedule_preview()
+
+    def _on_clip_flip(self, axis):
+        if self._clip_spin_suspend:
+            return
+        axis = int(axis)
+        box = self._clip_axis_on[axis] if 0 <= axis < 3 else None
+        if box is None or not box.isChecked():
+            return
+        self._clip_axis_hi[axis] = not bool(self._clip_axis_hi[axis])
+        if self._clip_gizmo is not None:
+            self._clip_gizmo.select_axis(axis)
+            self._clip_gizmo.relatch()
+        if self._preview is not None:
+            self._preview._iso_key = None
         self._sync_clip_gizmos()
         self._schedule_preview()
 
@@ -468,7 +594,7 @@ class FieldVisualBuilderPage:
         info = dict(info or {})
         grid = resolve_field_grid(self._selected_field() if selected is not None else field)
         new_aabb = field_display_aabb(field if field is not None else selected, grid)
-        if self._clip_enabled is not None and self._clip_enabled.isChecked():
+        if self._any_clip_enabled():
             retargeted = retarget_clip_aabb(
                 self._clip_aabb(),
                 info.get("old_aabb"),
@@ -483,13 +609,6 @@ class FieldVisualBuilderPage:
         if self._preview is not None:
             self._preview._iso_key = None
         self._sync_clip_gizmos()
-        self._schedule_preview()
-
-    def _on_clip_spin(self, axis, is_hi):
-        if self._clip_spin_suspend:
-            return
-        if self._clip_gizmo is not None and self._clip_enabled is not None and self._clip_enabled.isChecked():
-            self._clip_gizmo.select_face(axis, is_hi)
         self._schedule_preview()
 
     def _confirm_heavy_iso(self, grid) -> bool:
@@ -534,6 +653,8 @@ class FieldVisualBuilderPage:
             return
         if self._preview is None:
             return
+        if self._carve is not None:
+            self._carve.refresh()
         try:
             if not self._can_commit():
                 if self._preview is not None:
@@ -559,35 +680,53 @@ class FieldVisualBuilderPage:
                     self._preview.update(None)
                 self._sync_clip_gizmos()
                 return
-            if not self._confirm_heavy_iso(grid):
+            mode = (
+                self._preview_mode.mode()
+                if self._preview_mode is not None
+                else DEFAULT_PREVIEW_MODE
+            )
+            display_grid = preview_grid(grid, mode)
+            preview_kind = preview_iso_kind(self._kind, mode)
+            if not preview_is_simple(mode) and not self._confirm_heavy_iso(display_grid):
                 return
             colormap = self._colormap_name()
             colormap_spec = self._colormap_spec()
             level = float(self._level.value()) if self._level is not None else default_iso_level(grid)
             transparency = float(self._transparency.value()) if self._transparency is not None else 0.0
             color_field_id = None
-            if self._color_from_field() and self._color_picker is not None:
+            if (
+                not preview_is_simple(mode)
+                and self._color_from_field()
+                and self._color_picker is not None
+            ):
                 color_field_id = self._color_picker.field_id()
+            carve_sel, carve_radius = self._carve_args()
             iso_key = field_visual_preview_key(
-                kind=self._kind,
+                kind=preview_kind,
                 field_id=getattr(field, "id", None),
                 iso_level=level,
                 side=self._side_code(),
                 clip_aabb=self._clip_aabb(),
+                selection=carve_sel,
+                carve=carve_radius,
                 color_field_id=color_field_id,
                 colormap=colormap,
                 colormap_spec=colormap_spec,
                 clims=self._editor_clims(grid),
                 color=self._color,
                 transparency=transparency,
-                origin=getattr(grid, "origin", None),
+                origin=getattr(display_grid, "origin", None),
             )
+            if iso_key is not None:
+                iso_key = iso_key + (mode,)
             visual = build_grid_preview_visual(
-                field,
-                kind=self._kind,
+                _field_with_preview_grid(field, display_grid),
+                kind=preview_kind,
                 iso_level=level,
                 side=self._side_code(),
                 clip_aabb=self._clip_aabb(),
+                selection=carve_sel,
+                carve=carve_radius,
                 color=self._color,
                 transparency=transparency,
                 color_field_id=color_field_id,
@@ -646,6 +785,7 @@ class FieldVisualBuilderPage:
         isovalues = None
         if self._kind in ISO_KINDS and level is not None:
             isovalues = isovalues_for_side(level, self._side_code())
+        carve_sel, carve_radius = self._carve_args()
         return dict(
             kind=self._kind,
             grid=field if field is not None else grid,
@@ -659,6 +799,8 @@ class FieldVisualBuilderPage:
             color_field_id=color_field_id,
             isovalues=isovalues,
             clip_aabb=self._clip_aabb(),
+            selection=carve_sel,
+            carve=carve_radius,
             clims=self._editor_clims(grid),
             colormap_spec=self._colormap_spec(),
         )
@@ -668,27 +810,20 @@ class FieldVisualBuilderPage:
             return
         self.cleanup_preview()
         visual = make_field_visual(**self._commit_kwargs())
+        mode = self._preview_mode.mode() if self._preview_mode is not None else DEFAULT_PREVIEW_MODE
+        stamp_preview_mode(visual, mode)
         persist_field_visual(self.cmd, visual)
         if self._on_create is not None:
             self._on_create()
 
     def _export(self):
-        _, _, QtWidgets = qt_modules()
-        if QtWidgets is None or not self._can_commit():
+        if not self._can_commit():
             return
         kwargs = self._commit_kwargs()
         name = kwargs["name"]
-        path, _ = overlay_get_save_file_name(
-            self._page,
-            "Export field visual script",
-            "%s.py" % name,
-            "Python (*.py)",
-        )
-        if not path:
-            return
         kwargs["obj_id"] = None
         visual = make_field_visual(**kwargs)
-        visual.write(path)
+        export_objects(self._page, visual, name, title="Export field visual")
 
     def _convert(self):
         if self._editing_id is None:
@@ -746,20 +881,30 @@ class FieldVisualBuilderPage:
         outer.addWidget(scroll, stretch=1)
         self._outer_layout = outer
         self._preview = FieldVisualPreview(self.cmd)
-        self._clip_gizmo = AabbClipGizmoController(
+        self._clip_gizmo = CardinalClipGizmoController(
             page=page,
             preview=self._preview,
-            get_aabb=self._clip_aabb,
-            set_aabb=self._set_clip_aabb,
+            get_planes=self._cardinal_planes,
+            set_planes=self._set_cardinal_planes,
             span_points=self._clip_span_points,
+            domain_aabb=lambda: self._field_domain_aabb(
+                self._selected_field(), resolve_field_grid(self._selected_field()),
+            ),
             on_changed=self._schedule_preview,
         )
 
-        bind = make_section("Fields", form=True)
+        bind = make_section("Geometry", form=True)
         self._geometry_picker = FieldPickerWidget(
             page, self.cmd, self.CONTEXT, on_changed=self._on_geometry_changed,
         )
         bind.layout.addRow("Geometry field", self._geometry_picker.widget)
+        body.addWidget(bind.widget)
+
+        volume = make_section("Appearance")
+        appear_form = QtWidgets.QFormLayout()
+        appear_form.setContentsMargins(0, 0, 0, 0)
+        self._preview_mode = PreviewModeRadios(on_changed=lambda *_: self._schedule_preview())
+        appear_form.addRow("", self._preview_mode.widget)
         mode_row = QtWidgets.QWidget()
         mode_layout = QtWidgets.QHBoxLayout(mode_row)
         mode_layout.setContentsMargins(0, 0, 0, 0)
@@ -771,21 +916,12 @@ class FieldVisualBuilderPage:
         mode_layout.addWidget(self._color_mode_uniform)
         mode_layout.addWidget(self._color_mode_field)
         mode_layout.addStretch(1)
-        bind.layout.addRow("Color mode", mode_row)
+        appear_form.addRow("Color mode", mode_row)
         self._color_picker = FieldPickerWidget(
             page, self.cmd, self.CONTEXT, empty_label="Optional color field",
             on_changed=self._schedule_preview,
         )
-        bind.layout.addRow("Color field", self._color_picker.widget)
-        body.addWidget(bind.widget)
-
-        volume = make_section("Appearance")
-        appear_form = QtWidgets.QFormLayout()
-        appear_form.setContentsMargins(0, 0, 0, 0)
-        self._live_preview = QtWidgets.QCheckBox("Live preview")
-        self._live_preview.setObjectName("pmvLivePreview")
-        self._live_preview.toggled.connect(lambda *_: self._schedule_preview())
-        appear_form.addRow("", self._live_preview)
+        appear_form.addRow("Color field", self._color_picker.widget)
         volume.layout.addLayout(appear_form)
         self._cmap_editor = ColormapEditor(
             volume.widget,
@@ -813,7 +949,7 @@ class FieldVisualBuilderPage:
         self._volume_section = None
         body.addWidget(volume.widget)
 
-        iso = make_section("IsoSurface")
+        iso = make_section("Options")
         iso_form = QtWidgets.QFormLayout()
         iso_form.setContentsMargins(0, 0, 0, 0)
         self._level = QtWidgets.QDoubleSpinBox()
@@ -839,31 +975,46 @@ class FieldVisualBuilderPage:
         self._iso_section = iso
         body.addWidget(iso.widget)
 
-        clip = make_section("Clip / Crop", form=True)
-        self._clip_enabled = QtWidgets.QCheckBox("Axis-aligned crop")
-        self._clip_enabled.toggled.connect(lambda *_: self._on_clip_toggled())
-        clip.layout.addRow("", self._clip_enabled)
-        box = QtWidgets.QWidget()
-        grid = QtWidgets.QGridLayout(box)
+        clip = make_section("Modifiers", form=True)
+        self._carve = CarveAroundWidget(
+            page, self.cmd, self.CONTEXT, on_changed=self._schedule_preview,
+        )
+        clip.layout.addRow("Carve around", self._carve.widget)
+        axes = QtWidgets.QWidget()
+        grid = QtWidgets.QGridLayout(axes)
         grid.setContentsMargins(0, 0, 0, 0)
-        self._clip_lo = []
-        self._clip_hi = []
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(4)
+        self._clip_axis_on = [None, None, None]
+        self._clip_axis_pos = [None, None, None]
+        self._clip_axis_flip = [None, None, None]
+        clip_tips = []
         for i, axis in enumerate("XYZ"):
-            lo = QtWidgets.QDoubleSpinBox()
-            hi = QtWidgets.QDoubleSpinBox()
-            for spin in (lo, hi):
-                spin.setDecimals(2)
-                spin.setRange(-1e4, 1e4)
-                spin.setSingleStep(0.5)
-                apply_ascii_float_locale(spin, QtCore)
-            lo.valueChanged.connect(lambda *_a, ax=i: self._on_clip_spin(ax, False))
-            hi.valueChanged.connect(lambda *_a, ax=i: self._on_clip_spin(ax, True))
-            grid.addWidget(QtWidgets.QLabel(axis), i, 0)
-            grid.addWidget(lo, i, 1)
-            grid.addWidget(hi, i, 2)
-            self._clip_lo.append(lo)
-            self._clip_hi.append(hi)
-        clip.layout.addRow("Min / max", box)
+            enable = make_switch(axis)
+            enable.toggled.connect(lambda *_a, ax=i: self._on_clip_axis_toggled(ax))
+            spin = QtWidgets.QDoubleSpinBox()
+            spin.setDecimals(2)
+            spin.setRange(-1e4, 1e4)
+            spin.setSingleStep(0.5)
+            apply_ascii_float_locale(spin, QtCore)
+            spin.valueChanged.connect(lambda *_a, ax=i: self._on_clip_pos(ax))
+            flip = QtWidgets.QPushButton("Flip")
+            flip.setAutoDefault(False)
+            flip.setDefault(False)
+            flip.clicked.connect(lambda *_a, ax=i: self._on_clip_flip(ax))
+            grid.addWidget(enable, i, 0)
+            grid.addWidget(spin, i, 1)
+            grid.addWidget(flip, i, 2)
+            self._clip_axis_on[i] = enable
+            self._clip_axis_pos[i] = spin
+            self._clip_axis_flip[i] = flip
+            clip_tips.extend([
+                (enable, _CLIP_ENABLE_TIPS[i], "Clip %s" % axis),
+                (spin, _CLIP_POS_TIPS[i], "Clip %s position" % axis),
+                (flip, FLIP_CLIP_TIP, "Flip clip %s" % axis),
+            ])
+        clip.layout.addRow("", axes)
+        clip.header.setToolTip(_CLIP_TIP)
         self._clip_section = clip
         body.addWidget(clip.widget)
         body.addStretch(1)
@@ -883,13 +1034,14 @@ class FieldVisualBuilderPage:
                 (self._color_mode_field, "Color this visual by sampling another field.", "From field"),
                 (self._color_picker.widget, "Optional second field used as a color ramp.", "Color field"),
                 *self._cmap_editor.tooltips(),
-                (self._live_preview, _LIVE_PREVIEW_TIP, "Live preview"),
+                *self._preview_mode.tooltips(),
                 (self._level, _LEVEL_TIP, "Level"),
                 (self._side, "Which side of the isosurface to keep.", "Side"),
                 (self._transparency, "0 is opaque, 1 is invisible.", "Transparency"),
                 (self._color_btn, "Solid color for this isosurface.", "Color"),
                 (self._convert_btn, "Bake this isosurface into an editable Surface object.", "Convert"),
-                (self._clip_enabled, _CLIP_CROP_TIP, "Clip / Crop"),
+                *self._carve.tooltips(),
+                *clip_tips,
             ],
             context=self.CONTEXT,
         )

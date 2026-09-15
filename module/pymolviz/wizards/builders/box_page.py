@@ -15,6 +15,7 @@ from .preview import (
     build_box_cgo_collection,
     retarget_point_collection,
 )
+from .preview_mode import preview_is_on, preview_wireframe
 
 
 class BoxBuilderPage(PointTableBuilderPage):
@@ -45,7 +46,6 @@ class BoxBuilderPage(PointTableBuilderPage):
                 widget.set_value(value)
         if self._appearance is not None:
             self._appearance.set_wireframe(False)
-            self._appearance.set_specular(True)
 
     def _load_options(self, obj):
         from .load_visual import box_options
@@ -60,7 +60,6 @@ class BoxBuilderPage(PointTableBuilderPage):
             self._extent_z.set_value(extent[2])
         if self._appearance is not None:
             self._appearance.set_wireframe(opts["wireframe"])
-            self._appearance.set_specular(opts.get("specular", True))
 
     def _mount_geometry(self, root, QtCore, QtGui, QtWidgets):
         geom = make_section("Geometry", form=True)
@@ -94,7 +93,15 @@ class BoxBuilderPage(PointTableBuilderPage):
             if not enabled_points(self._points):
                 self._preview.cleanup()
                 return
-            wire = self._appearance.wireframe() if self._appearance else False
+            mode = self._current_preview_mode()
+            if not preview_is_on(mode):
+                self._preview.clear_meshes()
+                if self._modifiers is not None:
+                    self._modifiers.clip.refresh_gizmos()
+                return
+            wire = preview_wireframe(
+                self._appearance.wireframe() if self._appearance else False, mode,
+            )
             self._preview.update(
                 self._points,
                 self._extent(),
@@ -107,7 +114,12 @@ class BoxBuilderPage(PointTableBuilderPage):
             pass
 
     def _add_preview_points(self, new_pts):
-        wire = self._appearance.wireframe() if self._appearance else False
+        mode = self._current_preview_mode()
+        if not preview_is_on(mode):
+            return
+        wire = preview_wireframe(
+            self._appearance.wireframe() if self._appearance else False, mode,
+        )
         added = self._preview.add_points(new_pts, self._extent(), wire)
         self._sync_table(preview=not added)
 

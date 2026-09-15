@@ -101,6 +101,7 @@ _TYPE_LABELS = {
     "PolylineTube": "Tube",
     "Rotation_Indicator": "Rotation",
     "Field": "Field",
+    "Lines": "Arrows",
 }
 
 _EDITOR_TYPES = {
@@ -164,7 +165,10 @@ def nest_connector(row) -> str:
 def field_row_shows_edit(row) -> bool:
     """True when the library should show an Edit control for this row."""
     data = row or {}
-    return data.get("kind") == KIND_VISUAL and bool(data.get("editor"))
+    kind = data.get("kind")
+    if kind in (KIND_VISUAL, KIND_FIELD):
+        return bool(data.get("editor"))
+    return False
 
 
 def field_row_shows_symmetrize(row) -> bool:
@@ -347,6 +351,30 @@ def field_editor_kind(obj) -> Optional[str]:
     return _FIELD_EDITOR_TYPES.get(type(obj).__name__)
 
 
+def field_source_editor_kind(obj) -> Optional[str]:
+    """Builder for a reusable Field (From Selection), or None for imported maps."""
+    if type(obj).__name__ != "Field":
+        return None
+    from ..fields.identity import (
+        GEN_DISTANCE,
+        GEN_GAUSSIAN,
+        GEN_NEAREST_COLOR,
+        GEN_NEAREST_PROP,
+        GEN_SIGNED_VDW,
+    )
+
+    gen = str((getattr(obj, "generator", None) or {}).get("type") or "")
+    if gen in (
+        GEN_GAUSSIAN,
+        GEN_DISTANCE,
+        GEN_SIGNED_VDW,
+        GEN_NEAREST_PROP,
+        GEN_NEAREST_COLOR,
+    ):
+        return "FromSelection"
+    return None
+
+
 def field_identity_keys(obj) -> List[str]:
     """Ids and names used to match a field to its visuals."""
     from ..util.field_sample import PYMOL_MAP_ID_PREFIX, field_label, resolve_grid
@@ -413,7 +441,7 @@ def field_row(obj, used_by=None) -> dict:
         "type": field_type_label(obj),
         "native": is_native_field(obj),
         "depth": 0,
-        "editor": None,
+        "editor": field_source_editor_kind(obj),
         "symmetrize": field_supports_symmetrize(obj),
         "last_child": False,
         "used_by": used_by or "",
@@ -457,6 +485,98 @@ def add_visual_row(field_id) -> dict:
         "geometry_field": "",
         "color_field": "",
     }
+
+
+KIND_CMAP = "map"
+KIND_CMAP_HEADER = "header"
+KIND_CMAP_USER = "user"
+CMAP_SECTION_SESSION = "In this session"
+CMAP_SECTION_UNUSED = "Unused"
+
+
+def colormap_names_on_object(obj) -> List[str]:
+    """Named colormaps referenced by a session visual (not field sources)."""
+    from ..util.colormap_spec import named_colormap_from_attrs
+
+    names = []
+    seen = set()
+
+    def add(colormap, spec):
+        text = named_colormap_from_attrs(colormap, spec)
+        if not text or text in seen:
+            return
+        seen.add(text)
+        names.append(text)
+
+    targets = list(mesh_children(obj))
+    if obj not in targets:
+        targets.append(obj)
+    for target in targets:
+        add(getattr(target, "colormap", None), getattr(target, "colormap_spec", None))
+        add(getattr(target, "field_colormap", None), getattr(target, "field_colormap_spec", None))
+    return names
+
+
+def session_colormap_users(objects=None) -> dict:
+    """``{preset: [{"name", "type"}, ...]}`` for visuals in the current session."""
+    if objects is None:
+        from ..runtime.session import all_objects, is_ephemeral
+
+        objects = [obj for obj in all_objects() if not is_ephemeral(obj)]
+    users = {}
+    for obj in objects:
+        if is_field_source(obj):
+            continue
+        label = display_name(obj) or str(getattr(obj, "id", "") or "")
+        kind = type_label(obj)
+        for cmap in colormap_names_on_object(obj):
+            bucket = users.setdefault(cmap, [])
+            if any(item.get("name") == label for item in bucket):
+                continue
+            bucket.append({"name": label, "type": kind})
+    return users
+
+
+def colormap_catalog_rows(custom_rows, users_by_name=None, expanded=()) -> List[dict]:
+    """Custom maps with session users first, then unused, plus optional child rows."""
+    usage = users_by_name or {}
+    open_names = {str(name) for name in (expanded or ())}
+    used = []
+    unused = []
+    for row in custom_rows or ():
+        name = str((row or {}).get("name") or "")
+        if not name:
+            continue
+        users = list(usage.get(name) or [])
+        entry = {
+            "kind": KIND_CMAP,
+            "name": name,
+            "definition": (row or {}).get("definition") or {},
+            "users": users,
+            "used": bool(users),
+            "custom": True,
+        }
+        (used if users else unused).append(entry)
+    used.sort(key=lambda item: (-len(item["users"]), item["name"].lower()))
+    unused.sort(key=lambda item: item["name"].lower())
+    out = []
+    if used:
+        out.append({"kind": KIND_CMAP_HEADER, "name": CMAP_SECTION_SESSION})
+        for entry in used:
+            out.append(entry)
+            if entry["name"] in open_names:
+                for index, user in enumerate(entry["users"]):
+                    out.append({
+                        "kind": KIND_CMAP_USER,
+                        "name": str(user.get("name") or ""),
+                        "type": str(user.get("type") or ""),
+                        "parent": entry["name"],
+                        "last_child": index == len(entry["users"]) - 1,
+                    })
+    if unused:
+        out.append({"kind": KIND_CMAP_HEADER, "name": CMAP_SECTION_UNUSED})
+        out.extend(unused)
+    return out
 
 
 def _field_label_by_id(field_id, fields) -> str:

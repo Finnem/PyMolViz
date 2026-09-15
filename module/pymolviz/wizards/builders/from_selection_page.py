@@ -12,13 +12,12 @@ from ...util.solvent_surface import (
     gauss_spacing,
 )
 from ..pick import (
-    overlay_get_save_file_name,
     overlay_question,
     overlay_warning,
     qt_modules,
     qt_widget_alive,
 )
-from ..widgets.ascii_locale import apply_ascii_float_locale
+from ..widgets.ascii_locale import apply_ascii_float_locale, configure_committed_spin
 from ..widgets.breadcrumb import CRUMB_FROM_SELECTION, create_field_crumbs, edit_field_crumbs
 from ..widgets.section import make_section
 from .field_params import (
@@ -30,6 +29,7 @@ from .field_params import (
     iso_spin_range,
     normalize_field_model,
 )
+from .object_names import unused_object_name
 from .domain_schematic import (
     SCHEMATIC_TIP,
     DomainSchematicWidget,
@@ -42,16 +42,29 @@ from .field_preview import (
     field_supports_iso_preview,
     iso_preview_key,
 )
+from .preview_mode import (
+    DEFAULT_PREVIEW_MODE,
+    PREVIEW_OFF,
+    read_preview_mode,
+    stamp_preview_mode,
+    preview_domain,
+    preview_is_on,
+    preview_iso_kind,
+    preview_is_simple,
+)
 from .appearance_section import COLOR_ALL_LABEL
 from .load_field import (
     atom_records_from_points,
     commit_from_selection_preset,
     field_from_selection,
+    field_options,
+    points_from_field,
     remember_default_color_field,
 )
 from .point_table_page import PointTableBuilderPage
 from .points import enabled_points
 from .preview import FromSelectionFieldPreview
+from .export import export_objects
 from .surface_params import COLOR_MODE_FIELD, COLOR_MODE_UNIFORM
 
 _MARKER_RADIUS = 0.40
@@ -70,8 +83,8 @@ _ISO_TIP = (
     "the VDW surface. Nearest-atom property uses native property units."
 )
 _LIVE_PREVIEW_TIP = (
-    "When on, rebuild a native PyMOL isosurface as knobs change. "
-    "When off, show cheap atom markers only. Lives in Appearance, not Field model."
+    "No preview keeps cheap atom markers only. Simple preview rebuilds a "
+    "coarser IsoMesh. Full preview is the native isosurface Done creates."
 )
 _MODEL_TIP = "How voxel values are computed from the selected atoms."
 _PROPERTY_TIP = "Atom property copied onto the nearest voxel. Element and chain are categorical."
@@ -91,7 +104,6 @@ class FromSelectionFieldPage(PointTableBuilderPage):
         return {
             "show_wireframe": False,
             "show_quality": False,
-            "show_specular": False,
             "show_per_point": False,
             "show_live_preview": True,
             "live_preview_tooltip": _LIVE_PREVIEW_TIP,
@@ -119,6 +131,7 @@ class FromSelectionFieldPage(PointTableBuilderPage):
         self._box_lo = None
         self._box_hi = None
         self._geom_form = None
+        self._opt_form = None
         self._domain_form = None
         self._domain_schematic = None
         self._quality_row = None
@@ -129,9 +142,120 @@ class FromSelectionFieldPage(PointTableBuilderPage):
         self._box_row = None
         self._heavy_ok = None
         self._heavy_denied = None
+        self._pending_field_opts = None
 
     def _mount_modifiers(self, root, QtCore, QtGui, QtWidgets):
         return ()
+
+    def load_object(self, obj):
+        from ..catalog import display_name
+
+        if type(obj).__name__ != "Field":
+            return super().load_object(obj)
+        self._editing_id = str(getattr(obj, "id", "") or "")
+        name = display_name(obj) or self.DEFAULT_NAME
+        self._points = self._points_from_object(obj)
+        self._deferred.cancel()
+        self._suspend_preview = True
+        try:
+            self._apply_edit_chrome(name)
+            self._load_options(obj)
+            self._load_preview_mode(obj)
+            if self._appearance is not None:
+                self._appearance.bind_points(self._points)
+        finally:
+            self._suspend_preview = False
+        if self._preview is not None:
+            self._preview.cleanup()
+        self._after_load()
+
+    def _points_from_object(self, obj):
+        if type(obj).__name__ == "Field":
+            return points_from_field(obj)
+        return super()._points_from_object(obj)
+
+    def _load_options(self, obj):
+        opts = field_options(obj)
+        self._pending_field_opts = opts
+        algo = opts.get("algorithm")
+        if self._algorithm is not None and algo:
+            index = self._algorithm.findData(algo)
+            self._algorithm.blockSignals(True)
+            try:
+                if index >= 0:
+                    self._algorithm.setCurrentIndex(index)
+            finally:
+                self._algorithm.blockSignals(False)
+        if self._quality is not None:
+            self._quality.blockSignals(True)
+            try:
+                self._quality.setValue(int(opts.get("quality") or DEFAULT_QUALITY))
+            finally:
+                self._quality.blockSignals(False)
+        if self._resolution is not None:
+            self._resolution.blockSignals(True)
+            try:
+                self._resolution.setValue(float(opts.get("resolution") or DEFAULT_GAUSSIAN_RESOLUTION))
+            finally:
+                self._resolution.blockSignals(False)
+        self._apply_iso_spin()
+        iso = opts.get("iso_level")
+        if self._iso_value is not None and iso is not None:
+            self._iso_value.blockSignals(True)
+            try:
+                self._iso_value.setValue(float(iso))
+            finally:
+                self._iso_value.blockSignals(False)
+        prop = opts.get("property")
+        if self._property is not None and prop:
+            index = self._property.findData(prop)
+            if index >= 0:
+                self._property.setCurrentIndex(index)
+        domain = opts.get("domain") or {}
+        mode = domain.get("bounds_mode") if isinstance(domain, dict) else None
+        if self._bounds_mode is not None and mode:
+            index = self._bounds_mode.findData(mode)
+            self._bounds_mode.blockSignals(True)
+            try:
+                if index >= 0:
+                    self._bounds_mode.setCurrentIndex(index)
+            finally:
+                self._bounds_mode.blockSignals(False)
+        if self._padding is not None and domain.get("padding") is not None:
+            self._padding.setValue(float(domain["padding"]))
+        if self._spacing is not None and domain.get("spacing") is not None:
+            self._spacing.setValue(float(domain["spacing"]))
+        if self._domain_object is not None:
+            self._domain_object.setText(str(domain.get("object_name") or ""))
+        aabb = domain.get("aabb") if isinstance(domain, dict) else None
+        if aabb and self._box_lo and self._box_hi:
+            try:
+                lo, hi = aabb[0], aabb[1]
+                for i in range(3):
+                    self._box_lo[i].setValue(float(lo[i]))
+                    self._box_hi[i].setValue(float(hi[i]))
+            except (TypeError, IndexError, ValueError):
+                pass
+        self._sync_algorithm_visibility()
+        self._sync_domain_visibility()
+
+    def _after_load(self):
+        opts = getattr(self, "_pending_field_opts", None) or {}
+        if self._appearance is not None:
+            fid = opts.get("color_field_id")
+            if fid:
+                self._appearance._set_mode_ui(COLOR_MODE_FIELD)
+                picker = getattr(self._appearance, "_field_picker", None)
+                if picker is not None:
+                    picker.refresh(fid)
+                cmap = opts.get("colormap")
+                editor = getattr(self._appearance, "_cmap_editor", None)
+                if cmap and editor is not None:
+                    editor.set_colormap(str(cmap))
+            else:
+                self._appearance._set_mode_ui(COLOR_MODE_UNIFORM)
+            self._appearance._sync_mode_widgets()
+        super()._after_load()
 
     def _context_color_action(self) -> bool:
         return False
@@ -152,7 +276,7 @@ class FromSelectionFieldPage(PointTableBuilderPage):
         if self._iso_value is not None:
             self._iso_value.setValue(default_field_iso_level(self._current_algorithm()))
         if self._appearance is not None:
-            self._appearance.set_live_preview(False)
+            self._appearance.set_preview_mode(DEFAULT_PREVIEW_MODE)
         if self._property is not None:
             self._property.setCurrentIndex(0)
         if self._bounds_mode is not None:
@@ -163,6 +287,7 @@ class FromSelectionFieldPage(PointTableBuilderPage):
             self._spacing.setValue(gauss_spacing(DEFAULT_QUALITY))
         self._heavy_ok = None
         self._heavy_denied = None
+        self._pending_field_opts = None
         if self._appearance is not None:
             self._appearance._set_mode_ui(COLOR_MODE_UNIFORM)
             self._appearance._sync_mode_widgets()
@@ -176,43 +301,14 @@ class FromSelectionFieldPage(PointTableBuilderPage):
         return normalize_field_model(data or self._algorithm.currentText())
 
     def _mount_geometry(self, root, QtCore, QtGui, QtWidgets):
-        geom = make_section("Field model", form=True)
+        geom = make_section("Geometry", form=True)
         layout = geom.layout
         self._algorithm = QtWidgets.QComboBox()
         for key in FIELD_MODEL_ORDER:
             self._algorithm.addItem(FIELD_MODEL_LABELS[key], key)
         self._algorithm.currentIndexChanged.connect(lambda *_: self._on_algorithm_changed())
-        self._quality = QtWidgets.QSpinBox()
-        self._quality.setRange(1, 5)
-        self._quality.setValue(DEFAULT_QUALITY)
-        self._quality.valueChanged.connect(lambda *_: self._on_quality_changed())
-        self._resolution = QtWidgets.QDoubleSpinBox()
-        self._resolution.setDecimals(2)
-        self._resolution.setRange(1.00, 8.00)
-        self._resolution.setSingleStep(0.25)
-        self._resolution.setValue(DEFAULT_GAUSSIAN_RESOLUTION)
-        apply_ascii_float_locale(self._resolution, QtCore)
-        self._resolution.valueChanged.connect(lambda *_: self._schedule_preview())
-        self._iso_value = QtWidgets.QDoubleSpinBox()
-        self._iso_value.setDecimals(2)
-        self._iso_value.setRange(0.05, 8.00)
-        self._iso_value.setSingleStep(0.05)
-        self._iso_value.setValue(DEFAULT_GAUSSIAN_ISOLEVEL)
-        apply_ascii_float_locale(self._iso_value, QtCore)
-        self._iso_value.valueChanged.connect(lambda *_: self._schedule_preview())
-        self._property = QtWidgets.QComboBox()
-        for key, label in NEAREST_PROPERTIES:
-            self._property.addItem(label, key)
         self._geom_form = layout
         layout.addRow("Algorithm", self._algorithm)
-        self._quality_row = layout.rowCount()
-        layout.addRow("Quality", self._quality)
-        self._resolution_row = layout.rowCount()
-        layout.addRow("Resolution (Å)", self._resolution)
-        self._iso_row = layout.rowCount()
-        layout.addRow("Iso value", self._iso_value)
-        self._property_row = layout.rowCount()
-        layout.addRow("Property", self._property)
         root.addWidget(geom.widget)
 
         domain = make_section("Domain", form=False)
@@ -277,18 +373,56 @@ class FromSelectionFieldPage(PointTableBuilderPage):
         row = wrap_domain_knobs(QtWidgets, self._domain_schematic, knobs)
         domain.layout.addWidget(row)
         root.addWidget(domain.widget)
-        self._sync_algorithm_visibility()
-        self._sync_domain_visibility()
         return (
             (self._algorithm, _MODEL_TIP),
-            (self._quality, _QUALITY_TIP),
-            (self._resolution, _RESOLUTION_TIP),
-            (self._iso_value, _ISO_TIP),
-            (self._property, _PROPERTY_TIP),
             (self._bounds_mode, _BOUNDS_TIP),
             (self._padding, _PADDING_TIP),
             (self._spacing, _SPACING_TIP),
             (self._domain_schematic.widget, SCHEMATIC_TIP, "Domain schematic"),
+        )
+
+    def _mount_options(self, root, QtCore, QtGui, QtWidgets):
+        opts = make_section("Options", form=True)
+        layout = opts.layout
+        self._quality = QtWidgets.QSpinBox()
+        self._quality.setRange(1, 5)
+        self._quality.setValue(DEFAULT_QUALITY)
+        configure_committed_spin(self._quality)
+        self._quality.valueChanged.connect(lambda *_: self._on_quality_changed())
+        self._resolution = QtWidgets.QDoubleSpinBox()
+        self._resolution.setDecimals(2)
+        self._resolution.setRange(1.00, 8.00)
+        self._resolution.setSingleStep(0.25)
+        self._resolution.setValue(DEFAULT_GAUSSIAN_RESOLUTION)
+        apply_ascii_float_locale(self._resolution, QtCore)
+        self._resolution.valueChanged.connect(lambda *_: self._schedule_preview())
+        self._iso_value = QtWidgets.QDoubleSpinBox()
+        self._iso_value.setDecimals(2)
+        self._iso_value.setRange(0.05, 8.00)
+        self._iso_value.setSingleStep(0.05)
+        self._iso_value.setValue(DEFAULT_GAUSSIAN_ISOLEVEL)
+        apply_ascii_float_locale(self._iso_value, QtCore)
+        self._iso_value.valueChanged.connect(lambda *_: self._schedule_preview())
+        self._property = QtWidgets.QComboBox()
+        for key, label in NEAREST_PROPERTIES:
+            self._property.addItem(label, key)
+        self._opt_form = layout
+        self._quality_row = layout.rowCount()
+        layout.addRow("Quality", self._quality)
+        self._resolution_row = layout.rowCount()
+        layout.addRow("Resolution (Å)", self._resolution)
+        self._iso_row = layout.rowCount()
+        layout.addRow("Iso value", self._iso_value)
+        self._property_row = layout.rowCount()
+        layout.addRow("Property", self._property)
+        root.addWidget(opts.widget)
+        self._sync_algorithm_visibility()
+        self._sync_domain_visibility()
+        return (
+            (self._quality, _QUALITY_TIP),
+            (self._resolution, _RESOLUTION_TIP),
+            (self._iso_value, _ISO_TIP),
+            (self._property, _PROPERTY_TIP),
         )
 
     def _set_form_row_visible(self, layout, row, visible):
@@ -311,10 +445,10 @@ class FromSelectionFieldPage(PointTableBuilderPage):
 
     def _sync_algorithm_visibility(self):
         algo = self._current_algorithm()
-        self._set_form_row_visible(self._geom_form, self._quality_row, field_model_shows(algo, "quality"))
-        self._set_form_row_visible(self._geom_form, self._resolution_row, field_model_shows(algo, "resolution"))
-        self._set_form_row_visible(self._geom_form, self._iso_row, field_model_shows(algo, "iso_value"))
-        self._set_form_row_visible(self._geom_form, self._property_row, field_model_shows(algo, "property"))
+        self._set_form_row_visible(self._opt_form, self._quality_row, field_model_shows(algo, "quality"))
+        self._set_form_row_visible(self._opt_form, self._resolution_row, field_model_shows(algo, "resolution"))
+        self._set_form_row_visible(self._opt_form, self._iso_row, field_model_shows(algo, "iso_value"))
+        self._set_form_row_visible(self._opt_form, self._property_row, field_model_shows(algo, "property"))
         self._apply_iso_spin()
 
     def _apply_iso_spin(self):
@@ -375,7 +509,12 @@ class FromSelectionFieldPage(PointTableBuilderPage):
     def _live_preview_enabled(self) -> bool:
         if self._appearance is None:
             return False
-        return bool(self._appearance.live_preview())
+        return preview_is_on(self._appearance.preview_mode())
+
+    def _preview_mode(self) -> str:
+        if self._appearance is None:
+            return PREVIEW_OFF
+        return self._appearance.preview_mode()
 
     def _property_key(self) -> str:
         if self._property is None:
@@ -434,7 +573,8 @@ class FromSelectionFieldPage(PointTableBuilderPage):
             centers = self._domain_centers()
             self._sync_domain_schematic(domain, centers)
             aabb = domain.resolve_aabb(centers)
-            show_domain = self._live_preview_enabled()
+            mode = self._preview_mode()
+            show_domain = preview_is_on(mode)
             if not enabled_points(self._points):
                 self._preview.update(
                     [],
@@ -444,10 +584,11 @@ class FromSelectionFieldPage(PointTableBuilderPage):
                 )
                 return
             live_iso = (
-                self._live_preview_enabled()
+                preview_is_on(mode)
                 and field_supports_iso_preview(self._current_algorithm())
             )
-            if live_iso and not self._confirm_heavy_map():
+            preview_domain_spec = preview_domain(domain, mode) if live_iso else domain
+            if live_iso and not preview_is_simple(mode) and not self._confirm_heavy_map():
                 self._preview.update(
                     self._points,
                     _MARKER_RADIUS,
@@ -465,39 +606,46 @@ class FromSelectionFieldPage(PointTableBuilderPage):
                 colormap = None
                 colormap_spec = None
                 clims = None
-                if color_mode == COLOR_MODE_FIELD and self._appearance is not None:
+                if (
+                    not preview_is_simple(mode)
+                    and color_mode == COLOR_MODE_FIELD
+                    and self._appearance is not None
+                ):
                     color_field_id = self._appearance.color_field_id()
                     colormap = self._appearance.colormap_name()
                     colormap_spec = self._appearance.colormap_spec()
                     clims = self._appearance.custom_clims()
+                iso_kind = preview_iso_kind("IsoSurface", mode)
                 iso_key = iso_preview_key(
                     self._points,
                     algorithm=self._current_algorithm(),
-                    domain=domain,
+                    domain=preview_domain_spec,
                     quality=self._quality_value(),
                     resolution=self._resolution_value(),
                     property_key=self._property_key(),
                     iso_level=self._iso_value_amount(),
-                    color_mode=color_mode,
+                    color_mode=color_mode if not preview_is_simple(mode) else COLOR_MODE_UNIFORM,
                     color_field_id=color_field_id,
                     colormap=colormap,
                     colormap_spec=colormap_spec,
                     clims=clims,
                 )
+                iso_key = tuple(iso_key) + (mode, iso_kind) if iso_key is not None else None
                 built = build_field_iso_preview_visual(
                     self.cmd,
                     self._points,
                     algorithm=self._current_algorithm(),
-                    domain=domain,
+                    domain=preview_domain_spec,
                     quality=self._quality_value(),
                     resolution=self._resolution_value(),
                     property_key=self._property_key(),
                     iso_level=self._iso_value_amount(),
-                    color_mode=color_mode,
+                    color_mode=COLOR_MODE_UNIFORM if preview_is_simple(mode) else color_mode,
                     color_field_id=color_field_id,
                     colormap=colormap,
                     colormap_spec=colormap_spec,
                     clims=clims,
+                    kind=iso_kind,
                 )
                 if isinstance(built, tuple):
                     iso_visual, volume_visual = built
@@ -599,7 +747,7 @@ class FromSelectionFieldPage(PointTableBuilderPage):
             return
         if self._current_algorithm() == GEN_GAUSSIAN and not self._confirm_heavy_map():
             return
-        name = self._typed_name()
+        name = unused_object_name(self._typed_name(), self.cmd, keep=self._loaded_name)
         mode = self._builder_color_mode()
         color_field_id = None
         colormap = None
@@ -630,6 +778,10 @@ class FromSelectionFieldPage(PointTableBuilderPage):
                     "Could not build a field from these points.",
                 )
             return
+        mode = self._preview_mode()
+        stamp_preview_mode(field, mode)
+        if _visual is not None:
+            stamp_preview_mode(_visual, mode)
         self._preview.cleanup()
         if self._on_create is not None:
             self._on_create()
@@ -639,23 +791,12 @@ class FromSelectionFieldPage(PointTableBuilderPage):
             return
         if self._current_algorithm() == GEN_GAUSSIAN and not self._confirm_heavy_map():
             return
-        _, _, QtWidgets = qt_modules()
-        if QtWidgets is None:
-            return
-        name = self._typed_name()
-        path, _ = overlay_get_save_file_name(
-            self._page,
-            "Export field script",
-            "%s.py" % name,
-            "Python (*.py)",
-        )
-        if not path:
-            return
+        name = unused_object_name(self._typed_name(), self.cmd, keep=self._loaded_name)
         field = self._build_field(name)
         if field is None:
             return
         self._attach_color_to_geometry(field, name)
-        field.write(path)
+        export_objects(self._page, field, name, title="Export field")
 
     def _collection(self, name: str):
         return None

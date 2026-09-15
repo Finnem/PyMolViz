@@ -17,3 +17,11 @@ def apply_ascii_float_locale(spin, QtCore) -> None:
     setter = getattr(spin, "setGroupSeparatorShown", None)
     if callable(setter):
         setter(False)
+    configure_committed_spin(spin)
+
+
+def configure_committed_spin(spin) -> None:
+    """Emit valueChanged only after Enter, focus loss, or a step click."""
+    setter = getattr(spin, "setKeyboardTracking", None)
+    if callable(setter):
+        setter(False)

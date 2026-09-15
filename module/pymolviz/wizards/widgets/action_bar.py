@@ -8,13 +8,14 @@ from ..tooltips import apply_required_tooltips
 from .theme import (
     action_bar_css,
     apply_secondary_button_style,
+    compact_primary_button_css,
     mark_primary_button,
 )
 
 DONE_LABEL = "Done"
 UPDATE_IN_PYMOL_LABEL = "Update in PyMOL"
 MORE_LABEL = "More"
-EXPORT_SCRIPT_LABEL = "Export CGO script…"
+EXPORT_SCRIPT_LABEL = "Export…"
 
 DONE_TIP = (
     "Keep this visual in the PyMOL session under the name at the top. "
@@ -23,8 +24,10 @@ DONE_TIP = (
 UPDATE_IN_PYMOL_TIP = (
     "Apply the live preview to this named object in the PyMOL session."
 )
-MORE_TIP = "Secondary actions, including exporting a Python script."
-EXPORT_SCRIPT_TIP = "Write a Python script that rebuilds this visual."
+MORE_TIP = "Secondary actions, including exporting a PyMolViz pack or Python script."
+EXPORT_SCRIPT_TIP = (
+    "Write a PyMolViz pack (.pmv) or a Python script that rebuilds this visual."
+)
 
 
 def qt_modules_or_raise():
@@ -52,13 +55,16 @@ class BuilderActionBar:
         frame.setObjectName("pmvBuilderActionBar")
         frame.setStyleSheet(action_bar_css())
         layout = QtWidgets.QHBoxLayout(frame)
-        layout.setContentsMargins(8, 8, 8, 4)
+        layout.setContentsMargins(8, 4, 8, 2)
         layout.setSpacing(8)
 
         done = QtWidgets.QPushButton(DONE_LABEL)
         done.setDefault(True)
         done.setAutoDefault(True)
         mark_primary_button(done)
+        done.setObjectName("pmvCommit")
+        done.setStyleSheet(compact_primary_button_css("pmvCommit"))
+        done.setMaximumHeight(18)
         done.clicked.connect(lambda *_args: on_commit())
 
         more = QtWidgets.QPushButton(MORE_LABEL)

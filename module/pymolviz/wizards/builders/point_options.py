@@ -13,6 +13,7 @@ from .point_insertion import (
     SNAP_LABEL,
     ZOOM_LABEL,
 )
+from ..widgets.switch import make_switch
 
 # Re-export historical builder used only by older tests.
 from typing import Callable, NamedTuple, Optional
@@ -35,12 +36,12 @@ def build_point_option_controls(
     on_add: Callable[[], None],
     on_show_coords: Optional[Callable[[bool], None]] = None,
 ) -> PointOptionControls:
-    snap = QtWidgets.QCheckBox(SNAP_LABEL)
+    snap = make_switch(SNAP_LABEL, icon="snap")
     snap.setChecked(True)
-    hook = QtWidgets.QCheckBox(HOOK_LABEL)
+    hook = make_switch(HOOK_LABEL, icon="anchor")
     hook.setChecked(True)
-    zoom = QtWidgets.QCheckBox(ZOOM_LABEL)
-    show_coords = QtWidgets.QCheckBox(SHOW_COORDS_LABEL)
+    zoom = make_switch(ZOOM_LABEL, icon="zoom")
+    show_coords = make_switch(SHOW_COORDS_LABEL)
     show_coords.setChecked(False)
     if on_show_coords is not None:
         show_coords.toggled.connect(on_show_coords)

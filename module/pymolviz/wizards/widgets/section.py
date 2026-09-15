@@ -59,6 +59,7 @@ class Section:
         header_layout.addStretch(1)
         header_layout.addWidget(self.summary_label, 0)
         outer.addWidget(header)
+        self._header_layout = header_layout
 
         body = QtWidgets.QWidget()
         body.setObjectName("pmvSectionBody")
@@ -120,6 +121,14 @@ class Section:
         self._sync_chrome()
         if self._on_toggled is not None:
             self._on_toggled(self._expanded)
+
+    def set_title(self, text: str) -> None:
+        self._title_text = str(text)
+        self._sync_chrome()
+
+    def add_header_widget(self, widget) -> None:
+        """Place an action (for example + Add) on the section header bar."""
+        self._header_layout.addWidget(widget)
 
     def is_expanded(self) -> bool:
         return bool(self._expanded)

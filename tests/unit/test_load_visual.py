@@ -184,4 +184,44 @@ def test_box_and_arrow_options_include_clip_planes():
     assert opts["head_radius"] == pytest.approx(0.2)
 
 
+def test_lines_mesh_options_match_arrow_line_style():
+    from pymolviz.meshes.Arrows import Arrows
+    from pymolviz.util.line_style import LineStyle
+    from pymolviz.wizards.builders.load_visual import arrow_options, pairs_from_mesh
+
+    lines = Arrows(
+        starts=[FixedPoint((0.0, 0.0, 0.0))],
+        ends=[FixedPoint((1.0, 0.0, 0.0))],
+        color=[(0.2, 0.4, 0.8)],
+        shaft_radius=0.09,
+        quality=0,
+        line_style=LineStyle(ends="None"),
+        bypass_colormap=True,
+    )
+    coll = CGOCollection([lines], name="pmv_lines")
+    opts = arrow_options(coll)
+    assert opts["shaft_radius"] == pytest.approx(0.09)
+    assert opts["quality"] == 0
+    assert opts["line_style"].n_arrow_heads() == 0
+    assert opts["end_head"] == "None"
+    assert opts["start_head"] == "None"
+    assert opts["dash"] == "Solid"
+    pairs = pairs_from_mesh(coll)
+    assert len(pairs) == 1
+    assert pairs[0].width == pytest.approx(0.09)
+    assert pairs[0].style.ends == "None"
+    styled = Arrows(
+        starts=[FixedPoint((0.0, 0.0, 0.0))],
+        ends=[FixedPoint((1.0, 0.0, 0.0))],
+        color=[(1.0, 0.0, 0.0)],
+        shaft_radius=0.05,
+        line_style=LineStyle(ends="Circles"),
+        bypass_colormap=True,
+    )
+    caps = arrow_options(CGOCollection([styled], name="ends"))
+    assert isinstance(caps["line_style"], LineStyle)
+    assert caps["start_head"] == "Circles"
+    assert caps["end_head"] == "Circles"
+
+
 

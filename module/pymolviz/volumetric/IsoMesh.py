@@ -45,7 +45,12 @@ cmd.set("transparency", {self.transparency}, "{self.name}")
         map_name, _rebuilt = load_geometry_map(cmd, self.grid_data, getattr(self, "clip_aabb", None))
         if not map_name:
             return
-        cmd.isomesh(self.name, map_name, level=self.level, selection=self.selection, carve=self.carve)
+        mesh_kwargs = {"level": self.level}
+        if self.selection:
+            mesh_kwargs["selection"] = self.selection
+        if self.carve is not None:
+            mesh_kwargs["carve"] = self.carve
+        cmd.isomesh(self.name, map_name, **mesh_kwargs)
         if issubclass(type(self.color), ColorRamp):
             call_load(self.color, cmd)
             cmd.color(self.color.name, self.name)

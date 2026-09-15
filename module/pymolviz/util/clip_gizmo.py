@@ -123,6 +123,7 @@ def build_clip_gizmo_cgo(
     points=None,
     selected=False,
     draft=False,
+    axis_arrow=False,
 ):
     """Rectangle fill + edges, plus a 3D eye on the keep side."""
     origin = np.asarray(origin, dtype=float).reshape(3)
@@ -182,4 +183,31 @@ def build_clip_gizmo_cgo(
 
     gaze_end = center + n * min(0.15 * span, 1.2)
     _cylinder(obj, pupil, gaze_end, max(0.012, 0.035 * sclera_r), _GAZE)
+    if axis_arrow:
+        obj.extend(_axis_move_arrow(center, n, span, selected=selected))
+    return obj
+
+
+def _axis_move_arrow(center, normal, span, selected=False):
+    """One translation arrow along the keep-side normal (no XYZ rings)."""
+    n = _unit(normal)
+    length = min(max(1.6, 0.28 * float(span)), 7.0)
+    shaft_r = max(0.03, 0.012 * float(span))
+    head_len = min(max(0.45, 0.35 * length), 1.6)
+    head_r = shaft_r * 2.4
+    rgb = _PLANE_EDGE_SEL if selected else _PLANE_EDGE
+    base = center
+    tip = center + n * length
+    shaft_end = tip - n * head_len
+    obj = []
+    _cylinder(obj, base, shaft_end, shaft_r, rgb)
+    obj.extend([
+        "CONE",
+        float(shaft_end[0]), float(shaft_end[1]), float(shaft_end[2]),
+        float(tip[0]), float(tip[1]), float(tip[2]),
+        float(head_r), 0.02,
+        float(rgb[0]), float(rgb[1]), float(rgb[2]),
+        float(rgb[0]), float(rgb[1]), float(rgb[2]),
+        1.0, 1.0,
+    ])
     return obj

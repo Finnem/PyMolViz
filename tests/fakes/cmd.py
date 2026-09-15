@@ -485,6 +485,7 @@ class FakeCmd:
         self._drag_selection = str(selection)
         self._drag_mode = int(mode)
         self._drag_wizard = int(wizard)
+        self._drag_edit = int(edit)
         if int(edit):
             self._edit_mode = 1
             self.set("button_mode", 1)
@@ -528,7 +529,7 @@ class FakeCmd:
         ]
 
     def unpick(self) -> None:
-        pass
+        self.selections["pk1"] = []
 
     def group(self, name, members, action="add") -> None:
         pass

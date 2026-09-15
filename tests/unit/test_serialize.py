@@ -109,6 +109,50 @@ def test_arrows_independent_heads_roundtrip():
     got = restored[0].line_style
     assert got.start_head == "Circles"
     assert got.end_head == "Arrow"
+    child = data["objects"][0]
+    assert child["type"] == "Arrows"
+    assert child["quality"] == arrows.quality
+    assert child["shaft_radius"] == pytest.approx(arrows.shaft_radius)
+
+
+def test_legacy_lines_session_loads_as_arrows():
+    from pymolviz.meshes.Arrows import Arrows
+
+    payload = {
+        "type": "CGOCollection",
+        "id": "coll_legacy_lines",
+        "name": "pmv_lines",
+        "state": 1,
+        "transparency": 0.0,
+        "schema": SCHEMA_VERSION,
+        "objects": [{
+            "type": "Lines",
+            "id": "ln1",
+            "name": "lines",
+            "state": 1,
+            "transparency": 0.0,
+            "color": [[1.0, 0.0, 0.0]],
+            "starts": [FixedPoint((0.0, 0.0, 0.0)).to_dict()],
+            "ends": [FixedPoint((1.0, 0.0, 0.0)).to_dict()],
+            "linewidth": 0.09,
+            "render_as": "lines",
+            "render_ends": False,
+        }],
+    }
+    restored = displayable_from_dict(payload)
+    child = restored[0]
+    assert isinstance(child, Arrows)
+    assert type(child).__name__ == "Arrows"
+    assert child.quality == 0
+    assert child.shaft_radius == pytest.approx(0.09)
+    opts = child.options()
+    assert opts["start_head"] == "None"
+    assert opts["end_head"] == "None"
+    dumped = displayable_to_dict(restored)
+    assert dumped["objects"][0]["type"] == "Arrows"
+    style = dumped["objects"][0]["line_style"]
+    assert style["start_head"] == "None"
+    assert style["end_head"] == "None"
 
 
 def test_arrows_independent_margins_roundtrip():
@@ -394,6 +438,8 @@ def test_field_recipe_and_visual_refs_roundtrip():
         geometry_field_id=field.id,
         isovalues=[{"value": 0.5, "side": 1, "enabled": True}],
         clip_aabb=[[-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]],
+        selection="sele",
+        carve=2.0,
         obj_id="iso-ref",
     )
     doc = session_document([field, visual])
@@ -406,11 +452,15 @@ def test_field_recipe_and_visual_refs_roundtrip():
     assert vis["geometry_field_id"] == str(field.id)
     assert vis["isovalues"][0]["value"] == pytest.approx(0.5)
     assert vis["clip_aabb"] is not None
+    assert vis["selection"] == "sele"
+    assert vis["carve"] == pytest.approx(2.0)
     restored = session_from_document(doc)
     kinds = [type(obj).__name__ for obj in restored]
     assert kinds[0] == "Field"
     assert kinds[1] == "IsoSurface"
     assert restored[1].geometry_field_id == str(field.id)
+    assert restored[1].selection == "sele"
+    assert restored[1].carve == pytest.approx(2.0)
     session_mod.clear()
 
 

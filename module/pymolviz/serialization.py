@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import hashlib
 import json
 from typing import Any, Callable, Dict, Optional
@@ -17,6 +19,11 @@ from .points import (
 )
 
 SCHEMA_VERSION = 1
+ARRAY_REF_KEY = "$npy"
+
+_ARRAY_STORE: contextvars.ContextVar[Optional["ArrayStore"]] = contextvars.ContextVar(
+    "pmv_array_store", default=None,
+)
 
 _POINT_SOURCE_TYPES = {
     "FixedPoint": FixedPoint,
@@ -30,6 +37,61 @@ _INFLIGHT: Dict[str, Any] = {}
 
 class SerializationError(ValueError):
     pass
+
+
+class ArrayStore:
+    """Holds numpy arrays beside a JSON document (native ``.pmv`` packs)."""
+
+    def __init__(self) -> None:
+        self.arrays: Dict[str, np.ndarray] = {}
+
+    def put(self, values) -> dict:
+        arr = np.ascontiguousarray(values)
+        key = "a%d" % len(self.arrays)
+        self.arrays[key] = arr
+        return {
+            ARRAY_REF_KEY: key,
+            "dtype": str(arr.dtype),
+            "shape": [int(n) for n in arr.shape],
+        }
+
+    def get(self, key) -> np.ndarray:
+        try:
+            return self.arrays[str(key)]
+        except KeyError:
+            raise SerializationError("Missing native array %r" % key)
+
+    def add(self, key, values) -> None:
+        self.arrays[str(key)] = np.ascontiguousarray(values)
+
+
+def persist_numeric_array(values, *, dtype=None) -> Any:
+    """JSON list, or an array ref when a native ``ArrayStore`` is active."""
+    arr = np.asarray(values) if dtype is None else np.asarray(values, dtype=dtype)
+    store = _ARRAY_STORE.get()
+    if store is not None:
+        return store.put(arr)
+    flat = np.asarray(arr, dtype=float).reshape(-1)
+    return [float(v) for v in flat]
+
+
+def resolve_numeric_array(value, *, dtype=float) -> np.ndarray:
+    if isinstance(value, dict) and value.get(ARRAY_REF_KEY):
+        store = _ARRAY_STORE.get()
+        if store is None:
+            raise SerializationError("Native array ref with no array store")
+        return store.get(value[ARRAY_REF_KEY])
+    return np.asarray(value, dtype=dtype)
+
+
+@contextlib.contextmanager
+def using_array_store(store: Optional["ArrayStore"]):
+    """Bind ``store`` for the duration of a dump/load."""
+    token = _ARRAY_STORE.set(store)
+    try:
+        yield store
+    finally:
+        _ARRAY_STORE.reset(token)
 
 
 def as_plain(value: Any) -> Any:
@@ -128,13 +190,27 @@ def point_source_from_dict(data: dict) -> PointSource:
 
 
 def _base_fields(obj) -> dict:
-    return {
+    data = {
         "type": type(obj).__name__,
         "id": str(obj.id),
         "name": obj._name,
         "state": int(getattr(obj, "state", 1) or 1),
         "transparency": persist_transparency(obj),
     }
+    mode = getattr(obj, "preview_mode", None)
+    if mode:
+        from .wizards.builders.preview_mode import normalize_preview_mode
+
+        data["preview_mode"] = normalize_preview_mode(mode)
+    return data
+
+
+def _restore_preview_mode(obj, data: dict) -> None:
+    if obj is None or not isinstance(data, dict) or "preview_mode" not in data:
+        return
+    from .wizards.builders.preview_mode import stamp_preview_mode
+
+    stamp_preview_mode(obj, data.get("preview_mode"))
 
 
 def _common_mesh_fields(obj) -> dict:
@@ -312,45 +388,41 @@ def _line_endpoints(obj):
     return list(obj.starts), list(obj.ends)
 
 
-def _dump_lines(obj) -> dict:
-    starts, ends = _line_endpoints(obj)
-    data = _common_mesh_fields(obj)
-    data.update({
-        "starts": _sources_to_dict(starts),
-        "ends": _sources_to_dict(ends),
-        "linewidth": float(obj.linewidth),
-        "render_as": obj.render_as,
-        "render_ends": bool(getattr(obj, "render_ends", False)),
-    })
-    return data
-
-
 def _load_lines(cls, data: dict):
-    return cls(
-        starts=_sources_from_dict(data["starts"]),
-        ends=_sources_from_dict(data["ends"]),
-        color=data.get("color"),
-        name=data.get("name"),
-        obj_id=data.get("id"),
-        state=data.get("state", 1),
-        transparency=data.get("transparency", 0),
-        linewidth=data.get("linewidth", 0.05),
-        render_as=data.get("render_as", "cylinders"),
-        render_ends=data.get("render_ends", False),
-        bypass_colormap=True,
-    )
+    """Sessions that stored type ``Lines`` load as Arrows with line Options."""
+    from .meshes.Arrows import Arrows
+    from .util.line_style import LineStyle
+
+    data = dict(data)
+    if not data.get("line_style"):
+        ends = "Circles" if data.get("render_ends") else "None"
+        data["line_style"] = LineStyle(ends=ends).to_dict()
+    if data.get("quality") is None:
+        render_as = str(data.get("render_as", "cylinders") or "cylinders")
+        data["quality"] = 0 if render_as in ("line", "lines") else 3
+    if data.get("shaft_radius") is None:
+        data["shaft_radius"] = data.get("linewidth", 0.05)
+    data.setdefault("use_styled_cgo", True)
+    return _load_arrows(Arrows, data)
 
 
 def _dump_arrows(obj) -> dict:
-    data = _dump_lines(obj)
+    starts, ends = _line_endpoints(obj)
+    data = _common_mesh_fields(obj)
     data["type"] = "Arrows"
+    shaft = float(getattr(obj, "shaft_radius", obj.linewidth))
+    quality = int(getattr(obj, "quality", 3))
     data.update({
+        "starts": _sources_to_dict(starts),
+        "ends": _sources_to_dict(ends),
+        "shaft_radius": shaft,
+        "quality": quality,
         "head_length": float(getattr(obj, "head_length", 0.25)),
         "head_width": float(getattr(obj, "head_width", 1.618)),
-        "quality": int(getattr(obj, "quality", 3)),
-        "shaft_radius": float(getattr(obj, "shaft_radius", 0.045)),
-        "use_styled_cgo": bool(getattr(obj, "use_styled_cgo", False)),
+        "use_styled_cgo": bool(getattr(obj, "use_styled_cgo", True)),
         "line_style": _line_style_dict(obj),
+        "linewidth": shaft,
+        "render_as": "lines" if quality == 0 else "cylinders",
     })
     radii = getattr(obj, "pair_radii", None)
     if radii:
@@ -378,6 +450,11 @@ def _load_arrows(cls, data: dict):
     from .util.line_style import LineStyle
 
     style = LineStyle.from_dict(data.get("line_style") or {})
+    quality = data.get("quality")
+    if quality is None:
+        render_as = str(data.get("render_as", "cylinders") or "cylinders")
+        quality = 0 if render_as in ("line", "lines") else 3
+    shaft = data.get("shaft_radius", data.get("linewidth", 0.045))
     obj = cls(
         starts=_sources_from_dict(data["starts"]),
         ends=_sources_from_dict(data["ends"]),
@@ -386,14 +463,12 @@ def _load_arrows(cls, data: dict):
         obj_id=data.get("id"),
         state=data.get("state", 1),
         transparency=data.get("transparency", 0),
-        linewidth=data.get("linewidth", 0.05),
         head_length=data.get("head_length", 0.25),
         head_width=data.get("head_width", 1.618),
-        render_as=data.get("render_as", "cylinders"),
-        quality=data.get("quality", 3),
+        quality=int(quality),
         line_style=style,
-        shaft_radius=data.get("shaft_radius", 0.045),
-        use_styled_cgo=data.get("use_styled_cgo", False),
+        shaft_radius=shaft,
+        use_styled_cgo=data.get("use_styled_cgo", True),
         arrow_mask=data.get("arrow_mask"),
         head_radius=data.get("head_radius"),
         clip_planes=data.get("clip_planes"),
@@ -747,14 +822,19 @@ def _dump_field(obj) -> dict:
             GEN_NEAREST_COLOR,
         )
     )
-    if store_brick and grid is not None:
+    if grid is not None and (store_brick or _ARRAY_STORE.get() is not None):
         data["brick"] = {
-            "values": [float(v) for v in np.asarray(grid.values, dtype=float).reshape(-1)],
+            "values": persist_numeric_array(grid.values),
             "step_sizes": persist_vector(grid.step_sizes),
             "step_counts": [int(v) for v in np.asarray(grid.step_counts).reshape(-1)],
             "origin": persist_vector(grid.origin),
             "name": getattr(grid, "_name", None) or getattr(grid, "name", None),
         }
+    mode = getattr(obj, "preview_mode", None)
+    if mode:
+        from .wizards.builders.preview_mode import normalize_preview_mode
+
+        data["preview_mode"] = normalize_preview_mode(mode)
     return data
 
 
@@ -766,7 +846,7 @@ def _load_field(cls, data: dict):
     brick = data.get("brick")
     if brick:
         grid = GridData(
-            brick["values"],
+            resolve_numeric_array(brick["values"]),
             step_sizes=brick.get("step_sizes"),
             step_counts=brick.get("step_counts"),
             origin=brick.get("origin"),
@@ -840,6 +920,15 @@ def _dump_volumetric(obj) -> dict:
     aabb = getattr(obj, "clip_aabb", None)
     if aabb:
         data["clip_aabb"] = aabb
+    sel = getattr(obj, "selection", None)
+    if sel:
+        data["selection"] = str(sel)
+    carve = getattr(obj, "carve", None)
+    if carve is not None:
+        try:
+            data["carve"] = float(carve)
+        except (TypeError, ValueError):
+            pass
     stops = getattr(obj, "transfer_stops", None)
     if stops:
         data["transfer_stops"] = list(stops)
@@ -893,6 +982,8 @@ def _load_volumetric(cls, data: dict):
         geometry_field_id=geom_id,
         color_field_id=data.get("color_field_id"),
         clip_aabb=data.get("clip_aabb"),
+        selection=data.get("selection"),
+        carve=data.get("carve"),
     )
     if kind in ("Volume", "IsoVolume"):
         visual = cls(
@@ -933,7 +1024,6 @@ def _ensure_displayable_types() -> Dict[str, type]:
     from .meshes.CGOCollection import CGOCollection
     from .meshes.ConvexHull import ConvexHull
     from .meshes.Cylinder import Cylinder
-    from .meshes.Lines import Lines
     from .meshes.Mesh import Mesh
     from .meshes.Plane import Plane
     from .meshes.Points import Points
@@ -951,7 +1041,7 @@ def _ensure_displayable_types() -> Dict[str, type]:
         "Surface": Surface,
         "Cylinder": Cylinder,
         "CenteredBox": CenteredBox,
-        "Lines": Lines,
+        "Lines": Arrows,
         "Arrows": Arrows,
         "Points": Points,
         "Mesh": Mesh,
@@ -974,7 +1064,6 @@ _DUMPERS: Dict[str, Callable] = {
     "Surface": _dump_surface,
     "Cylinder": _dump_cylinder,
     "CenteredBox": _dump_box,
-    "Lines": _dump_lines,
     "Arrows": _dump_arrows,
     "Points": _dump_points,
     "Mesh": _dump_mesh,
@@ -1037,6 +1126,7 @@ def displayable_from_dict(data: dict):
     if cls is None or loader is None:
         raise SerializationError("Unknown Displayable type %r" % typ)
     obj = loader(cls, data)
+    _restore_preview_mode(obj, data)
     oid = getattr(obj, "id", None)
     if oid:
         _INFLIGHT[str(oid)] = obj
@@ -1075,7 +1165,7 @@ def session_document(objects) -> dict:
     return doc
 
 
-def session_from_document(data: dict) -> list:
+def session_from_document(data: dict, *, strict: bool = False) -> list:
     """Deserialize objects from a session document."""
     if not isinstance(data, dict):
         return []
@@ -1087,6 +1177,8 @@ def session_from_document(data: dict) -> list:
         try:
             out.append(displayable_from_dict(item))
         except Exception:
+            if strict:
+                raise
             continue
     return out
 

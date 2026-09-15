@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import logging
 import numpy as np
-from .Lines import Lines
+from .Arrows import Arrows
+from ..util.line_style import LineStyle
 
-class CGOMolecule(Lines):
+class CGOMolecule(Arrows):
     """ Class representing a molecule in CGO Format. Can be used to create a CGO object in PyMol.
       Representing Molecules as CGO objects is significantly faster than as complete molecules, however their usability is limited.
       They can be used for coloring, but not for selection or other operations.
@@ -30,7 +31,20 @@ class CGOMolecule(Lines):
 
         self.scale(scale, scale_center)
 
-        super().__init__(self.coordinates, color = colors, name = name, state = 1, transparency = 0, colormap = None, linewidth=linewidth, render_as=render_as, render_ends = render_ends, *args, **kwargs)
+        super().__init__(
+            self.coordinates,
+            color=colors,
+            name=name,
+            state=1,
+            transparency=0,
+            colormap="RdYlBu_r",
+            shaft_radius=float(linewidth),
+            quality=0 if str(render_as).startswith("line") else 3,
+            line_style=LineStyle(ends="Circles" if render_ends else "None"),
+            bypass_colormap=True,
+            *args,
+            **kwargs,
+        )
 
 
     def draw_bond(self, bind_index, bond_order, plane_normal = None):

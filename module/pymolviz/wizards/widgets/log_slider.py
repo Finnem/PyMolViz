@@ -88,8 +88,13 @@ class LogSegmentRadiusWidget:
         return self._widget.toolTip()
 
     def connect_changed(self, callback):
-        self._slider.valueChanged.connect(lambda *_: callback())
-        self._spin.valueChanged.connect(lambda *_: callback())
+        self._slider.sliderReleased.connect(lambda *_: callback())
+        self._spin.valueChanged.connect(lambda *_: self._emit_if_committed(callback))
+
+    def _emit_if_committed(self, callback):
+        if self._blocking:
+            return
+        callback()
 
     def _on_slider(self, pos):
         if self._blocking:

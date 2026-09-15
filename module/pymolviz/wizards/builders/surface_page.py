@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List
+from typing import List, Sequence
 
 import numpy as np
 
@@ -26,11 +26,13 @@ from ..widgets.ascii_locale import apply_ascii_float_locale
 from ..widgets.breadcrumb import CRUMB_SURFACE
 from ..widgets.log_slider import LogSegmentRadiusWidget
 from ..widgets.section import make_section
+from ..widgets.switch import make_switch
 from .anchor_table import POINT_COLOR_COL, SURFACE_RADIUS_COL, SURFACE_RADIUS_TIP, surface_point_columns
 from .load_visual import surface_options
 from .point_table_page import PointTableBuilderPage
 from .points import VisualPoint, commit_point_anchors, enabled_points
 from .preview import SurfacePreview, retarget_surface_collection
+from .preview_mode import preview_is_on, preview_is_simple, preview_mesh_quality, preview_wireframe
 from .runtime_helper import build_surface_collection
 from .surface_params import (
     SurfaceParamSnapshots,
@@ -95,7 +97,6 @@ class SurfaceBuilderPage(PointTableBuilderPage):
         if self._appearance is not None:
             self._appearance.set_quality(DEFAULT_QUALITY)
             self._appearance.set_wireframe(False)
-            self._appearance.set_specular(True)
         self._param_snapshots = SurfaceParamSnapshots()
         self._heavy_ok = None
         self._heavy_denied = None
@@ -119,16 +120,47 @@ class SurfaceBuilderPage(PointTableBuilderPage):
         if self._appearance is not None:
             self._appearance.set_quality(int(opts["quality"]))
             self._appearance.set_wireframe(opts["wireframe"])
-            self._appearance.set_specular(opts.get("specular", True))
 
     def _after_load(self):
         self._schedule_preview()
 
     def _configure_table(self, QtCore, QtGui, QtWidgets):
-        super()._configure_table(QtCore, QtGui, QtWidgets)
-        radius_header = self._table.horizontalHeaderItem(SURFACE_RADIUS_COL)
-        if radius_header is not None:
-            radius_header.setToolTip(SURFACE_RADIUS_TIP)
+        return
+
+    def point_editor_extras(self, index: int, pt: VisualPoint) -> Sequence:
+        QtCore, _, QtWidgets = qt_modules()
+        box = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(box)
+        layout.setContentsMargins(0, 4, 0, 0)
+        layout.setSpacing(4)
+        caption = QtWidgets.QLabel("Atom radius (Å)")
+        spin = QtWidgets.QDoubleSpinBox()
+        spin.setDecimals(2)
+        spin.setRange(0.0, 100.0)
+        spin.setSpecialValueText("inherit")
+        inherited = self._inherited_radius(pt)
+        if pt.radius is None:
+            spin.setValue(0.0)
+            spin.setToolTip(SURFACE_RADIUS_TIP + " Current inherit: %.2f Å." % inherited)
+        else:
+            spin.setValue(float(pt.radius))
+            spin.setToolTip(SURFACE_RADIUS_TIP)
+        apply_ascii_float_locale(spin, QtCore)
+        spin.valueChanged.connect(
+            lambda value, i=index: self._on_point_radius_changed(i, value)
+        )
+        layout.addWidget(caption)
+        layout.addWidget(spin)
+        return (box,)
+
+    def _on_point_radius_changed(self, index: int, value: float):
+        if index < 0 or index >= len(self._points):
+            return
+        if float(value) <= 0.0:
+            self._points[index] = self._points[index].with_radius(None)
+        else:
+            self._points[index] = self._points[index].with_radius(float(value))
+        self._schedule_preview()
 
     def _mount_geometry(self, root, QtCore, QtGui, QtWidgets):
         geom = make_section("Geometry", form=True)
@@ -144,7 +176,7 @@ class SurfaceBuilderPage(PointTableBuilderPage):
         self._radius_widget.connect_changed(self._on_radius_policy_changed)
         self._probe_widget = LogSegmentRadiusWidget(initial=DEFAULT_PROBE_RADIUS)
         self._probe_widget.connect_changed(self._schedule_preview)
-        self._use_vdw = QtWidgets.QCheckBox("Scale by VDW")
+        self._use_vdw = make_switch("Scale by VDW")
         self._use_vdw.setChecked(DEFAULT_RADIUS_MODE == "vdw")
         self._vdw_scale = QtWidgets.QDoubleSpinBox()
         self._vdw_scale.setDecimals(2)
@@ -293,7 +325,7 @@ class SurfaceBuilderPage(PointTableBuilderPage):
         self._on_radius_policy_changed()
 
     def _on_radius_policy_changed(self):
-        if self._table is not None:
+        if self._list is not None or self._table is not None:
             self._sync_table(preview=True)
         else:
             self._schedule_preview()
@@ -347,12 +379,17 @@ class SurfaceBuilderPage(PointTableBuilderPage):
         try:
             if not enabled_points(self._points):
                 self._preview.cleanup()
-            elif not self._confirm_heavy_surface():
+            elif not preview_is_on(self._current_preview_mode()):
+                self._preview.clear_meshes()
+            elif not preview_is_simple(self._current_preview_mode()) and not self._confirm_heavy_surface():
                 pass
             else:
                 radius, probe, algorithm, quality, wireframe, _use_vdw, vdw_scale = self._params()
+                mode = self._current_preview_mode()
                 self._preview.update(
-                    self._points, radius, probe, algorithm, quality, wireframe,
+                    self._points, radius, probe, algorithm,
+                    preview_mesh_quality(quality, mode),
+                    preview_wireframe(wireframe, mode),
                     radius_mode=self._radius_mode(), vdw_scale=vdw_scale,
                     clip_planes=self._clip_planes(),
                     gizmo_planes=self._modifiers.clip.planes if self._modifiers else [],

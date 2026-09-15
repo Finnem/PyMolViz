@@ -30,14 +30,25 @@ EMPTY_ADD_STYLE = (
 )
 
 
-def list_needs_sticky_add(n_items, viewport_height, row_height, add_height=None):
+def _occupied_height(n_items, row_height, content_height=None):
+    if content_height is not None:
+        return max(int(content_height), 0)
+    return max(int(n_items), 0) * max(int(row_height), 0)
+
+
+def list_needs_sticky_add(
+    n_items, viewport_height, row_height, add_height=None, content_height=None,
+):
     """True when items plus an Add control do not fit in the viewport."""
-    if viewport_height <= 0 or row_height <= 0:
+    if viewport_height <= 0:
         return False
     extra = int(row_height if add_height is None else add_height)
     if extra <= 0:
-        extra = int(row_height)
-    return int(n_items) * int(row_height) + extra > int(viewport_height)
+        extra = max(int(row_height), 1)
+    occupied = _occupied_height(n_items, row_height, content_height)
+    if occupied <= 0 and content_height is None and int(row_height) <= 0:
+        return False
+    return occupied + extra > int(viewport_height)
 
 
 def sticky_add_overlay_rect(
@@ -52,12 +63,16 @@ def sticky_add_overlay_rect(
     header_height=0,
     h_scrollbar_height=0,
     inset=6,
+    content_height=None,
 ):
     """Add-button rect in list coordinates, always inside the list widget.
 
     Returns ``(x, y, w, h, bottom_margin)``. ``bottom_margin`` is space to
     reserve under the viewport so rows do not sit under the button — 0 when
     the list is too short to spare that space.
+
+    ``content_height`` is the true stacked height of rows (expanded details
+    included). When omitted, ``n_items * row_height`` is used.
     """
     table_w = max(int(table_width), 0)
     table_h = max(int(table_height), 0)
@@ -67,6 +82,7 @@ def sticky_add_overlay_rect(
     header_h = max(int(header_height), 0)
     n_items = max(int(n_items), 0)
     row_h = max(int(row_height), 0)
+    occupied = _occupied_height(n_items, row_h, content_height)
     usable_h = max(table_h - sb_h, 0)
     if table_w <= 0 or usable_h <= 0:
         return (0, 0, max(table_w, 1), 1, 0)
@@ -77,8 +93,9 @@ def sticky_add_overlay_rect(
     max_y = max(usable_h - h, 0)
     pin = list_needs_sticky_add(
         n_items, int(viewport_height), row_h, add_height=add_h,
+        content_height=occupied if content_height is not None else None,
     )
-    inline_y = int(viewport_y) + n_items * row_h
+    inline_y = int(viewport_y) + occupied
     if pin or inline_y > max_y:
         y = max_y
         max_margin = max(usable_h - header_h - 1, 0)
@@ -106,12 +123,14 @@ class StickyAddOverlay:
         context: str = "StickyAddOverlay",
         extra=None,
         empty_hint: Optional[str] = None,
+        content_height: Optional[Callable[[], int]] = None,
     ):
         QtCore, _, QtWidgets = qt_modules()
         self._target = target
         self._count = count
         self._row_height_fn = row_height
         self._add_height_fn = add_height
+        self._content_height_fn = content_height
         self._syncing = False
         self._filter = None
         self._empty_hint = str(empty_hint) if empty_hint else ""
@@ -327,6 +346,12 @@ class StickyAddOverlay:
         viewport = target.viewport() if callable(getattr(target, "viewport", None)) else target
         geo = viewport.geometry()
         n_items = max(int(self._count()), 0)
+        content_h = None
+        if self._content_height_fn is not None:
+            try:
+                content_h = int(self._content_height_fn())
+            except Exception:
+                content_h = None
         x, y, w, h, bottom = sticky_add_overlay_rect(
             target.width(),
             target.height(),
@@ -338,6 +363,7 @@ class StickyAddOverlay:
             self._add_height(),
             header_height=self._header_height(),
             h_scrollbar_height=self._h_scrollbar_height(),
+            content_height=content_h,
         )
         try:
             target.setViewportMargins(0, 0, 0, bottom)

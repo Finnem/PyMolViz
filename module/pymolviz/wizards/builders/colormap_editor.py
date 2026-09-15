@@ -33,6 +33,7 @@ from ...util.colormap_spec import (
 from ...util.field_sample import DEFAULT_SURFACE_COLORMAP, FIELD_COLORMAPS
 from ..pick import qt_modules, qt_widget_alive
 from ..widgets.ascii_locale import apply_ascii_float_locale
+from ..widgets.switch import make_switch
 from ..widgets.theme import apply_shrinking_combo, row_icon_css
 
 RANGE_AUTO_LABEL = "Auto"
@@ -322,6 +323,8 @@ class ColormapEditor:
     def custom_clims(self):
         if not qt_widget_alive(self._lo) or not qt_widget_alive(self._hi):
             return None
+        if self.range_mode() not in (RANGE_MODE_CUSTOM, RANGE_MODE_SYMMETRIC):
+            return None
         return (float(self._lo.value()), float(self._hi.value()))
 
     def resolved_clims(self, values=None):
@@ -404,7 +407,23 @@ class ColormapEditor:
     def set_mapping(self, mapping: FieldColorMapping) -> None:
         self._norm_extra = mapping.normalization
         norm = mapping.normalization
-        clims = (norm.vmin, norm.vmax) if norm.vmin is not None and norm.vmax is not None else None
+        clims = None
+        if norm.mode in (RANGE_MODE_CUSTOM, RANGE_MODE_SYMMETRIC):
+            if norm.vmin is not None and norm.vmax is not None:
+                clims = (float(norm.vmin), float(norm.vmax))
+        else:
+            values = None
+            fid = self._field_id()
+            if fid:
+                try:
+                    from ...util.colormap_spec import field_values_for_stats
+
+                    values = field_values_for_stats(fid)
+                except Exception:
+                    values = None
+            resolved = resolve_limits(norm, values)
+            if resolved is not None:
+                clims = (float(resolved[0]), float(resolved[1]))
         self.set_colormap(
             mapping.colormap.preset or self._default_name,
             range_mode=norm.mode,
@@ -433,10 +452,11 @@ class ColormapEditor:
         return tuple(tips)
 
     def _field_id(self):
-        if self._field_id_provider is None:
+        provider = getattr(self, "_field_id_provider", None)
+        if provider is None:
             return None
         try:
-            return self._field_id_provider()
+            return provider()
         except Exception:
             return None
 
@@ -444,6 +464,13 @@ class ColormapEditor:
         if self._picker is None:
             return self._default_name
         return self._picker.current_name()
+
+    def _overlay_parent(self):
+        widget = self._widget
+        if not qt_widget_alive(widget):
+            return None
+        window = widget.window() if hasattr(widget, "window") else widget
+        return window if qt_widget_alive(window) else widget
 
     def _load_named_preset(self, name: str) -> None:
         if self._syncing:
@@ -641,7 +668,7 @@ class ColormapEditor:
         self._range.addItem(RANGE_SYMMETRIC_LABEL, RANGE_MODE_SYMMETRIC)
         self._range.addItem(RANGE_PERCENTILE_LABEL, RANGE_MODE_PERCENTILE)
         self._range.currentIndexChanged.connect(lambda *_: self._emit())
-        self._reverse = QtWidgets.QCheckBox("Reverse")
+        self._reverse = make_switch("Reverse")
         self._reverse.setObjectName("pmvColormapReverse")
         self._reverse.toggled.connect(lambda *_: self._on_reverse())
         range_layout.addWidget(self._range, stretch=1)

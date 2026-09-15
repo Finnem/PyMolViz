@@ -762,3 +762,70 @@ def pick_atom(view, coords, widget, x, y, viewport, fov, ortho, ids=None, max_px
         return None
     best = (float(pts[best_index, 0]), float(pts[best_index, 1]), float(pts[best_index, 2]))
     return best, atom_sele(ids, best_index)
+
+
+def _pick_atom_rows(cmd_):
+    """``(model, id, x, y, z)`` for visible atoms. Empty if iterate is unavailable."""
+    expressions = (
+        "rows.append((model, ID, x, y, z))",
+        "rows.append((model, index, x, y, z))",
+    )
+    for expr in expressions:
+        rows = []
+        try:
+            iterate_state = getattr(cmd_, "iterate_state", None)
+            if callable(iterate_state):
+                iterate_state(0, PICK_SELE, expr, space={"rows": rows})
+            elif callable(getattr(cmd_, "iterate", None)):
+                cmd_.iterate(PICK_SELE, expr, space={"rows": rows})
+        except Exception:
+            rows = []
+        if rows:
+            return rows
+    return []
+
+
+def record_viewer_atom_click(cmd_, widget, x, y) -> None:
+    """Remember the atom under a viewer click. Does not consume the click."""
+    from .last_click import parse_atom_sele, set_last_clicked_atom
+
+    if cmd_ is None or widget is None:
+        set_last_clicked_atom(None)
+        return
+    try:
+        view = tuple(cmd_.get_view())
+    except Exception:
+        set_last_clicked_atom(None)
+        return
+    try:
+        viewport = tuple(float(v) for v in cmd_.get_viewport())
+    except Exception:
+        viewport = (float(widget.width()), float(widget.height()))
+    try:
+        fov = abs(float(cmd_.get("field_of_view")))
+    except Exception:
+        fov = 20.0
+    try:
+        ortho = int(float(cmd_.get("orthoscopic")))
+    except Exception:
+        ortho = 1 if len(view) > 17 and float(view[17]) > 0.5 else 0
+    rows = _pick_atom_rows(cmd_)
+    if not rows:
+        set_last_clicked_atom(None)
+        return
+    try:
+        coords = [[float(row[2]), float(row[3]), float(row[4])] for row in rows]
+        ids = [(row[0], int(row[1])) for row in rows]
+    except Exception:
+        set_last_clicked_atom(None)
+        return
+    target = pick_atom(view, coords, widget, x, y, viewport, fov, ortho, ids=ids)
+    if target is None:
+        set_last_clicked_atom(None)
+        return
+    parsed = parse_atom_sele(target[1])
+    if parsed is None:
+        set_last_clicked_atom(None)
+        return
+    set_last_clicked_atom(parsed[0], parsed[1])
+

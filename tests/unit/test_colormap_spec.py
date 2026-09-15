@@ -34,6 +34,23 @@ from pymolviz.util.colormap_spec import (
 )
 
 
+def test_stop_neighbor_limits_allow_endpoint_inset():
+    from pymolviz.wizards.builders.colormap_dialog import (
+        _clamp_stop_position,
+        _stop_neighbor_limits,
+    )
+
+    stops = (
+        ColorStop(0.0, (0.0, 0.0, 1.0, 1.0)),
+        ColorStop(0.5, (0.0, 1.0, 0.0, 1.0)),
+        ColorStop(1.0, (1.0, 0.0, 0.0, 1.0)),
+    )
+    assert _stop_neighbor_limits(0, stops) == (0.0, pytest.approx(0.496))
+    assert _stop_neighbor_limits(2, stops) == (pytest.approx(0.504), 1.0)
+    assert _clamp_stop_position(0, stops, 0.25) == pytest.approx(0.25)
+    assert _clamp_stop_position(2, stops, 0.8) == pytest.approx(0.8)
+
+
 def test_moving_endpoint_stop_does_not_spawn_sentinels():
     defn = ColormapDefinition(
         stops=(
@@ -303,6 +320,69 @@ def test_create_and_delete_custom_preset(tmp_path, monkeypatch):
     assert delete_custom_preset(name) is True
     assert custom_colormap_rows() == []
     assert delete_custom_preset(name) is False
+
+
+def test_similar_custom_colormap_detects_near_duplicates(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    from dataclasses import replace
+
+    from pymolviz.util.colormap_spec import (
+        ColorStop,
+        closest_similar_custom_colormap,
+        colormap_similarity,
+        definition_from_preset,
+        save_custom_preset,
+    )
+
+    base = definition_from_preset("viridis")
+    save_custom_preset("Custom 1", base)
+    same = colormap_similarity(base, definition_from_preset("viridis"))
+    assert same.similar is True
+    assert same.color_max < 0.02
+    assert same.alpha_max < 0.02
+    match = closest_similar_custom_colormap(base)
+    assert match is not None
+    assert match.name == "Custom 1"
+    assert closest_similar_custom_colormap(base, exclude_name="Custom 1") is None
+
+    other = definition_from_preset("plasma")
+    far = colormap_similarity(base, other)
+    assert far.similar is False
+    assert closest_similar_custom_colormap(other) is None
+
+    tweaked_stops = []
+    for stop in base.stops:
+        rgba = list(stop.rgba)
+        rgba[3] = max(0.0, rgba[3] - 0.04)
+        tweaked_stops.append(ColorStop(stop.position, tuple(rgba)))
+    near = replace(base, stops=tuple(tweaked_stops), customized=True)
+    close = colormap_similarity(near, base)
+    assert close.similar is True
+    assert any(row.highlight and row.alpha_delta > 0 for row in close.stop_diffs)
+
+
+def test_create_custom_preset_from_default_matches_saved(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    from pymolviz.util.colormap_spec import closest_similar_custom_colormap, create_custom_preset, definition_from_preset
+    from pymolviz.util.field_sample import DEFAULT_SURFACE_COLORMAP
+
+    create_custom_preset(definition_from_preset(DEFAULT_SURFACE_COLORMAP))
+    match = closest_similar_custom_colormap(definition_from_preset(DEFAULT_SURFACE_COLORMAP))
+    assert match is not None
+    assert match.name == "Custom 1"
+
+
+def test_maybe_reuse_leaves_named_custom_alone(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    from pymolviz.util.colormap_spec import custom_preset_definition, definition_from_preset, save_custom_preset
+    from pymolviz.wizards.builders.colormap_similar import maybe_reuse_similar_colormap
+
+    save_custom_preset("Custom 1", definition_from_preset("viridis"))
+    defn = custom_preset_definition("Custom 1")
+    applied = maybe_reuse_similar_colormap(None, defn, "Custom 1")
+    assert applied.cancelled is False
+    assert applied.name == "Custom 1"
+    assert applied.definition is defn
 
 
 def test_volume_colormap_arg_resolves_saved_custom_preset(tmp_path, monkeypatch):

@@ -27,20 +27,22 @@ def test_from_selection_field_preview_tooltips_and_defaults():
         _ISO_TIP,
         _LIVE_PREVIEW_TIP,
     )
+    from pymolviz.wizards.builders.preview_mode import PREVIEW_SIMPLE_TIP, PREVIEW_SIMPLE_LABEL
 
     iso = _FakeWidget(class_name="QDoubleSpinBox")
-    live = _FakeWidget(class_name="QCheckBox")
+    live = _FakeWidget(class_name="QRadioButton")
     missing = apply_required_tooltips(
         [
             (iso, _ISO_TIP, "Iso value"),
-            (live, _LIVE_PREVIEW_TIP, "Live preview"),
+            (live, PREVIEW_SIMPLE_TIP, PREVIEW_SIMPLE_LABEL),
         ],
         context=FromSelectionFieldPage.CONTEXT,
     )
     assert missing == []
-    assert "appearance" in live.toolTip().lower() or "isosurface" in live.toolTip().lower()
+    assert "coarser" in live.toolTip().lower() or "isomesh" in live.toolTip().lower()
     assert "normalized" in iso.toolTip().lower()
     assert DEFAULT_GAUSSIAN_ISOLEVEL == pytest.approx(1.0)
+    assert "markers" in _LIVE_PREVIEW_TIP.lower()
 
 
 @pytest.mark.qt
@@ -66,7 +68,6 @@ def test_from_selection_page_shows_color_mode_radios():
     cfg = FromSelectionFieldPage._appearance_config(None)
     assert cfg.get("show_wireframe") is False
     assert cfg.get("show_quality") is False
-    assert cfg.get("show_specular") is False
     assert cfg.get("show_per_point") is False
     assert cfg.get("show_live_preview") is True
 
@@ -89,44 +90,44 @@ def test_from_selection_live_preview_shown_for_non_gaussian():
     from pymolviz.wizards.builders.field_params import field_model_shows
     from pymolviz.wizards.builders.from_selection_page import (
         FromSelectionFieldPage,
-        _LIVE_PREVIEW_TIP,
     )
+    from pymolviz.wizards.builders.preview_mode import PREVIEW_SIMPLE_TIP, PREVIEW_SIMPLE_LABEL
 
     for algo in (GEN_DISTANCE, GEN_SIGNED_VDW, GEN_NEAREST_PROP):
         assert field_model_shows(algo, "live_preview") is True
         assert field_model_shows(algo, "iso_value") is True
-    live = _FakeWidget(class_name="QCheckBox")
+    live = _FakeWidget(class_name="QRadioButton")
     missing = apply_required_tooltips(
-        [(live, _LIVE_PREVIEW_TIP, "Live preview")],
+        [(live, PREVIEW_SIMPLE_TIP, PREVIEW_SIMPLE_LABEL)],
         context=FromSelectionFieldPage.CONTEXT,
     )
     assert missing == []
-    assert "isosurface" in live.toolTip().lower()
-    assert "appearance" in live.toolTip().lower()
+    assert "isomesh" in live.toolTip().lower() or "coarser" in live.toolTip().lower()
 
 
 @pytest.mark.qt
 def test_field_visual_page_live_preview_tooltip():
-    from pymolviz.wizards.builders.field_page import FieldVisualBuilderPage, _LIVE_PREVIEW_TIP
+    from pymolviz.wizards.builders.field_page import FieldVisualBuilderPage
+    from pymolviz.wizards.builders.preview_mode import PREVIEW_SIMPLE_TIP, PREVIEW_SIMPLE_LABEL
 
-    live = _FakeWidget(class_name="QCheckBox")
+    live = _FakeWidget(class_name="QRadioButton")
     missing = apply_required_tooltips(
-        [(live, _LIVE_PREVIEW_TIP, "Live preview")],
+        [(live, PREVIEW_SIMPLE_TIP, PREVIEW_SIMPLE_LABEL)],
         context=FieldVisualBuilderPage.CONTEXT,
     )
     assert missing == []
-    assert "preview" in live.toolTip().lower()
+    assert "isomesh" in live.toolTip().lower()
     assert "iso-proxy" not in live.toolTip().lower()
-    assert "volume" in live.toolTip().lower() or "isosurface" in live.toolTip().lower()
-    from pymolviz.wizards.builders.field_page import _CLIP_CROP_TIP
+    from pymolviz.wizards.builders.field_page import FieldVisualBuilderPage, _CLIP_CROP_TIP, _CLIP_TIP
 
     clip = _FakeWidget(class_name="QCheckBox")
     missing = apply_required_tooltips(
-        [(clip, _CLIP_CROP_TIP, "Clip / Crop")],
+        [(clip, _CLIP_CROP_TIP, "Clip")],
         context=FieldVisualBuilderPage.CONTEXT,
     )
     assert missing == []
     assert "axis" in clip.toolTip().lower()
+    assert "axis" in _CLIP_TIP.lower()
 
 
 @pytest.mark.qt
@@ -214,9 +215,13 @@ def test_from_selection_appearance_has_live_preview():
 
     geom = inspect.getsource(FromSelectionFieldPage._mount_geometry)
     assert "Live preview" not in geom
+    assert 'make_section("Geometry"' in geom
+    opts = inspect.getsource(FromSelectionFieldPage._mount_options)
+    assert 'make_section("Options"' in opts
+    assert "Iso value" in opts
     appear = inspect.getsource(AppearanceSection._build)
-    assert "Live preview" in appear
-    assert "pmvLivePreview" in appear
+    assert "PreviewModeRadios" in appear
+    assert "pmvPreviewMode" in appear or "PreviewModeRadios" in appear
     cfg = FromSelectionFieldPage._appearance_config(None)
     assert cfg.get("show_live_preview") is True
 
@@ -232,11 +237,14 @@ def test_field_visual_volume_has_no_isosurface_section_and_has_colormap_editor()
     src = inspect.getsource(FieldVisualBuilderPage._build)
     assert 'make_section("Appearance")' in src
     assert "ColormapEditor" in src
-    appear_chunk = src.split('iso = make_section("IsoSurface")')[0]
-    iso_chunk = src.split('iso = make_section("IsoSurface")')[1].split("clip = make_section")[0]
-    assert "Live preview" in appear_chunk
+    appear_chunk = src.split('iso = make_section("Options")')[0]
+    iso_chunk = src.split('iso = make_section("Options")')[1].split("clip = make_section")[0]
+    assert "PreviewModeRadios" in appear_chunk
+    assert "Color mode" in appear_chunk
     assert "self._live_preview" not in iso_chunk
     assert "self._level" in iso_chunk
+    assert 'make_section("Geometry"' in src
+    assert 'make_section("Modifiers"' in src
     sync = inspect.getsource(FieldVisualBuilderPage._sync_form)
     assert "self._iso_section.widget.setVisible(iso)" in sync
 
@@ -516,14 +524,234 @@ def test_colormap_menu_lists_and_adds_custom_maps(tmp_path, monkeypatch):
     assert qt_widget_alive(win._window)
     table = win._table
     assert table is not None
-    assert table.rowCount() == 1
-    assert table.item(0, 0).text() == "Custom 1"
+    assert table.rowCount() == 2
+    assert table.item(1, 1).text() == "Custom 1"
     names_before = [row["name"] for row in custom_colormap_rows()]
     win._add_colormap()
+    assert [row["name"] for row in custom_colormap_rows()] == names_before
+    editor = win._editor
+    assert editor is not None
+    editor._apply()
     names_after = [row["name"] for row in custom_colormap_rows()]
     assert len(names_after) == len(names_before) + 1
-    assert table.rowCount() == 2
-    editor = win._editor
-    if editor is not None and qt_widget_alive(editor.widget):
-        editor.widget.close()
+    assert win._table is not None
+    assert win._table.rowCount() == 3
+    monkeypatch.setattr(
+        "pymolviz.wizards.colormaps.session_colormap_users",
+        lambda: {"Custom 1": [{"name": "iso", "type": "IsoSurface"}]},
+    )
+    win._refresh_table()
+    kinds = [row.get("kind") for row in win._row_meta]
+    assert "header" in kinds
+    assert win._row_meta[0]["name"] == "In this session"
+    toggle = table.cellWidget(1, 0).findChild(QtWidgets.QPushButton, "pmvColormapUsersToggle")
+    assert toggle is not None
+    assert toggle.isEnabled()
+    win._toggle_users("Custom 1")
+    assert any(row.get("kind") == "user" for row in win._row_meta)
     win.close()
+
+
+@pytest.mark.qt
+def test_similar_colormap_dialog_highlights_stop_diffs(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    from dataclasses import replace
+
+    from pymolviz.util.colormap_spec import (
+        ColorStop,
+        closest_similar_custom_colormap,
+        definition_from_preset,
+        save_custom_preset,
+    )
+    from pymolviz.wizards.builders.colormap_similar import build_similar_colormap_dialog
+    from pymolviz.wizards.pick import qt_modules
+
+    _, _, QtWidgets = qt_modules()
+    if QtWidgets is None or not hasattr(QtWidgets, "QDialog"):
+        pytest.skip("Qt widgets unavailable")
+    try:
+        app = QtWidgets.QApplication.instance()
+        if app is None:
+            app = QtWidgets.QApplication([])
+    except Exception:
+        pytest.skip("QApplication not usable")
+    base = definition_from_preset("viridis")
+    save_custom_preset("Custom 1", base)
+    stops = []
+    for stop in base.stops:
+        rgba = list(stop.rgba)
+        rgba[3] = max(0.0, rgba[3] - 0.04)
+        stops.append(ColorStop(stop.position, tuple(rgba)))
+    new = replace(base, stops=tuple(stops), customized=True)
+    match = closest_similar_custom_colormap(new)
+    assert match is not None
+    dialog = build_similar_colormap_dialog(None, new, match)
+    assert dialog is not None
+    table = dialog.findChild(QtWidgets.QTableWidget, "pmvSimilarColormapStops")
+    assert table is not None
+    assert table.rowCount() == len(match.similarity.stop_diffs)
+    assert dialog.findChild(QtWidgets.QPushButton, "pmvSimilarUseExisting") is not None
+    assert dialog.findChild(QtWidgets.QLabel, "pmvSimilarColormapDiff") is not None
+    dialog.close()
+
+
+@pytest.mark.qt
+def test_add_colormap_reuses_similar_existing(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    from types import SimpleNamespace
+
+    from pymolviz.util.colormap_spec import (
+        CHOICE_USE_EXISTING,
+        SimilarColormapChoice,
+        custom_colormap_rows,
+        definition_from_preset,
+        save_custom_preset,
+    )
+    from pymolviz.util.field_sample import DEFAULT_SURFACE_COLORMAP
+    from pymolviz.wizards.colormaps import ColormapMenuWindow
+    from pymolviz.wizards.pick import qt_modules, qt_widget_alive
+
+    _, _, QtWidgets = qt_modules()
+    if QtWidgets is None:
+        pytest.skip("Qt widgets unavailable")
+    try:
+        app = QtWidgets.QApplication.instance()
+        if app is None:
+            app = QtWidgets.QApplication([])
+    except Exception:
+        pytest.skip("QApplication not usable")
+    save_custom_preset("Custom 1", definition_from_preset(DEFAULT_SURFACE_COLORMAP))
+    monkeypatch.setattr(
+        "pymolviz.wizards.builders.colormap_similar.resolve_similar_custom_colormap",
+        lambda *args, **kwargs: SimilarColormapChoice(CHOICE_USE_EXISTING, "Custom 1"),
+    )
+    wizard = SimpleNamespace(cmd=None, prompt=[])
+    win = ColormapMenuWindow(wizard)
+    win.show()
+    before = [row["name"] for row in custom_colormap_rows()]
+    win._add_colormap()
+    assert [row["name"] for row in custom_colormap_rows()] == before
+    editor = win._editor
+    assert editor is not None
+    editor._apply()
+    assert [row["name"] for row in custom_colormap_rows()] == before
+    assert editor._mapping.colormap.preset == "Custom 1"
+    if qt_widget_alive(editor.widget):
+        editor.widget.hide()
+    win.close()
+
+
+@pytest.mark.qt
+def test_colormap_combo_does_not_prompt_until_editor_apply(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    from pymolviz.util.colormap_spec import (
+        CHOICE_USE_EXISTING,
+        SimilarColormapChoice,
+        custom_colormap_rows,
+        definition_from_preset,
+        save_custom_preset,
+    )
+    from pymolviz.wizards.builders.colormap_dialog import _LIVE_EDITOR
+    from pymolviz.wizards.builders.colormap_editor import ColormapEditor
+    from pymolviz.wizards.pick import qt_modules
+
+    _, _, QtWidgets = qt_modules()
+    if QtWidgets is None or not hasattr(QtWidgets, "QWidget"):
+        pytest.skip("Qt widgets unavailable")
+    try:
+        app = QtWidgets.QApplication.instance()
+        if app is None:
+            app = QtWidgets.QApplication([])
+        page = QtWidgets.QWidget()
+        editor = ColormapEditor(page)
+    except Exception:
+        pytest.skip("QApplication / QWidget not usable")
+    save_custom_preset("Custom 1", definition_from_preset("viridis"))
+    prompted = []
+
+    def resolve(*args, **kwargs):
+        prompted.append(True)
+        return SimilarColormapChoice(CHOICE_USE_EXISTING, "Custom 1")
+
+    monkeypatch.setattr(
+        "pymolviz.wizards.builders.colormap_similar.resolve_similar_custom_colormap",
+        resolve,
+    )
+    editor._load_named_preset("viridis")
+    assert editor.definition().preset == "viridis"
+    assert prompted == []
+    editor._add_custom()
+    assert prompted == []
+    assert [row["name"] for row in custom_colormap_rows()] == ["Custom 1"]
+    dlg = _LIVE_EDITOR[-1] if _LIVE_EDITOR else None
+    assert dlg is not None
+    dlg._apply()
+    assert prompted == [True]
+    assert editor.preset_name() == "Custom 1"
+    assert [row["name"] for row in custom_colormap_rows()] == ["Custom 1"]
+
+
+@pytest.mark.qt
+def test_extend_cell_dialog_lists_coverage():
+    from pymolviz.wizards.builders.extend_cell_dialog import open_extend_cell_dialog
+    from pymolviz.wizards.pick import qt_modules, qt_widget_alive
+
+    _, _, QtWidgets = qt_modules()
+    if QtWidgets is None or not hasattr(QtWidgets, "QDialog"):
+        pytest.skip("Qt widgets unavailable")
+    try:
+        app = QtWidgets.QApplication.instance()
+        if app is None:
+            app = QtWidgets.QApplication([])
+        parent = QtWidgets.QWidget()
+    except Exception:
+        pytest.skip("QApplication not usable")
+    picked = []
+    rows = [
+        {
+            "kind": "object",
+            "name": "lig",
+            "status": "outside",
+            "n_atoms": 1,
+            "lo": [50.0, 5.0, 5.0],
+            "hi": [50.0, 5.0, 5.0],
+        },
+        {
+            "kind": "object",
+            "name": "prot",
+            "status": "inside",
+            "n_atoms": 12,
+            "lo": [1.0, 1.0, 1.0],
+            "hi": [8.0, 8.0, 8.0],
+        },
+    ]
+    dialog = open_extend_cell_dialog(
+        parent,
+        rows,
+        (0.0, 0.0, 0.0),
+        (10.0, 10.0, 10.0),
+        current="lig",
+        on_extend=picked.append,
+    )
+    assert dialog is not None
+    listing = dialog.findChild(QtWidgets.QListWidget, "pmvExtendTargetList")
+    assert listing is not None
+    assert listing.count() == 2
+    assert "Not covered" in listing.item(0).text()
+    assert "Covered" in listing.item(1).text()
+    sketch = dialog.findChild(QtWidgets.QWidget, "pmvExtendCoverageSketch")
+    assert sketch is not None
+    listing.setCurrentRow(0)
+    box = dialog.findChild(QtWidgets.QDialogButtonBox)
+    extend = None
+    for btn in box.buttons():
+        if btn.text().replace("&", "") == "Extend":
+            extend = btn
+            break
+    assert extend is not None
+    extend.click()
+    assert picked == ["lig"]
+    if qt_widget_alive(dialog):
+        dialog.close()
+    parent.close()
+

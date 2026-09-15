@@ -83,16 +83,26 @@ def test_wizard_menu_includes_field_visuals():
     assert labels[0] == "Open 3D Objects Menu"
     assert labels[1] == "Open Field Visuals Menu"
     assert labels[2] == "Open Colormap Menu"
-    assert labels[3] == "Create Pseudoatom at Cam Center"
+    assert labels[3] == "Import PyMolViz File"
+    assert labels[4] == "Export Session"
+    assert labels[5] == "Create Pseudoatom at Cam Center"
     assert "Item B" not in labels
     assert "Item C" not in labels
     assert wizard.field_visuals_window is not None
     assert wizard.colormap_window is not None
     assert hasattr(wizard, "on_field_visuals")
     assert hasattr(wizard, "on_colormaps")
+    assert hasattr(wizard, "on_import")
+    assert hasattr(wizard, "on_export")
     panel_labels = [row[1] for row in wizard.get_panel()]
     assert "Open Colormap Menu" in panel_labels
     assert panel_labels.index("Open Colormap Menu") < panel_labels.index(
+        "Import PyMolViz File"
+    )
+    assert panel_labels.index("Import PyMolViz File") < panel_labels.index(
+        "Export Session"
+    )
+    assert panel_labels.index("Export Session") < panel_labels.index(
         "Create Pseudoatom at Cam Center"
     )
 
@@ -223,3 +233,69 @@ def test_reconcile_after_session_load_exits_wizard():
     reconcile_wizard_after_session_load(cmd)
     assert wizard._closed is True
     assert cmd._stack == []
+
+
+def test_on_import_interns_pack(tmp_path, monkeypatch):
+    from pymolviz.io import save
+    from pymolviz.meshes.Sphere import Sphere
+    from pymolviz.runtime.session import get
+    from pymolviz.wizards.session_io import import_session_path
+
+    sphere = Sphere(
+        (0.0, 0.0, 0.0), 1.0, bypass_colormap=True, obj_id="wiz1", name="wiz1",
+    )
+    path = tmp_path / "wiz.pmv"
+    save(sphere, path)
+
+    wizard = PyMolVizWizard.__new__(PyMolVizWizard)
+    wizard.cmd = FakeCmd()
+    wizard.prompt = ["PyMOLViz"]
+    wizard.add_visual_window = None
+    wizard.field_visuals_window = None
+    wizard.colormap_window = None
+    refreshed = []
+    wizard._refresh_open_windows = lambda: refreshed.append(True)
+
+    def _prompt(parent, cmd):
+        return import_session_path(cmd, path)
+
+    monkeypatch.setattr("pymolviz.wizards.session_io.prompt_import_session", _prompt)
+    PyMolVizWizard.on_import(wizard)
+    assert get("wiz1") is not None
+    assert wizard.prompt == ["Imported 1 object"]
+    assert refreshed == [True]
+
+
+def test_on_export_empty_session(monkeypatch):
+    wizard = PyMolVizWizard.__new__(PyMolVizWizard)
+    wizard.prompt = ["PyMOLViz"]
+    monkeypatch.setattr(
+        "pymolviz.wizards.session_io.prompt_export_session",
+        lambda parent: False,
+    )
+    PyMolVizWizard.on_export(wizard)
+    assert wizard.prompt == ["Nothing to export"]
+
+
+def test_on_export_writes_session(tmp_path, monkeypatch):
+    from pymolviz.io import load, save
+    from pymolviz.meshes.Sphere import Sphere
+    from pymolviz.runtime.session import add
+    from pymolviz.wizards.session_io import session_export_items
+
+    sphere = Sphere(
+        (4.0, 0.0, 0.0), 0.2, bypass_colormap=True, obj_id="wiz2", name="wiz2",
+    )
+    add(sphere)
+    dest = tmp_path / "out.pmv"
+
+    def _prompt(parent):
+        save(session_export_items(), dest)
+        return str(dest)
+
+    wizard = PyMolVizWizard.__new__(PyMolVizWizard)
+    wizard.prompt = ["PyMOLViz"]
+    monkeypatch.setattr("pymolviz.wizards.session_io.prompt_export_session", _prompt)
+    PyMolVizWizard.on_export(wizard)
+    assert wizard.prompt == ["Exported %s" % dest]
+    assert load(dest)[0].id == "wiz2"

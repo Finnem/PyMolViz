@@ -695,3 +695,55 @@ def test_color_ramp_discrete_slots_hold_category_rgb():
     assert float(np.max(blues[:, 1])) < 0.2
     assert float(np.mean(reds[:, 0])) > 0.8
     assert float(np.mean(blues[:, 2])) > 0.8
+
+
+def test_field_options_and_points_roundtrip_from_generator():
+    from pymolviz.wizards.builders.load_field import (
+        field_is_from_selection,
+        field_options,
+        points_from_field,
+        remember_default_iso_level,
+    )
+
+    field = Field(
+        name="sel",
+        generator={
+            "type": GEN_GAUSSIAN,
+            "atoms": [
+                {
+                    "xyz": [1.0, 2.0, 3.0],
+                    "elem": "N",
+                    "object": "prot",
+                    "atom_id": 12,
+                    "chain": "A",
+                    "resi": "10",
+                    "name": "CA",
+                    "b_factor": 18.5,
+                }
+            ],
+            "quality": 4,
+            "resolution": 1.5,
+            "b_floor": 20.0,
+        },
+        domain=Domain(bounds_mode=BOUNDS_CUSTOM_BOX, padding=1.0, spacing=0.4, aabb=[[0, 0, 0], [4, 4, 4]]),
+    )
+    remember_default_iso_level(field, 0.8)
+    assert field_is_from_selection(field) is True
+    opts = field_options(field)
+    assert opts["algorithm"] == GEN_GAUSSIAN
+    assert opts["quality"] == 4
+    assert opts["resolution"] == pytest.approx(1.5)
+    assert opts["iso_level"] == pytest.approx(0.8)
+    assert opts["domain"]["bounds_mode"] == BOUNDS_CUSTOM_BOX
+    assert opts["domain"]["padding"] == pytest.approx(1.0)
+    before = field_identity_hash(canonical_field_spec(field))
+    remember_default_iso_level(field, 2.5)
+    assert field_identity_hash(canonical_field_spec(field)) == before
+    pts = points_from_field(field)
+    assert len(pts) == 1
+    assert pts[0].xyz() == pytest.approx((1.0, 2.0, 3.0))
+    assert pts[0].atom_ref.model == "prot"
+    assert pts[0].atom_ref.atom_id == 12
+    recs = atom_records_from_points(pts)
+    assert recs[0]["elem"] == "N"
+    assert recs[0]["b_factor"] == pytest.approx(18.5)

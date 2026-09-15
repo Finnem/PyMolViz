@@ -12,8 +12,10 @@ from typing import Tuple
 from ..pick import qt_modules, qt_widget_alive
 from .theme import PAGE_SPACING
 
-WINDOW_MIN_WIDTH = 360
+WINDOW_MIN_WIDTH = 560
 WINDOW_MIN_HEIGHT = 340
+WINDOW_DEFAULT_WIDTH = 1280
+WINDOW_DEFAULT_HEIGHT = 720
 SCROLL_BODY_MIN_HEIGHT = 120
 EXPANDING_LIST_MIN_HEIGHT = 96
 

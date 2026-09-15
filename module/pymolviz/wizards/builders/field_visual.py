@@ -18,6 +18,66 @@ KIND_DEFAULT_NAMES = {
 }
 
 
+def field_visual_options(obj) -> dict:
+    """Persisted visual knobs for the Field Visual editor (no Qt)."""
+    from ...fields.isovalues import primary_isovalue, primary_side
+
+    entries = getattr(obj, "isovalues", None) or []
+    side = primary_side(entries, default_side=int(getattr(obj, "side", 1) or 1))
+    if len(entries) >= 2:
+        side_index = 2
+    else:
+        side_index = 0 if side >= 0 else 1
+    color = getattr(obj, "color", None)
+    rgb = None
+    if color is not None and not hasattr(color, "name"):
+        try:
+            rgb = (float(color[0]), float(color[1]), float(color[2]))
+        except (TypeError, IndexError, ValueError):
+            rgb = None
+    cmap_obj = getattr(obj, "colormap", None)
+    cmap = getattr(cmap_obj, "preset", None)
+    if not cmap:
+        cmap = cmap_obj if isinstance(cmap_obj, str) else None
+    spec = getattr(obj, "colormap_spec", None)
+    range_mode = getattr(cmap_obj, "range_mode", None) if cmap_obj is not None else None
+    clims = getattr(obj, "clims", None)
+    pair = None
+    if clims is not None and len(clims) >= 2:
+        pair = (float(clims[0]), float(clims[-1]))
+    geom = getattr(obj, "geometry_field_id", None)
+    color_id = getattr(obj, "color_field_id", None)
+    sel = getattr(obj, "selection", None)
+    carve = getattr(obj, "carve", None)
+    carve_sel = str(sel).strip() if sel else ""
+    carve_radius = None
+    if carve is not None:
+        try:
+            carve_radius = float(carve)
+        except (TypeError, ValueError):
+            carve_radius = None
+    from .preview_mode import read_preview_mode
+
+    return {
+        "kind": type(obj).__name__,
+        "geometry_field_id": str(geom) if geom else None,
+        "color_field_id": str(color_id) if color_id else None,
+        "level": float(primary_isovalue(entries, default_level=float(getattr(obj, "level", 0) or 0))),
+        "side": int(side),
+        "side_index": int(side_index),
+        "transparency": float(getattr(obj, "transparency", 0) or 0),
+        "color": rgb,
+        "clip_aabb": getattr(obj, "clip_aabb", None),
+        "selection": carve_sel or None,
+        "carve": carve_radius,
+        "colormap": cmap if isinstance(cmap, str) else ((spec or {}).get("preset") if spec else None),
+        "colormap_spec": spec,
+        "range_mode": range_mode,
+        "clims": pair,
+        "preview_mode": read_preview_mode(obj),
+    }
+
+
 def default_visual_name(kind, field=None) -> str:
     base = KIND_DEFAULT_NAMES.get(str(kind), "pmv_field_visual")
     if field is None:
@@ -58,10 +118,15 @@ def sync_visual_grid_from_field(visual, cmd=None):
     """Use the Field's current brick so Volume/iso follow lattice origin shifts.
 
     Preview copies (``named_grid_copy``) keep the pre-wrap origin; ``cmd.volume``
-    would otherwise keep drawing that stale map.
+    would otherwise keep drawing that stale map. Preview visuals (``preview_``
+    ids / ``_pmv_prev_*`` names) keep their own brick so a crop is not undone.
     """
     if visual is None:
         return None
+    ident = str(getattr(visual, "id", "") or "")
+    name = str(getattr(visual, "name", "") or "")
+    if ident.startswith("preview_") or name.startswith("_pmv_prev"):
+        return getattr(visual, "grid_data", None)
     fid = str(getattr(visual, "geometry_field_id", "") or "")
     if not fid:
         return getattr(visual, "grid_data", None)
@@ -482,11 +547,15 @@ def make_field_visual(
     color_src=None,
     clims=None,
     colormap_spec=None,
+    selection=None,
+    carve=None,
 ):
     """Build a Volume / IsoVolume / IsoSurface / IsoMesh wrapping ``grid``."""
     from ...util.colormap_spec import persist_colormap_attrs, volume_colormap_arg
+    from .carve_around import normalize_carve_args
 
     kind = str(kind)
+    carve_sel, carve_radius = normalize_carve_args(selection, carve)
     cmap_arg = volume_colormap_arg(colormap, colormap_spec)
     field = None
     try:
@@ -520,6 +589,8 @@ def make_field_visual(
             color_field_id=color_field_id,
             clip_aabb=clip_aabb,
             transfer_stops=transfer_stops,
+            selection=carve_sel,
+            carve=carve_radius,
         )
         if clims is not None:
             kwargs["clims"] = clims
@@ -549,6 +620,8 @@ def make_field_visual(
             isovalues=entries,
             clip_aabb=clip_aabb,
             side=side,
+            selection=carve_sel or "",
+            carve=carve_radius,
         )
     elif kind == "IsoSurface":
         from ...volumetric.IsoSurface import IsoSurface
@@ -568,6 +641,8 @@ def make_field_visual(
             isovalues=entries,
             clip_aabb=clip_aabb,
             side=side,
+            selection=carve_sel or "",
+            carve=carve_radius,
         )
     else:
         raise ValueError("Unknown field visual type %r" % kind)
@@ -624,29 +699,48 @@ def symmetrize_field_to_selection(cmd, field, selection=None, padding=0.0, cell=
 
 
 def persist_field_visual(cmd, visual) -> None:
+    from ...runtime.presence import pause_presence_sync
+    from ...runtime.runtime import get_runtime
     from ...runtime.session import add as session_add
+    from .object_names import unused_object_name
+    from .preview import set_visual_enabled
 
     grid = sync_visual_grid_from_field(visual, cmd)
     if cmd is not None:
         ensure_map_loaded(cmd, grid, reload=True)
-    name = display_name(visual) or getattr(visual, "name", None)
-    if cmd is not None and name:
-        try:
-            existing = [str(n) for n in cmd.get_names("objects")]
-        except Exception:
-            existing = []
-        if str(name) in existing:
-            try:
-                cmd.delete(str(name))
-            except Exception:
-                pass
-        visual.is_loaded = False
-    from ...Displayable import call_load
-    from .preview import set_visual_enabled
+    raw = display_name(visual) or getattr(visual, "_name", None)
+    vid = str(getattr(visual, "id", "") or "")
+    keep = None
+    try:
+        from ...runtime.session import get as session_get
 
-    call_load(visual, cmd)
-    set_visual_enabled(cmd, visual, True)
-    session_add(visual)
+        existing = session_get(vid) if vid else None
+        if existing is visual and raw:
+            keep = raw
+    except Exception:
+        keep = raw
+    name = unused_object_name(raw or "visual", cmd, keep=keep)
+    if name and name != raw:
+        try:
+            visual.name = name
+        except Exception:
+            visual._name = name
+    with pause_presence_sync():
+        if cmd is not None and name:
+            try:
+                existing = [str(n) for n in cmd.get_names("objects")]
+            except Exception:
+                existing = []
+            if str(name) in existing:
+                try:
+                    cmd.delete(str(name))
+                except Exception:
+                    pass
+                visual.is_loaded = False
+        session_add(visual)
+        if cmd is not None:
+            get_runtime(cmd).materialize(visual)
+            set_visual_enabled(cmd, visual, True)
 
 
 def delete_field_visual(cmd, visual) -> None:

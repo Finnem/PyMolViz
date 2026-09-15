@@ -38,6 +38,202 @@ def aabb_corners(aabb):
     )
 
 
+def _as_axis(axis) -> Optional[int]:
+    if axis is None:
+        return None
+    if isinstance(axis, str):
+        key = str(axis).strip().upper()
+        mapping = {"X": 0, "Y": 1, "Z": 2, "0": 0, "1": 1, "2": 2}
+        return mapping.get(key)
+    try:
+        value = int(axis)
+    except (TypeError, ValueError):
+        return None
+    if value < 0 or value > 2:
+        return None
+    return value
+
+
+def normalize_cardinal_plane(plane) -> Optional[dict]:
+    """One axis-aligned half-space: ``{axis, position, hi}``.
+
+    ``hi=False`` keeps the +axis side (plane is the new lo face).
+    ``hi=True`` keeps the -axis side (plane is the new hi face).
+    """
+    if not isinstance(plane, dict):
+        return None
+    axis = _as_axis(plane.get("axis"))
+    if axis is None:
+        return None
+    if "position" in plane:
+        try:
+            position = float(plane["position"])
+        except (TypeError, ValueError):
+            return None
+    else:
+        try:
+            position = float(np.asarray(plane.get("origin"), dtype=float).reshape(3)[axis])
+        except (TypeError, ValueError, IndexError):
+            return None
+    if not np.isfinite(position):
+        return None
+    return {"axis": int(axis), "position": float(position), "hi": bool(plane.get("hi"))}
+
+
+def normalize_cardinal_planes(planes) -> list:
+    """At most one plane per axis, ordered X/Y/Z."""
+    if not planes:
+        return []
+    by_axis = {}
+    for item in planes:
+        plane = normalize_cardinal_plane(item)
+        if plane is None:
+            continue
+        by_axis[plane["axis"]] = plane
+    return [by_axis[axis] for axis in range(3) if axis in by_axis]
+
+
+def default_cardinal_plane(axis, domain_aabb) -> dict:
+    """Mid-domain plane that keeps the +axis half (immediately visible clip)."""
+    axis = int(_as_axis(axis) if _as_axis(axis) is not None else 0)
+    box = normalize_clip_aabb(domain_aabb)
+    if box is None:
+        position = 0.0
+    else:
+        position = 0.5 * (float(box[0][axis]) + float(box[1][axis]))
+    return {"axis": axis, "position": float(position), "hi": False}
+
+
+def clamp_cardinal_plane(plane, domain_aabb, eps=_FACE_EPS):
+    plane = normalize_cardinal_plane(plane)
+    if plane is None:
+        return None
+    box = normalize_clip_aabb(domain_aabb)
+    if box is None:
+        return plane
+    axis = plane["axis"]
+    lo = float(box[0][axis])
+    hi = float(box[1][axis])
+    gap = float(eps)
+    pos = float(plane["position"])
+    if plane["hi"]:
+        pos = min(max(pos, lo + gap), hi)
+    else:
+        pos = max(min(pos, hi - gap), lo)
+    return {"axis": axis, "position": float(pos), "hi": bool(plane["hi"])}
+
+
+def cardinal_planes_to_aabb(planes, domain_aabb, eps=_FACE_EPS) -> Optional[list]:
+    """Intersect enabled half-spaces with the field domain. ``None`` if none on."""
+    planes = normalize_cardinal_planes(planes)
+    if not planes:
+        return None
+    box = normalize_clip_aabb(domain_aabb)
+    if box is None or not aabb_has_extent(box):
+        return None
+    lo = np.asarray(box[0], dtype=float).reshape(3)
+    hi = np.asarray(box[1], dtype=float).reshape(3)
+    gap = float(eps)
+    for plane in planes:
+        clamped = clamp_cardinal_plane(plane, box, eps=eps)
+        if clamped is None:
+            continue
+        axis = clamped["axis"]
+        pos = float(clamped["position"])
+        if clamped["hi"]:
+            hi[axis] = max(pos, float(lo[axis]) + gap)
+        else:
+            lo[axis] = min(pos, float(hi[axis]) - gap)
+    return normalize_clip_aabb([lo, hi])
+
+
+def aabb_to_cardinal_planes(aabb, domain_aabb, *, atol=1e-3) -> list:
+    """Infer one enabled plane per inset axis (the more inset face wins)."""
+    clip = normalize_clip_aabb(aabb)
+    domain = normalize_clip_aabb(domain_aabb)
+    if clip is None or domain is None:
+        return []
+    planes = []
+    tol = float(atol)
+    for axis in range(3):
+        lo_inset = float(clip[0][axis]) - float(domain[0][axis])
+        hi_inset = float(domain[1][axis]) - float(clip[1][axis])
+        if lo_inset <= tol and hi_inset <= tol:
+            continue
+        if hi_inset > lo_inset:
+            planes.append({
+                "axis": axis,
+                "position": float(clip[1][axis]),
+                "hi": True,
+            })
+        else:
+            planes.append({
+                "axis": axis,
+                "position": float(clip[0][axis]),
+                "hi": False,
+            })
+    return normalize_cardinal_planes(planes)
+
+
+def cardinal_gizmo_plane(plane, domain_aabb, scale=5.0) -> Optional[dict]:
+    plane = normalize_cardinal_plane(plane)
+    if plane is None:
+        return None
+    axis = plane["axis"]
+    origin = [0.0, 0.0, 0.0]
+    box = normalize_clip_aabb(domain_aabb)
+    if box is not None:
+        mid = 0.5 * (
+            np.asarray(box[0], dtype=float).reshape(3)
+            + np.asarray(box[1], dtype=float).reshape(3)
+        )
+        origin = [float(mid[0]), float(mid[1]), float(mid[2])]
+    origin[axis] = float(plane["position"])
+    normal = [0.0, 0.0, 0.0]
+    normal[axis] = -1.0 if plane["hi"] else 1.0
+    return {
+        "origin": origin,
+        "normal": normal,
+        "scale": float(scale),
+        "axis": int(axis),
+        "hi": bool(plane["hi"]),
+        "position": float(plane["position"]),
+    }
+
+
+def cardinal_planes_to_gizmos(planes, domain_aabb, scale=5.0) -> list:
+    gizmos = []
+    for plane in normalize_cardinal_planes(planes):
+        gizmo = cardinal_gizmo_plane(plane, domain_aabb, scale=scale)
+        if gizmo is not None:
+            gizmos.append(gizmo)
+    return gizmos
+
+
+def apply_origin_to_cardinal_planes(planes, axis, origin, domain_aabb=None):
+    """Move the enabled plane on ``axis`` to ``origin`` (clamped to the domain)."""
+    axis = _as_axis(axis)
+    current = normalize_cardinal_planes(planes)
+    if axis is None:
+        return current
+    try:
+        position = float(np.asarray(origin, dtype=float).reshape(3)[axis])
+    except (TypeError, ValueError, IndexError):
+        return current
+    updated = []
+    found = False
+    for plane in current:
+        if plane["axis"] != axis:
+            updated.append(plane)
+            continue
+        found = True
+        moved = dict(plane)
+        moved["position"] = position
+        clamped = clamp_cardinal_plane(moved, domain_aabb)
+        updated.append(clamped if clamped is not None else moved)
+    return updated if found else current
+
+
 def aabb_to_axis_planes(aabb, scale=5.0):
     """Six cardinal crop faces as clip-gizmo planes (inward keep normals)."""
     box = normalize_clip_aabb(aabb)

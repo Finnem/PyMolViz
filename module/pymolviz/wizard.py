@@ -21,6 +21,7 @@ from .wizards.middle_click import (
     _teardown_global_click_filter,
 )
 from .wizards.pick import pointer_over_viewer, qt_modules
+from .wizards.session_io import EXPORT_LABEL, IMPORT_LABEL
 
 
 def is_pymolviz_wizard(wizard) -> bool:
@@ -64,6 +65,8 @@ class PyMolVizWizard(Wizard):
             ("Open 3D Objects Menu", self.on_add_visual),
             ("Open Field Visuals Menu", self.on_field_visuals),
             ("Open Colormap Menu", self.on_colormaps),
+            (IMPORT_LABEL, self.on_import),
+            (EXPORT_LABEL, self.on_export),
             ("Create Pseudoatom at Cam Center", self.on_create_cam_pseudoatom),
         ]
         self.add_visual_window = AddVisualWindow(self)
@@ -279,6 +282,65 @@ class PyMolVizWizard(Wizard):
             self.colormap_window.show()
         except Exception as exc:
             self.prompt = ["Open Colormap Menu failed: %s" % exc]
+
+    def _menu_parent(self):
+        for attr in ("field_visuals_window", "add_visual_window", "colormap_window"):
+            host = getattr(self, attr, None)
+            if host is None:
+                continue
+            window = getattr(host, "_window", None)
+            if window is not None:
+                return window
+        return None
+
+    def _refresh_open_windows(self):
+        pairs = (
+            ("add_visual_window", "_refresh_objects_table"),
+            ("field_visuals_window", "_refresh_fields_table"),
+            ("colormap_window", "_refresh_table"),
+        )
+        for attr, method in pairs:
+            host = getattr(self, attr, None)
+            if host is None or getattr(host, "_window", None) is None:
+                continue
+            fn = getattr(host, method, None)
+            if not callable(fn):
+                continue
+            try:
+                fn()
+            except Exception:
+                pass
+
+    def on_import(self):
+        self.prompt = [IMPORT_LABEL]
+        try:
+            from .wizards.session_io import prompt_import_session
+
+            interned = prompt_import_session(self._menu_parent(), self.cmd)
+        except Exception as exc:
+            self.prompt = ["Import failed: %s" % exc]
+            return
+        if interned is None:
+            return
+        self._refresh_open_windows()
+        n = len(interned)
+        self.prompt = ["Imported %d object%s" % (n, "" if n == 1 else "s")]
+
+    def on_export(self):
+        self.prompt = [EXPORT_LABEL]
+        try:
+            from .wizards.session_io import prompt_export_session
+
+            path = prompt_export_session(self._menu_parent())
+        except Exception as exc:
+            self.prompt = ["Export failed: %s" % exc]
+            return
+        if path is False:
+            self.prompt = ["Nothing to export"]
+            return
+        if not path:
+            return
+        self.prompt = ["Exported %s" % path]
 
     def on_create_cam_pseudoatom(self):
         sphere = getattr(self, "camera_sphere", None)

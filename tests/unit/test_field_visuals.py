@@ -243,7 +243,35 @@ def test_visual_detail_text_separates_geometry_and_color():
     assert "Color:" in text
     assert "tint" in text
     assert field_row_shows_edit({"kind": KIND_FIELD, "editor": None}) is False
+    assert field_row_shows_edit({"kind": KIND_FIELD, "editor": "FromSelection"}) is True
     assert nest_connector(None) == NEST_NONE
+
+
+def test_from_selection_field_row_is_editable():
+    from pymolviz.fields import Domain, Field, GEN_GAUSSIAN
+    from pymolviz.wizards.builders.field_visual import field_visual_options
+    from pymolviz.wizards.catalog import field_row, field_source_editor_kind
+
+    field = Field(
+        name="blob",
+        obj_id="fld1",
+        generator={
+            "type": GEN_GAUSSIAN,
+            "atoms": [{"xyz": [0.0, 0.0, 0.0], "elem": "C"}],
+            "quality": 3,
+            "resolution": 2.0,
+        },
+        domain=Domain(),
+    )
+    row = field_row(field)
+    assert field_source_editor_kind(field) == "FromSelection"
+    assert row["editor"] == "FromSelection"
+    assert field_row_shows_edit(row) is True
+    iso = make_field_visual("IsoSurface", _tiny_grid(), "blob_iso", level=1.25, obj_id="iso_opts", color=(0.1, 0.2, 0.3))
+    opts = field_visual_options(iso)
+    assert opts["kind"] == "IsoSurface"
+    assert opts["level"] == pytest.approx(1.25)
+    assert opts["color"][0] == pytest.approx(0.1)
 
 
 def test_kind_badge_rgb_matches_catalog_hues():
@@ -344,6 +372,11 @@ def test_persist_volume_loads_map_when_native_wrapper_stale():
     assert "density_volume" in names
     assert cmd.object_types.get("density_volume") == "object:volume"
     assert session_mod.get("vol_persist") is visual
+    from pymolviz.runtime.runtime import get_runtime
+
+    binding = get_runtime(cmd).bindings.get("vol_persist")
+    assert binding is not None
+    assert binding.pymol_name == "density_volume"
     session_mod.clear()
     grid = _tiny_grid()
     assert default_visual_name("Volume", grid) == "density_volume"
@@ -353,6 +386,27 @@ def test_persist_volume_loads_map_when_native_wrapper_stale():
     vol = make_field_visual("IsoVolume", grid, "ivol")
     assert type(vol).__name__ == "IsoVolume"
     assert vol.grid_data is grid
+
+
+def test_persist_second_field_visual_gets_numbered_name():
+    from tests.fakes.cmd import FakeCmd
+    from pymolviz.runtime import session as session_mod
+    from pymolviz.wizards.builders.field_visual import persist_field_visual
+
+    session_mod.clear()
+    grid = _tiny_grid()
+    grid.is_loaded = True
+    cmd = FakeCmd()
+    first = make_field_visual("IsoSurface", grid, "density_isosurface", level=1.0, obj_id="iso1")
+    persist_field_visual(cmd, first)
+    second = make_field_visual("IsoSurface", grid, "density_isosurface", level=1.5, obj_id="iso2")
+    persist_field_visual(cmd, second)
+    assert getattr(first, "_name", None) == "density_isosurface"
+    assert getattr(second, "_name", None) == "density_isosurface_1"
+    names = [str(n) for n in cmd.get_names("objects")]
+    assert "density_isosurface" in names
+    assert "density_isosurface_1" in names
+    session_mod.clear()
 
 
 def test_load_field_file_map_uses_pymol_object(tmp_path):

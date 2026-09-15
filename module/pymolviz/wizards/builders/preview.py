@@ -321,7 +321,11 @@ def _preview_pairs(pairs, highlight_id=None):
         if pair.pair_id != highlight_id:
             out.append(pair)
             continue
-        brighter = pair.with_color(_mix_highlight(pair.color))
+        brighter = pair.with_start(
+            pair.start.with_color(_mix_highlight(pair.start.color)),
+        ).with_end(
+            pair.end.with_color(_mix_highlight(pair.end.color)),
+        )
         out.append(brighter.with_width(float(pair.width) * 1.35))
     return out
 
@@ -347,16 +351,37 @@ def _style_pair_mesh(mesh, pairs) -> None:
         mesh.line_style = _style_copy(getattr(pairs[0], "style", None))
 
 
-def _arrow_pair_color(pair) -> tuple:
-    choice = pair.color_choice()
-    if not choice.field_id:
-        return pair.color
+def _arrow_endpoint_color(pt, fallback) -> tuple:
+    if pt is None:
+        return tuple(float(c) for c in fallback[:3])
+    choice = pt.color_choice()
+    rgb = tuple(float(c) for c in pt.color[:3])
+    if not getattr(choice, "field_id", None):
+        return rgb
     from ...util.field_sample import sample_rgb_at
-    start = np.asarray(pair.start.xyz(), dtype=float)
-    end = np.asarray(pair.end.xyz(), dtype=float) if pair.end is not None else start
-    mid = 0.5 * (start + end)
-    sampled = sample_rgb_at(mid, choice.field_id, choice.colormap, choice.clims, smooth=0.0)
-    return sampled or pair.color
+    sampled = sample_rgb_at(
+        pt.xyz(), choice.field_id, choice.colormap, choice.clims, smooth=0.0,
+    )
+    return sampled or rgb
+
+
+def _arrow_endpoint_colors(pair) -> tuple:
+    start = _arrow_endpoint_color(pair.start, pair.color)
+    end = _arrow_endpoint_color(pair.end, start)
+    return start, end
+
+
+def _arrow_pair_color(pair) -> tuple:
+    return _arrow_endpoint_colors(pair)[0]
+
+
+def _arrow_colors_array(pairs):
+    rows = []
+    for pair in pairs:
+        start, end = _arrow_endpoint_colors(pair)
+        rows.append(start)
+        rows.append(end)
+    return np.array(rows, dtype=float)
 
 
 def _apply_arrow_field_color(mesh, pairs) -> None:
@@ -377,7 +402,7 @@ def _apply_arrow_field_color(mesh, pairs) -> None:
             )
             return
     clear_mesh_field(mesh)
-    mesh.color = np.array([_arrow_pair_color(pair) for pair in pairs], dtype=float)
+    mesh.color = _arrow_colors_array(pairs)
     if hasattr(mesh, "invalidate_cgo_cache"):
         mesh.invalidate_cgo_cache()
 
@@ -411,9 +436,11 @@ def _append_arrow_pair_arrays(mesh, pair) -> None:
     mesh._start_sources = list(mesh._start_sources or []) + [pair.start.point_source]
     mesh._end_sources = list(mesh._end_sources or []) + [pair.end.point_source]
     colors = _arrow_color_rows(mesh)
-    extra = np.asarray(pair.color, dtype=float).reshape(1, 3)
-    if colors.shape[0] == n_pairs * 2:
-        extra = np.vstack([extra, extra])
+    extra = np.asarray(_arrow_endpoint_colors(pair), dtype=float).reshape(2, 3)
+    if colors.shape[0] == n_pairs:
+        extra = extra[:1]
+    elif colors.shape[0] != n_pairs * 2:
+        extra = extra[:1]
     mesh.color = np.vstack([colors, extra])
     trans = [float(x) for x in np.atleast_1d(mesh.transparency)]
     trans.append(1.0 - float(pair.alpha))
@@ -657,7 +684,7 @@ def build_arrow_collection(pairs, quality: int, style, name: str, clip_planes=No
     arrows = Arrows(
         starts=[pair.start.point_source for pair in ready],
         ends=[pair.end.point_source for pair in ready],
-        color=[_arrow_pair_color(pair) for pair in ready],
+        color=_arrow_colors_array(ready),
         transparency=[1.0 - float(pair.alpha) for pair in ready],
         quality=int(quality),
         line_style=style or getattr(ready[0], "style", None),
@@ -1046,6 +1073,7 @@ class ClipGizmoPreview:
                     points=span_points,
                     selected=(selected_index is not None and i == int(selected_index)),
                     draft=False,
+                    axis_arrow=self._axis_lock,
                     bypass_colormap=True,
                 )
             )
@@ -1094,7 +1122,9 @@ class ClipGizmoPreview:
             if active == CLIP_DRAG_NAME and int(rest.get("index", idx)) == idx:
                 return
         saved_mode = self._clip_drag_button_mode
-        attached_mode = start_clip_drag(self.cmd, center)
+        attached_mode = start_clip_drag(
+            self.cmd, center, native_widget=not self._axis_lock,
+        )
         self._clip_drag_button_mode = saved_mode if saved_mode is not None else attached_mode
         self._clip_drag_rest = {
             "origin": origin, "normal": normal, "center": center, "index": idx,
@@ -1165,6 +1195,9 @@ class SpherePreview:
 
     def release_clip_drag(self):
         return self._gizmos.release_clip_drag()
+
+    def clear_meshes(self):
+        self._preview.cleanup()
 
     def update(self, points, radius, wireframe, wireframe_quality: int = 3, clip_planes=None):
         if not points:
@@ -1285,6 +1318,9 @@ class BoxPreview:
     def release_clip_drag(self):
         return self._gizmos.release_clip_drag()
 
+    def clear_meshes(self):
+        self._preview.cleanup()
+
     def update(self, points, extent, wireframe, clip_planes=None):
         if not points:
             self.cleanup()
@@ -1394,6 +1430,10 @@ class ArrowPreview:
 
     def release_clip_drag(self):
         return self._gizmos.release_clip_drag()
+
+    def clear_meshes(self):
+        self._preview.cleanup()
+        self._pending.cleanup()
 
     def update(self, pairs, quality: int, style, pending=None, highlight_id=None,
                clip_planes=None, head_radius=None):
@@ -1739,6 +1779,9 @@ class SurfacePreview:
 
     def release_clip_drag(self):
         return self._gizmos.release_clip_drag()
+
+    def clear_meshes(self):
+        self._preview.cleanup()
 
     def update(self, points, atom_radius, probe_radius, algorithm, quality, wireframe,
                radius_mode=DEFAULT_RADIUS_MODE, vdw_scale=DEFAULT_VDW_SCALE,

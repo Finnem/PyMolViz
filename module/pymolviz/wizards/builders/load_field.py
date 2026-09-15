@@ -8,11 +8,13 @@ MAP_EXTENSIONS = (".ccp4", ".mrc", ".map", ".dx", ".xplor", ".grd")
 XYZ_EXTENSIONS = (".xyz",)
 MTZ_EXTENSIONS = (".mtz",)
 ORCA_EXTENSIONS = (".txt", ".cube")
+PMV_EXTENSIONS = (".pmv",)
 
 KIND_MAP = "map"
 KIND_XYZ = "xyz"
 KIND_MTZ = "mtz"
 KIND_ORCA = "orca"
+KIND_PMV = "pmv"
 KIND_IMPLICIT = "implicit"
 KIND_FROM_SELECTION = "from_selection"
 KIND_DERIVED = "derived"
@@ -26,6 +28,8 @@ def field_kind_from_path(path) -> str:
         return KIND_XYZ
     if ext in ORCA_EXTENSIONS:
         return KIND_ORCA
+    if ext in PMV_EXTENSIONS:
+        return KIND_PMV
     return KIND_MAP
 
 
@@ -42,6 +46,15 @@ def load_field_file(cmd, path, kind=None, name=None):
     from .object_names import unused_object_name
 
     label = unused_object_name(label, cmd)
+    if kind == KIND_PMV:
+        from ...io import intern_loaded, load
+
+        objects = load(path)
+        interned = intern_loaded(cmd, objects)
+        for obj in interned:
+            if type(obj).__name__ == "Field":
+                return obj
+        return interned[0] if interned else None
     if kind == KIND_XYZ:
         from ...util.io import grid_from_xyz
 
@@ -377,6 +390,7 @@ def commit_from_selection_preset(
         color=None if bound_color_id else uniform_color,
         persist=persist,
     )
+    remember_default_iso_level(geom, iso_level)
     return geom, color_field, visual
 
 
@@ -420,3 +434,125 @@ def remember_default_color_field(geometry_field, color_field=None, *, color_fiel
         prov.pop("default_colormap", None)
     geometry_field.provenance = prov
     return geometry_field
+
+
+def remember_default_iso_level(field, iso_level):
+    """Preview / IsoSurface default; not part of Field identity."""
+    if field is None or iso_level is None:
+        return field
+    prov = dict(getattr(field, "provenance", None) or {})
+    prov["default_iso_level"] = float(iso_level)
+    field.provenance = prov
+    return field
+
+
+def default_iso_level_from_field(field):
+    if field is None:
+        return None
+    prov = getattr(field, "provenance", None) or {}
+    value = prov.get("default_iso_level")
+    if value is None:
+        return None
+    return float(value)
+
+
+def field_is_from_selection(field) -> bool:
+    from ...fields.identity import (
+        GEN_DISTANCE,
+        GEN_GAUSSIAN,
+        GEN_NEAREST_COLOR,
+        GEN_NEAREST_PROP,
+        GEN_SIGNED_VDW,
+    )
+
+    gen = str((getattr(field, "generator", None) or {}).get("type") or "")
+    return gen in (
+        GEN_GAUSSIAN,
+        GEN_DISTANCE,
+        GEN_SIGNED_VDW,
+        GEN_NEAREST_PROP,
+        GEN_NEAREST_COLOR,
+    )
+
+
+def field_options(field) -> dict:
+    """Generator / Domain / provenance knobs for the From Selection editor."""
+    from ...fields.identity import GEN_GAUSSIAN
+    from ...util.gaussian_map import DEFAULT_GAUSSIAN_RESOLUTION
+    from ...util.solvent_surface import DEFAULT_QUALITY
+
+    gen = dict(getattr(field, "generator", None) or {})
+    domain = getattr(field, "domain", None)
+    domain_dict = domain.to_dict() if domain is not None and hasattr(domain, "to_dict") else {}
+    from .preview_mode import read_preview_mode
+
+    return {
+        "algorithm": str(gen.get("type") or GEN_GAUSSIAN),
+        "quality": int(gen.get("quality") or DEFAULT_QUALITY),
+        "resolution": float(gen.get("resolution") or DEFAULT_GAUSSIAN_RESOLUTION),
+        "property": str(gen.get("property") or "b_factor"),
+        "iso_level": default_iso_level_from_field(field),
+        "domain": domain_dict,
+        "color_field_id": default_color_field_id(field),
+        "colormap": default_color_colormap(field),
+        "preview_mode": read_preview_mode(field),
+    }
+
+
+def points_from_field(field):
+    """Rebuild table points from a From Selection generator recipe."""
+    from ...points import AtomPoint, FixedPoint
+    from .points import AtomRef, VisualPoint, SOURCE_SELECTION
+
+    gen = getattr(field, "generator", None) or {}
+    points = []
+    for i, rec in enumerate(gen.get("atoms") or ()):
+        if not isinstance(rec, dict):
+            continue
+        xyz = rec.get("xyz") or (0.0, 0.0, 0.0)
+        x, y, z = float(xyz[0]), float(xyz[1]), float(xyz[2])
+        elem = str(rec.get("elem") or "C")
+        object_name = str(rec.get("object") or "")
+        atom_id = rec.get("atom_id")
+        chain = str(rec.get("chain") or "")
+        resi = str(rec.get("resi") or "")
+        atom_name = str(rec.get("name") or "")
+        label = atom_name or ("p%d" % (i + 1))
+        ref = None
+        if object_name and atom_id:
+            src = AtomPoint(
+                object_name,
+                int(atom_id),
+                chain=chain,
+                resi=resi,
+                name=atom_name,
+                elem=elem,
+                last_xyz=(x, y, z),
+                last_vdw=rec.get("vdw"),
+            )
+            if rec.get("b_factor") is not None:
+                src.last_b_factor = float(rec["b_factor"])
+            if rec.get("occupancy") is not None:
+                src.last_occupancy = float(rec["occupancy"])
+            ref = AtomRef(
+                object_name,
+                int(atom_id),
+                chain,
+                resi,
+                atom_name,
+                elem,
+            )
+        else:
+            src = FixedPoint((x, y, z))
+        points.append(
+            VisualPoint(
+                name=label,
+                source=SOURCE_SELECTION,
+                x=x,
+                y=y,
+                z=z,
+                point_source=src,
+                atom_ref=ref,
+            )
+        )
+    return points

@@ -6,10 +6,11 @@ from typing import Callable, Tuple
 
 from .colors import rgba_to_css
 from .points import VisualPoint
+from ..widgets.switch import make_switch
 from ..widgets.theme import swatch_button_css
 
 ENABLED_COL = "Enabled"
-ANCHOR_COL = "Attach"
+ANCHOR_COL = "Anchor"
 COLOR_COL = "Color"
 NAME_COL = "Atom / Label"
 SOURCE_COL = "Source"
@@ -27,7 +28,7 @@ ANCHOR_START_COL = "Anch S"
 ANCHOR_END_COL = "Anch E"
 
 ANCHOR_TIP = (
-    "When checked, this point stays attached to its atom and follows if the atom moves. "
+    "When checked, this point stays anchored to its atom and follows if the atom moves. "
     "When unchecked, the position stays fixed at the current xyz."
 )
 ANCHOR_DISABLED_TIP = "No atom reference — add from selection or snap to an atom first."
@@ -184,7 +185,7 @@ def sync_enabled_cell(
     QtCore,
 ) -> None:
     table.removeCellWidget(row, col)
-    cb = QtWidgets.QCheckBox()
+    cb = make_switch(compact=True)
     cb.setChecked(bool(getattr(pt, "enabled", True)))
     cb.setToolTip(ENABLED_TIP)
     cb.toggled.connect(lambda checked, r=row: on_toggled(r, checked))
@@ -208,7 +209,7 @@ def sync_anchor_cell(
 ) -> None:
     """Replace the anchor checkbox for one table cell."""
     table.removeCellWidget(row, col)
-    cb = QtWidgets.QCheckBox()
+    cb = make_switch(compact=True)
     cb.setChecked(pt.wants_anchor())
     cb.setEnabled(pt.can_anchor())
     cb.setToolTip(ANCHOR_TIP if pt.can_anchor() else ANCHOR_DISABLED_TIP)

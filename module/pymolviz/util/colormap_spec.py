@@ -602,6 +602,30 @@ def coerce_definition(colormap) -> Optional[ColormapDefinition]:
     return None
 
 
+def named_colormap_from_attrs(colormap=None, spec=None) -> Optional[str]:
+    """Preset name stored on a visual (spec wins, then string / ColorMap name)."""
+    if isinstance(spec, dict):
+        preset = str(spec.get("preset") or "").strip()
+        if preset:
+            return preset
+    if isinstance(colormap, str):
+        text = colormap.strip()
+        return text or None
+    if colormap is None:
+        return None
+    name = getattr(colormap, "name", None) or getattr(colormap, "_name", None)
+    if name:
+        text = str(name).strip()
+        if text:
+            return text
+    inner = getattr(colormap, "colormap", None)
+    if isinstance(inner, str):
+        text = inner.strip()
+        if text:
+            return text
+    return None
+
+
 def persist_colormap_attrs(colormap, spec=None):
     """``(preset_name, spec_dict_or_None)`` for mesh / visual persistence."""
     defn = ColormapDefinition.from_dict(spec) if spec else coerce_definition(colormap)
@@ -937,6 +961,197 @@ def mapping_for_custom_preset(name: str) -> Optional[FieldColorMapping]:
     if defn is None:
         return None
     return FieldColorMapping(colormap=replace(defn, customized=True, preset=str(name)))
+
+
+SIMILAR_RAMP_SAMPLES = 64
+SIMILAR_RAMP_COLOR_MAX = 0.06
+SIMILAR_RAMP_ALPHA_MAX = 0.06
+SIMILAR_STOP_POS = 0.03
+HIGHLIGHT_COLOR = 0.02
+HIGHLIGHT_ALPHA = 0.02
+HIGHLIGHT_POS = 0.01
+
+CHOICE_USE_EXISTING = "use_existing"
+CHOICE_KEEP_NEW = "keep_new"
+CHOICE_CANCEL = "cancel"
+
+
+@dataclass(frozen=True)
+class ColormapStopDiff:
+    kind: str
+    position_new: Optional[float]
+    position_existing: Optional[float]
+    rgba_new: Optional[RGBA]
+    rgba_existing: Optional[RGBA]
+    color_delta: float
+    alpha_delta: float
+    highlight: bool
+
+
+@dataclass(frozen=True)
+class ColormapSimilarity:
+    color_max: float
+    color_mean: float
+    alpha_max: float
+    alpha_mean: float
+    stop_diffs: Tuple[ColormapStopDiff, ...]
+    similar: bool
+
+
+@dataclass(frozen=True)
+class SimilarColormapMatch:
+    name: str
+    definition: ColormapDefinition
+    similarity: ColormapSimilarity
+
+
+@dataclass(frozen=True)
+class SimilarColormapChoice:
+    action: str
+    name: Optional[str] = None
+
+
+def _rgba_delta(a: Optional[RGBA], b: Optional[RGBA]) -> Tuple[float, float]:
+    if a is None or b is None:
+        return (1.0, 1.0)
+    color = max(abs(float(a[i]) - float(b[i])) for i in range(3))
+    alpha = abs(float(a[3]) - float(b[3]))
+    return (color, alpha)
+
+
+def pair_colormap_stops(
+    new_stops: Sequence[ColorStop],
+    existing_stops: Sequence[ColorStop],
+    pos_tol: float = SIMILAR_STOP_POS,
+) -> Tuple[ColormapStopDiff, ...]:
+    """Greedy position matching used for similarity and the diff table."""
+    left = list(new_stops or ())
+    right = list(existing_stops or ())
+    used = set()
+    rows: List[ColormapStopDiff] = []
+    for stop in left:
+        best_i = None
+        best_d = 1e9
+        for index, other in enumerate(right):
+            if index in used:
+                continue
+            dist = abs(float(stop.position) - float(other.position))
+            if dist < best_d:
+                best_d = dist
+                best_i = index
+        if best_i is not None and best_d <= float(pos_tol):
+            used.add(best_i)
+            other = right[best_i]
+            color_d, alpha_d = _rgba_delta(stop.rgba, other.rgba)
+            highlight = (
+                color_d > HIGHLIGHT_COLOR
+                or alpha_d > HIGHLIGHT_ALPHA
+                or abs(float(stop.position) - float(other.position)) > HIGHLIGHT_POS
+            )
+            rows.append(
+                ColormapStopDiff(
+                    kind="match",
+                    position_new=float(stop.position),
+                    position_existing=float(other.position),
+                    rgba_new=stop.rgba,
+                    rgba_existing=other.rgba,
+                    color_delta=color_d,
+                    alpha_delta=alpha_d,
+                    highlight=highlight,
+                )
+            )
+        else:
+            rows.append(
+                ColormapStopDiff(
+                    kind="extra_new",
+                    position_new=float(stop.position),
+                    position_existing=None,
+                    rgba_new=stop.rgba,
+                    rgba_existing=None,
+                    color_delta=1.0,
+                    alpha_delta=1.0,
+                    highlight=True,
+                )
+            )
+    for index, other in enumerate(right):
+        if index in used:
+            continue
+        rows.append(
+            ColormapStopDiff(
+                kind="extra_existing",
+                position_new=None,
+                position_existing=float(other.position),
+                rgba_new=None,
+                rgba_existing=other.rgba,
+                color_delta=1.0,
+                alpha_delta=1.0,
+                highlight=True,
+            )
+        )
+    rows.sort(
+        key=lambda row: (
+            row.position_new if row.position_new is not None else row.position_existing or 0.0,
+            row.kind,
+        )
+    )
+    return tuple(rows)
+
+
+def colormap_similarity(new: ColormapDefinition, existing: ColormapDefinition, n: int = SIMILAR_RAMP_SAMPLES) -> ColormapSimilarity:
+    """Compare interpolated RGBA ramps and aligned color/alpha stops."""
+    left_defn = replace(new, customized=True) if new.stops else new
+    right_defn = replace(existing, customized=True) if existing.stops else existing
+    left = ramp_rgba(left_defn, n=n)
+    right = ramp_rgba(right_defn, n=n)
+    delta = np.abs(np.asarray(left, dtype=float) - np.asarray(right, dtype=float))
+    color = delta[:, :3]
+    alpha = delta[:, 3]
+    color_max = float(color.max()) if color.size else 0.0
+    color_mean = float(color.mean()) if color.size else 0.0
+    alpha_max = float(alpha.max()) if alpha.size else 0.0
+    alpha_mean = float(alpha.mean()) if alpha.size else 0.0
+    diffs = pair_colormap_stops(new.stops, existing.stops)
+    extras = sum(1 for row in diffs if row.kind != "match")
+    matched = [row for row in diffs if row.kind == "match"]
+    stops_close = extras == 0 and all(
+        row.color_delta <= SIMILAR_RAMP_COLOR_MAX
+        and row.alpha_delta <= SIMILAR_RAMP_ALPHA_MAX
+        and abs((row.position_new or 0.0) - (row.position_existing or 0.0)) <= SIMILAR_STOP_POS
+        for row in matched
+    )
+    ramp_close = color_max <= SIMILAR_RAMP_COLOR_MAX and alpha_max <= SIMILAR_RAMP_ALPHA_MAX
+    similar = bool(ramp_close or (stops_close and matched))
+    return ColormapSimilarity(
+        color_max=color_max,
+        color_mean=color_mean,
+        alpha_max=alpha_max,
+        alpha_mean=alpha_mean,
+        stop_diffs=diffs,
+        similar=similar,
+    )
+
+
+def closest_similar_custom_colormap(
+    defn: ColormapDefinition,
+    exclude_name: Optional[str] = None,
+) -> Optional[SimilarColormapMatch]:
+    """Nearest highly similar saved custom colormap, if any."""
+    skip = str(exclude_name or "").strip()
+    best = None
+    best_score = 1e9
+    for item in load_custom_presets():
+        name = str(item.get("name") or "").strip()
+        if not name or name == skip:
+            continue
+        other = ColormapDefinition.from_dict(item.get("definition") or {})
+        similarity = colormap_similarity(defn, other)
+        if not similarity.similar:
+            continue
+        score = max(similarity.color_max, similarity.alpha_max)
+        if score < best_score:
+            best_score = score
+            best = SimilarColormapMatch(name=name, definition=other, similarity=similarity)
+    return best
 
 
 def builtin_preset_names() -> Tuple[str, ...]:

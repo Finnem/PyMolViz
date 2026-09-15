@@ -321,7 +321,9 @@ def test_volume_preview_is_native_not_iso_proxy():
     assert visual.grid_data.name == PREVIEW_GEOM_MAP_NAME
 
 
-def test_preview_volume_clip_shrinks_the_preview_brick():
+def test_preview_volume_clip_keeps_full_brick_for_load_crop():
+    from pymolviz.fields.clip import crop_grid_to_aabb
+
     field = _blob_field()
     full = build_grid_preview_visual(field, kind="Volume", name="_pmv_prev_vol")
     cropped = build_grid_preview_visual(
@@ -331,9 +333,32 @@ def test_preview_volume_clip_shrinks_the_preview_brick():
         clip_aabb=[[-0.5, -2.0, -2.0], [0.5, 2.0, 2.0]],
     )
     full_span = float(np.asarray(full.grid_data.step_counts)[0])
-    crop_span = float(np.asarray(cropped.grid_data.step_counts)[0])
-    assert crop_span < full_span
-    assert cropped.clip_aabb is None
+    assert float(np.asarray(cropped.grid_data.step_counts)[0]) == full_span
+    assert cropped.clip_aabb is not None
+    assert cropped.clip_aabb[0][0] == pytest.approx(-0.5)
+    shrunk = crop_grid_to_aabb(cropped.grid_data, cropped.clip_aabb)
+    assert shrunk is not None
+    assert float(np.asarray(shrunk.step_counts)[0]) < full_span
+
+
+def test_sync_visual_grid_from_field_skips_preview_brick():
+    from pymolviz.wizards.builders.field_visual import sync_visual_grid_from_field
+
+    field = _blob_field()
+    visual = build_grid_preview_visual(
+        field,
+        kind="IsoSurface",
+        iso_level=0.4,
+        name="_pmv_prev_iso",
+        clip_aabb=[[-0.5, -2.0, -2.0], [0.5, 2.0, 2.0]],
+    )
+    brick = visual.grid_data
+    visual.id = "preview_test"
+    visual.geometry_field_id = str(field.id)
+    kept = sync_visual_grid_from_field(visual)
+    assert kept is brick
+    assert visual.grid_data is brick
+    assert visual.clip_aabb is not None
 
 
 def test_field_visual_preview_key_tracks_iso_and_clip():
@@ -423,5 +448,7 @@ def test_build_domain_box_collection_sheared_grid_is_line_parallelepiped():
     )
     assert len(collection) == 1
     mesh = collection[0]
-    assert type(mesh).__name__ == "Lines"
+    assert type(mesh).__name__ == "Arrows"
+    assert mesh.line_style.ends == "None"
+    assert mesh.quality == 0
     assert mesh.vertices.reshape(-1, 6).shape[0] == 12

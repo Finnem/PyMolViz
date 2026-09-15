@@ -105,6 +105,40 @@ def test_with_methods_preserve_pair_id():
     assert pair.swapped().start.xyz() == (1.0, 0.0, 0.0)
 
 
+def test_arrow_endpoint_colors_are_independent_until_unified():
+    start = _free_point((0, 0, 0)).with_color((1.0, 0.0, 0.0))
+    end = _free_point((1, 0, 0)).with_color((0.0, 0.0, 1.0))
+    pair = VisualPair(start, end)
+    assert pair.start.color[:3] == pytest.approx((1.0, 0.0, 0.0))
+    assert pair.end.color[:3] == pytest.approx((0.0, 0.0, 1.0))
+    unified = pair.with_color((0.0, 1.0, 0.0))
+    assert unified.start.color[:3] == pytest.approx((0.0, 1.0, 0.0))
+    assert unified.end.color[:3] == pytest.approx((0.0, 1.0, 0.0))
+
+
+def test_two_color_arrow_shaft_uses_gradient_cones():
+    from pymolviz.meshes.Arrows import GRADIENT_SHAFT_SLICES, build_styled_arrow_cgo
+    from pymolviz.util.line_style import LineStyle
+
+    start, end = (0.0, 0.0, 0.0), (10.0, 0.0, 0.0)
+    red = (1.0, 0.0, 0.0)
+    green = (0.0, 1.0, 0.0)
+    style = LineStyle(ends="Arrow")
+    same = build_styled_arrow_cgo(start, end, red, 3, style, color_end=red)
+    two = build_styled_arrow_cgo(start, end, red, 3, style, color_end=green)
+    assert same.count("CONE") == 1
+    assert two.count("CONE") == GRADIENT_SHAFT_SLICES
+    assert two.count("VERTEX") > 0
+
+
+def test_native_cone_cgo_keeps_start_and_end_rgb():
+    from pymolviz.meshes.Arrows import _native_cone_cgo
+
+    cgo = _native_cone_cgo((0, 0, 0), (1, 0, 0), 0.05, (1.0, 0.0, 0.0), color_end=(0.0, 1.0, 0.0))
+    assert cgo[-8:-5] == [1.0, 0.0, 0.0]
+    assert cgo[-5:-2] == [0.0, 1.0, 0.0]
+
+
 def test_complete_pairs_and_flatten_skip_pending_end():
     done = VisualPair(_free_point((0, 0, 0)), _free_point((1, 0, 0)))
     pending = VisualPair(_free_point((2, 0, 0)), None)
@@ -115,6 +149,14 @@ def test_complete_pairs_and_flatten_skip_pending_end():
     committed = commit_pair_anchors(pairs)
     assert len(committed) == 1
     assert committed[0].pair_id == done.pair_id
+
+
+def test_complete_pairs_skips_disabled():
+    done = VisualPair(_free_point((0, 0, 0)), _free_point((1, 0, 0)))
+    hidden = VisualPair(_free_point((2, 0, 0)), _free_point((3, 0, 0))).with_enabled(False)
+    assert complete_pairs([done, hidden]) == [done]
+    committed = commit_pair_anchors([done, hidden])
+    assert [pair.pair_id for pair in committed] == [done.pair_id]
 
 
 def test_points_from_pair_rows_skips_pending_end():
@@ -140,6 +182,9 @@ def test_take_selection_endpoints_ignores_pk1_when_interactive_only(fake_cmd):
 
 
 def test_take_selection_endpoints_counts(fake_cmd):
+    from pymolviz.wizards.last_click import set_last_clicked_atom
+
+    set_last_clicked_atom(None)
     fake_cmd.add_atom(FakeAtom("prot", 1, 0.0, 0.0, 0.0, chain="A", resi="42", name="CA", elem="CA"))
     fake_cmd.add_atom(FakeAtom("prot", 2, 1.0, 0.0, 0.0, chain="A", resi="87", name="CA", elem="CA"))
     fake_cmd.add_atom(FakeAtom("prot", 3, 2.0, 0.0, 0.0, chain="B", resi="15", name="N", elem="N"))
@@ -166,6 +211,52 @@ def test_take_selection_endpoints_counts(fake_cmd):
     start, end, status = take_selection_endpoints(fake_cmd)
     assert status == "multiple"
     assert start is None
+
+    set_last_clicked_atom("prot", 3)
+    start, end, status = take_selection_endpoints(fake_cmd)
+    assert status == "one"
+    assert endpoint_label(start) == "B/15/N"
+    set_last_clicked_atom(None)
+
+    fake_cmd.select("pk1", 'object "prot" and id 3')
+    start, end, status = take_selection_endpoints(fake_cmd)
+    assert status == "one"
+    assert endpoint_label(start) == "B/15/N"
+
+    start, end, status = take_selection_endpoints(fake_cmd, multi_atom="center")
+    assert status == "one"
+    assert end is None
+    assert start.x == pytest.approx(1.0)
+    assert start.y == pytest.approx(0.0)
+    assert start.z == pytest.approx(0.0)
+
+
+def test_parse_atom_sele_and_last_click():
+    from pymolviz.wizards.last_click import (
+        last_clicked_atom,
+        parse_atom_sele,
+        set_last_clicked_atom,
+    )
+
+    assert parse_atom_sele("(prot)`12") == ("prot", 12)
+    assert parse_atom_sele("prot`3") == ("prot", 3)
+    assert parse_atom_sele("") is None
+    set_last_clicked_atom("obj", 9)
+    assert last_clicked_atom() == ("obj", 9)
+    set_last_clicked_atom(None)
+    assert last_clicked_atom() is None
+
+
+def test_take_two_atoms_as_center_not_pair(fake_cmd):
+    from pymolviz.wizards.builders.pairs import MULTI_CENTER, take_selection_endpoints
+
+    fake_cmd.add_atom(FakeAtom("prot", 1, 0.0, 0.0, 0.0, chain="A", resi="42", name="CA"))
+    fake_cmd.add_atom(FakeAtom("prot", 2, 2.0, 0.0, 0.0, chain="A", resi="87", name="CA"))
+    fake_cmd.select("sele", 'object "prot" and id 1 or object "prot" and id 2')
+    start, end, status = take_selection_endpoints(fake_cmd, multi_atom=MULTI_CENTER)
+    assert status == "one"
+    assert end is None
+    assert start.x == pytest.approx(1.0)
 
 
 def test_focus_visual_point_selects_atom(fake_cmd):

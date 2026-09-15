@@ -8,7 +8,7 @@ tiled by wrapping sample coordinates through those operators.
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 
@@ -74,12 +74,104 @@ def _cell_is_orthogonal(cell_matrix, atol=1e-3) -> bool:
 
 
 def grid_contains_points(grid, points, eps=_EPS) -> bool:
+    return point_coverage_status(grid, points, eps=eps) == "inside"
+
+
+def point_coverage_status(grid, points, eps=_EPS) -> str:
+    """``inside``, ``partial``, ``outside``, or ``empty`` vs the stored map brick."""
+    pts = np.asarray(points, dtype=float).reshape(-1, 3)
+    if pts.size == 0 or not np.all(np.isfinite(pts)):
+        return "empty"
     from .domain import grid_world_to_local
 
-    pts = np.asarray(points, dtype=float).reshape(-1, 3)
     local = grid_world_to_local(grid, pts)
     lo, hi = map_corners(grid)
-    return bool(np.all((local >= lo - eps) & (local <= hi + eps)))
+    inside = np.all((local >= lo - eps) & (local <= hi + eps), axis=1)
+    n_in = int(np.count_nonzero(inside))
+    if n_in <= 0:
+        return "outside"
+    if n_in >= int(inside.shape[0]):
+        return "inside"
+    return "partial"
+
+
+def coverage_sketch(map_lo, map_hi, target_lo=None, target_hi=None, axes=None, pad=0.08):
+    """Normalized rectangles in 0–1, +second-axis up.
+
+    When ``axes`` is omitted, the plane includes the largest map–target
+    offset so a Z miss is not hidden in an XY overlap.
+    """
+    if axes is None:
+        axes = choose_coverage_axes(map_lo, map_hi, target_lo, target_hi)
+    ax, ay = (int(axes[0]), int(axes[1]))
+    names = (AXIS_NAMES[ax], AXIS_NAMES[ay])
+
+    def xy(lo, hi):
+        lo = np.asarray(lo, dtype=float).reshape(3)
+        hi = np.asarray(hi, dtype=float).reshape(3)
+        return np.array([lo[ax], lo[ay]], dtype=float), np.array([hi[ax], hi[ay]], dtype=float)
+
+    m0, m1 = xy(map_lo, map_hi)
+    corners = [m0, m1]
+    t0 = t1 = None
+    if target_lo is not None and target_hi is not None:
+        t0, t1 = xy(target_lo, target_hi)
+        corners.extend([t0, t1])
+    stack = np.vstack(corners)
+    gmin = stack.min(axis=0)
+    gmax = stack.max(axis=0)
+    span = np.maximum(gmax - gmin, 1e-6)
+    gmin = gmin - float(pad) * span
+    gmax = gmax + float(pad) * span
+    span = np.maximum(gmax - gmin, 1e-6)
+
+    def norm_rect(lo, hi):
+        p0 = (lo - gmin) / span
+        p1 = (hi - gmin) / span
+        x0 = float(min(p0[0], p1[0]))
+        x1 = float(max(p0[0], p1[0]))
+        y_lo = float(min(p0[1], p1[1]))
+        y_hi = float(max(p0[1], p1[1]))
+        return {
+            "x": x0,
+            "y": 1.0 - y_hi,
+            "w": max(x1 - x0, 0.02),
+            "h": max(y_hi - y_lo, 0.02),
+        }
+
+    out = {
+        "map": norm_rect(m0, m1),
+        "target": None,
+        "axes": (ax, ay),
+        "axis_names": names,
+    }
+    if t0 is not None:
+        out["target"] = norm_rect(t0, t1)
+    return out
+
+
+AXIS_NAMES = ("X", "Y", "Z")
+
+
+def choose_coverage_axes(map_lo, map_hi, target_lo=None, target_hi=None):
+    """Return ``(horizontal, vertical)`` world axes; vertical is the largest offset."""
+    if target_lo is None or target_hi is None:
+        return (0, 1)
+    map_lo = np.asarray(map_lo, dtype=float).reshape(3)
+    map_hi = np.asarray(map_hi, dtype=float).reshape(3)
+    tgt_lo = np.asarray(target_lo, dtype=float).reshape(3)
+    tgt_hi = np.asarray(target_hi, dtype=float).reshape(3)
+    sep = np.maximum(map_lo - tgt_hi, tgt_lo - map_hi)
+    sep = np.maximum(sep, 0.0)
+    offset = np.abs(0.5 * (tgt_lo + tgt_hi) - 0.5 * (map_lo + map_hi))
+    score = np.where(sep > 1e-8, sep, offset)
+    if float(np.max(score)) < 1e-8:
+        return (0, 1)
+    ax_disp = int(np.argmax(score))
+    rest = [i for i in range(3) if i != ax_disp]
+    span = np.maximum(map_hi - map_lo, 1e-12) + np.maximum(tgt_hi - tgt_lo, 0.0)
+    ax_other = max(rest, key=lambda i: (float(score[i]), float(span[i]), -i))
+    return (ax_other, ax_disp)
 
 
 def cell_from_aabb(lo, hi) -> Tuple[np.ndarray, np.ndarray]:
@@ -486,6 +578,120 @@ def selection_points(cmd, selection=None) -> np.ndarray:
             continue
         return pts.reshape(-1, 3)
     raise CrystalError("Select some atoms first (the named selection \"sele\").")
+
+
+_SKIP_EXTEND_PREFIXES = ("_pmv_",)
+_SKIP_EXTEND_NAMES = frozenset({"pmv_camera_center"})
+_SKIP_EXTEND_TYPE_TOKENS = (
+    "map", "volume", "mesh", "cgo", "ramp", "surface", "callback", "gadget", "group",
+)
+_COVERAGE_SORT = {"outside": 0, "partial": 1, "inside": 2, "empty": 3}
+
+
+def _is_extend_skip_name(name: str) -> bool:
+    text = str(name or "")
+    if text in _SKIP_EXTEND_NAMES:
+        return True
+    return any(text.startswith(prefix) for prefix in _SKIP_EXTEND_PREFIXES)
+
+
+def _object_is_coordinate_target(cmd, name: str) -> bool:
+    try:
+        typ = str(cmd.get_type(name) or "").lower()
+    except Exception:
+        typ = ""
+    if any(token in typ for token in _SKIP_EXTEND_TYPE_TOKENS):
+        return False
+    return True
+
+
+def _coords_for_name(cmd, name):
+    try:
+        n = int(cmd.count_atoms(name) or 0)
+    except Exception:
+        n = 0
+    if n <= 0:
+        return None
+    try:
+        coords = cmd.get_coords(name)
+    except Exception:
+        coords = None
+    pts = np.asarray(coords if coords is not None else [], dtype=float)
+    if pts.size == 0 or not np.all(np.isfinite(pts)):
+        return None
+    return pts.reshape(-1, 3)
+
+
+def iter_extend_target_names(cmd) -> List[Tuple[str, str]]:
+    """``(kind, name)`` for molecule objects and named selections with atoms."""
+    found = []
+    seen = set()
+    try:
+        objects = [str(n) for n in cmd.get_names("objects") or []]
+    except Exception:
+        objects = []
+    for name in objects:
+        if not name or name in seen or _is_extend_skip_name(name):
+            continue
+        if not _object_is_coordinate_target(cmd, name):
+            continue
+        seen.add(name)
+        found.append(("object", name))
+    try:
+        selections = [str(n) for n in cmd.get_names("selections") or []]
+    except Exception:
+        selections = []
+    for name in selections:
+        if not name or name in seen or _is_extend_skip_name(name):
+            continue
+        seen.add(name)
+        found.append(("selection", name))
+    return found
+
+
+def extend_target_rows(cmd, grid, skip_names=()) -> List[dict]:
+    """Coverage of each object/selection against the current map brick."""
+    skip = {str(n) for n in (skip_names or ()) if n}
+    rows = []
+    if cmd is None or grid is None:
+        return rows
+    for kind, name in iter_extend_target_names(cmd):
+        if name in skip:
+            continue
+        pts = _coords_for_name(cmd, name)
+        if pts is None:
+            continue
+        lo = pts.min(axis=0)
+        hi = pts.max(axis=0)
+        rows.append({
+            "kind": kind,
+            "name": name,
+            "status": point_coverage_status(grid, pts),
+            "n_atoms": int(pts.shape[0]),
+            "lo": lo.tolist(),
+            "hi": hi.tolist(),
+        })
+    rows.sort(
+        key=lambda row: (
+            0 if row["kind"] == "object" else 1,
+            _COVERAGE_SORT.get(row["status"], 9),
+            str(row["name"]).lower(),
+        )
+    )
+    return rows
+
+
+def default_extend_target_name(rows) -> Optional[str]:
+    rows = list(rows or [])
+    if not rows:
+        return None
+    for row in rows:
+        if row.get("name") in ("sele", "(sele)") and row.get("status") != "empty":
+            return str(row["name"])
+    for row in rows:
+        if row.get("status") in ("outside", "partial"):
+            return str(row["name"])
+    return str(rows[0]["name"])
 
 
 def _symmetry_from_cmd(cmd, name):

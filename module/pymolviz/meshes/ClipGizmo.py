@@ -18,6 +18,7 @@ class ClipGizmo(Points):
         points=None,
         selected=False,
         draft=False,
+        axis_arrow=False,
         name=None,
         **kwargs,
     ) -> None:
@@ -33,6 +34,7 @@ class ClipGizmo(Points):
         self.points = None if points is None else np.asarray(points, dtype=float).reshape(-1, 3)
         self.selected = bool(selected)
         self.draft = bool(draft)
+        self.axis_arrow = bool(axis_arrow)
 
     def _create_CGO_list(self):
         cached = getattr(self, "_cached_cgo", None)
@@ -42,6 +44,7 @@ class ClipGizmo(Points):
             self.origin, self.normal, self.scale,
             points=self.points,
             selected=self.selected, draft=self.draft,
+            axis_arrow=self.axis_arrow,
         )
         self._cached_cgo = cgo_list
         return cgo_list

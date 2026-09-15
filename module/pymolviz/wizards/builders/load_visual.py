@@ -145,7 +145,7 @@ def pairs_from_mesh(obj) -> List[VisualPair]:
                 end, colors[i], alphas[i], existing, **_field_from_obj(child),
             )
             existing.append(end_pt)
-            width = float(getattr(child, "shaft_radius", DEFAULT_ARROW_WIDTH) or DEFAULT_ARROW_WIDTH)
+            width = _arrow_shaft_radius(child)
             radii = getattr(child, "pair_radii", None) or ()
             heads = getattr(child, "pair_heads", None) or ()
             styles = getattr(child, "pair_styles", None) or ()
@@ -158,10 +158,31 @@ def pairs_from_mesh(obj) -> List[VisualPair]:
             if i < len(styles) and styles[i] is not None:
                 style = styles[i].copy() if hasattr(styles[i], "copy") else styles[i]
             else:
-                mesh_style = getattr(child, "line_style", None)
-                style = mesh_style.copy() if mesh_style is not None and hasattr(mesh_style, "copy") else (mesh_style or LineStyle())
+                style = line_style_from_mesh(child)
             pairs.append(VisualPair(start_pt, end_pt, width=width, head=head, style=style))
     return pairs
+
+
+def line_style_from_mesh(child) -> LineStyle:
+    """``LineStyle`` stored on the Arrows object (Options in the editor)."""
+    style = getattr(child, "line_style", None)
+    if style is not None:
+        return style.copy() if hasattr(style, "copy") else style
+    return LineStyle()
+
+
+def _arrow_shaft_radius(child) -> float:
+    shaft = getattr(child, "shaft_radius", None)
+    if shaft is not None:
+        return float(shaft)
+    return float(DEFAULT_ARROW_WIDTH)
+
+
+def _arrow_quality(child) -> int:
+    quality = getattr(child, "quality", None)
+    if quality is not None:
+        return int(quality)
+    return 3
 
 
 def sphere_options(obj) -> dict:
@@ -189,17 +210,19 @@ def box_options(obj) -> dict:
 
 def arrow_options(obj) -> dict:
     child = _first_child(obj)
-    style = getattr(child, "line_style", None)
-    return {
-        "quality": int(getattr(child, "quality", 3) or 3),
-        "line_style": style,
-        "shaft_radius": float(getattr(child, "shaft_radius", 0.045) or 0.045),
-        "head_length": float(getattr(child, "head_length", 0.25) or 0.25),
+    shaft = _arrow_shaft_radius(child)
+    getter = getattr(child, "options", None)
+    opts = dict(getter()) if callable(getter) else {"line_style": line_style_from_mesh(child)}
+    opts.update({
+        "quality": _arrow_quality(child),
+        "shaft_radius": shaft,
+        "head_length": float(getattr(child, "head_length", None) or default_head_length(shaft)),
         "head_width": float(getattr(child, "head_width", 1.618) or 1.618),
         "head_radius": getattr(child, "head_radius", None),
         "clip_planes": list(getattr(child, "clip_planes", None) or []),
         "specular": bool(getattr(obj, "specular", True)),
-    }
+    })
+    return opts
 
 
 def surface_options(obj) -> dict:

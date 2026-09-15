@@ -82,6 +82,7 @@ def test_start_clip_drag_uses_matrix_mode_without_replacing_wizard(fake_cmd):
     assert fake_cmd.get_drag_object_name() == CLIP_DRAG_NAME
     assert fake_cmd._drag_mode == 1
     assert fake_cmd._drag_wizard == 0
+    assert fake_cmd._drag_edit == 1
     assert fake_cmd.settings.get(CLIP_DRAG_NAME, {}).get("matrix_mode") == 1
     assert ("spheres", CLIP_DRAG_NAME) in fake_cmd._shown
     matrix = read_object_matrix(fake_cmd, CLIP_DRAG_NAME)
@@ -131,3 +132,11 @@ def test_start_clip_drag_second_attach_sees_editing_button_mode(fake_cmd):
     assert second == 1
     stop_clip_drag(fake_cmd, button_mode=first)
     assert fake_cmd.get("button_mode") == 0
+
+
+def test_start_clip_drag_axis_lock_skips_native_xyz_widget(fake_cmd):
+    start_clip_drag(fake_cmd, (0.0, 0.0, 0.0), native_widget=False)
+    assert fake_cmd._drag_edit == 0
+    assert fake_cmd._edit_mode == 0
+    assert ("spheres", CLIP_DRAG_NAME) not in fake_cmd._shown
+    stop_clip_drag(fake_cmd)

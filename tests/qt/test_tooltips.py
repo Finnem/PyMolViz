@@ -141,7 +141,6 @@ def test_deferred_callback_cancel_prevents_stale_run():
 
 @pytest.mark.qt
 def test_new_section_tooltip_copy_is_applied():
-    from pymolviz.wizards.builders.appearance_section import SPECULAR_TIP
     from pymolviz.wizards.builders.clip_modifier import ADD_CLIP_TIP
     from pymolviz.wizards.builders.point_insertion import (
         ADD_POINT_HEADER_LABEL,
@@ -172,18 +171,43 @@ def test_new_section_tooltip_copy_is_applied():
             (widgets[3], SNAP_TO_ATOM_TIP),
             (widgets[4], HOOK_TO_SELECTION_TIP),
             (widgets[5], ZOOM_TO_SELECTION_TIP),
-            (widgets[6], SPECULAR_TIP, "Specular"),
         ],
         context="SharedEditorSections",
     )
     assert missing == []
     assert insertion_add_label(14) == ADD_POINT_HEADER_LABEL
-    assert "camera" in SNAP_LABEL.lower()
-    assert "attached" in HOOK_LABEL.lower()
-    assert "zoom" in ZOOM_LABEL.lower()
+    assert SNAP_LABEL == "Snap to atoms"
+    assert HOOK_LABEL == "Anchor to atoms"
+    assert ZOOM_LABEL == "Zoom to new points"
     assert "clip" in ADD_CLIP_TIP.lower()
-    assert "highlight" in SPECULAR_TIP.lower()
     assert "insert" in ADD_POINT_TIP.lower()
+
+
+@pytest.mark.qt
+def test_arrow_endpoint_action_tooltips():
+    from pymolviz.wizards.builders.arrow_list import (
+        ATTACH_LABEL,
+        CAMERA_ENDPOINT_TIP,
+        PICK_END_TIP,
+        PICK_START_TIP,
+    )
+
+    pick = _FakeWidget(class_name="QPushButton", tooltip="")
+    cam = _FakeWidget(class_name="QPushButton", tooltip="")
+    attach = _FakeWidget(class_name="QCheckBox", tooltip="")
+    missing = apply_required_tooltips(
+        [
+            (pick, PICK_START_TIP, "Pick atom"),
+            (cam, CAMERA_ENDPOINT_TIP, "Use camera center"),
+            (attach, "Keep the start linked to this atom so the arrow follows if the atom moves.", ATTACH_LABEL),
+        ],
+        context="ArrowPairEditor",
+    )
+    assert missing == []
+    assert "pick" in pick.toolTip().lower()
+    assert "camera" in cam.toolTip().lower()
+    assert "atom" in attach.toolTip().lower()
+    assert "endpoint" in PICK_END_TIP.lower()
 
 
 @pytest.mark.qt
@@ -249,6 +273,8 @@ def test_field_library_layout_copy_and_tooltips():
     assert "205, 226, 240" in section_css()
     assert "219, 238, 249" in catalog_table_css()
     assert "245, 249, 251" in wizard_page_css()
+    combo = wizard_page_css().split("QComboBox {", 1)[1].split("}", 1)[0]
+    assert "border: 1px solid" in combo
     assert "42, 130, 236" in type_card_css()
     assert "196, 210, 220" in action_bar_css()
     fill, _ink = kind_badge_rgb("IsoSurface")

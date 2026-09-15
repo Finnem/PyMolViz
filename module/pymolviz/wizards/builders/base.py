@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
-from ..pick import DeferredCallback, overlay_get_save_file_name, overlay_information, qt_modules
+from ..pick import DeferredCallback, overlay_information, qt_modules
 from ..tooltips import EMPTY_PYMOL_SELECTION_MSG, apply_required_tooltips, warn_missing_setting_tooltips
 from ..widgets.action_bar import BuilderActionBar
 from ..widgets.name_section import BuilderNameSection
 from ..widgets.scrolling import bind_width_to_scroll_viewport, make_scrolling_body
-from ..widgets.theme import apply_page_layout, apply_wizard_page_style
+from ..widgets.theme import PAGE_SPACING, apply_page_layout, apply_wizard_page_style
 from ..widgets.breadcrumb import (
     BACK_TIP,
     create_crumbs,
@@ -19,6 +19,7 @@ from ..widgets.breadcrumb import (
 )
 from .object_names import unused_object_name
 from .preview import persist_live_preview
+from .export import export_objects
 
 
 class BuilderPage:
@@ -115,11 +116,32 @@ class BuilderPage:
     def _collection(self, name: str):
         raise NotImplementedError
 
+    def _current_preview_mode(self) -> str:
+        appearance = getattr(self, "_appearance", None)
+        getter = getattr(appearance, "preview_mode", None)
+        if callable(getter):
+            return getter()
+        from .preview_mode import PREVIEW_FULL
+
+        return PREVIEW_FULL
+
+    def _persist_retarget(self, collection) -> bool:
+        from .preview_mode import preview_can_promote
+
+        if not preview_can_promote(self._current_preview_mode()):
+            return False
+        return self._retarget(collection)
+
     def _retarget(self, collection) -> bool:
         return False
 
     def _prepare_persist(self, name: str):
         """Optional last preview push before promoting the live object."""
+        from .preview_mode import stamp_preview_mode
+
+        collection = getattr(self._preview, "collection", None)
+        if collection is not None:
+            stamp_preview_mode(collection, self._current_preview_mode())
 
     def _sync_commit_enabled(self):
         if self._action_bar is not None:
@@ -129,14 +151,23 @@ class BuilderPage:
         if not self._can_commit():
             return
         name = unused_object_name(self._typed_name(), self.cmd, keep=self._loaded_name)
+        mode = self._current_preview_mode()
         self._prepare_persist(name)
+
+        def fallback():
+            from .preview_mode import stamp_preview_mode
+
+            collection = self._collection(name)
+            stamp_preview_mode(collection, mode)
+            return collection
+
         persist_live_preview(
             self.cmd,
             self._preview,
             name,
             obj_id=self._editing_id,
-            retarget=self._retarget,
-            fallback=lambda: self._collection(name),
+            retarget=self._persist_retarget,
+            fallback=fallback,
         )
         if self._on_create is not None:
             self._on_create()
@@ -144,17 +175,13 @@ class BuilderPage:
     def _export_cgo(self):
         if not self._can_commit():
             return
-        _, _, QtWidgets = qt_modules()
         name = self._typed_name()
-        path, _ = overlay_get_save_file_name(
+        export_objects(
             self._page,
-            "Export CGO script",
-            "%s.py" % name,
-            "Python (*.py)",
+            self._collection(name),
+            name,
+            title="Export",
         )
-        if not path:
-            return
-        self._collection(name).write(path)
 
     def _warn_empty_pymol_selection(self, title):
         _, _, QtWidgets = qt_modules()
@@ -191,6 +218,32 @@ class BuilderPage:
         outer.addWidget(scroll, stretch=1)
         self._outer_layout = outer
         return page, body, back
+
+    def _mount_editor_columns(self, root, QtWidgets):
+        """Points/arrows on the left; Geometry, Appearance, Modifiers on the right."""
+        columns = QtWidgets.QWidget()
+        row = QtWidgets.QHBoxLayout(columns)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(PAGE_SPACING)
+        left_host = QtWidgets.QWidget()
+        right_host = QtWidgets.QWidget()
+        left = QtWidgets.QVBoxLayout(left_host)
+        right = QtWidgets.QVBoxLayout(right_host)
+        left.setContentsMargins(0, 0, 0, 0)
+        right.setContentsMargins(0, 0, 0, 0)
+        left.setSpacing(PAGE_SPACING)
+        right.setSpacing(PAGE_SPACING)
+        expanding = getattr(QtWidgets.QSizePolicy, "Expanding", None)
+        preferred = getattr(QtWidgets.QSizePolicy, "Preferred", None)
+        if expanding is not None:
+            left_host.setSizePolicy(expanding, expanding)
+            if preferred is not None:
+                right_host.setSizePolicy(preferred, expanding)
+        right_host.setMinimumWidth(320)
+        row.addWidget(left_host, stretch=3)
+        row.addWidget(right_host, stretch=2)
+        root.addWidget(columns, stretch=1)
+        return left, right
 
     def _mount_action_bar(self, page, root):
         self._action_bar = BuilderActionBar(

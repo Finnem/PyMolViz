@@ -109,9 +109,11 @@ def _unextend_wizard_commands(cmd):
 
 def _pymolviz_sync(*_args, **_kwargs):
     from ..points import has_dynamic_sources
+    from .presence import sync_session_with_pymol
     from .runtime import get_runtime
     from .session import all_objects
     runtime = get_runtime()
+    sync_session_with_pymol(runtime.cmd)
     for obj in all_objects():
         if has_dynamic_sources(obj):
             runtime.sync(obj)
@@ -163,6 +165,9 @@ def install(cmd=None):
         restore.append(_RESTORE_TASK)
 
     _install_follow(cmd)
+    from .presence import install_delete_hook
+
+    install_delete_hook(cmd)
     _unextend_wizard_commands(cmd)
     from ..util.pymol_helpers import extend_cmd
 
@@ -194,6 +199,9 @@ def uninstall(cmd=None):
     try:
         if cmd is None:
             from pymol import cmd
+        from .presence import uninstall_delete_hook
+
+        uninstall_delete_hook(cmd)
         _uninstall_follow(cmd)
         _unextend_wizard_commands(cmd)
     except Exception:

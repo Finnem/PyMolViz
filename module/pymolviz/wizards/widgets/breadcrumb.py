@@ -5,7 +5,7 @@ from __future__ import annotations
 from html import escape
 from typing import Sequence
 
-from .theme import INK, MUTED, rgb_css
+from .theme import INK, MUTED, PAGE, ROW, rgb_css
 
 SEPARATOR = " › "
 
@@ -25,6 +25,13 @@ CRUMB_IMPLICIT = "Implicit Surface"
 CRUMB_FROM_SELECTION = "From Selection"
 
 BACK_TIP = "Return to the previous page."
+BACK_BUTTON_CSS = (
+    "QPushButton#pmvBackButton { font-size: 13px; font-weight: 600; color: %s;"
+    " padding: 2px 12px; min-height: 18px; min-width: 72px; border-radius: 6px;"
+    " border: 1px solid %s; background: %s; }"
+    "QPushButton#pmvBackButton:hover { background: %s; }"
+    "QPushButton#pmvBackButton:pressed { padding-top: 3px; padding-bottom: 1px; }"
+)
 
 
 def breadcrumb_text(parts: Sequence[str]) -> str:
@@ -74,8 +81,15 @@ def make_page_header(QtWidgets, on_back, parts: Sequence[str], back_tooltip: str
     layout = QtWidgets.QHBoxLayout()
     layout.setContentsMargins(0, 0, 0, 4)
     back = QtWidgets.QPushButton("← Back")
-    back.setFlat(True)
+    back.setObjectName("pmvBackButton")
+    back.setFlat(False)
+    back.setAutoDefault(False)
+    back.setDefault(False)
     back.setToolTip(back_tooltip)
+    back.setStyleSheet(
+        BACK_BUTTON_CSS % (rgb_css(INK), rgb_css(MUTED), rgb_css(PAGE), rgb_css(ROW))
+    )
+    back.setMinimumHeight(18)
     title = QtWidgets.QLabel()
     title.setStyleSheet("font-size: 16px; color: %s;" % rgb_css(INK))
     title.setText(breadcrumb_html(parts))
@@ -94,7 +108,7 @@ def make_page_header(QtWidgets, on_back, parts: Sequence[str], back_tooltip: str
     layout.addWidget(mirror, 0)
     if on_back is not None:
         back.clicked.connect(on_back)
-        width = max(int(back.sizeHint().width()), 1)
+        width = max(int(back.sizeHint().width()), 72)
         mirror.setFixedWidth(width)
         mirror.setMinimumWidth(width)
     else:

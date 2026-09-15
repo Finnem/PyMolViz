@@ -4,31 +4,8 @@ from __future__ import annotations
 
 from typing import List, Sequence, Tuple
 
-from ..pick import qt_modules
-from ..tooltips import UPDATE_TO_CAMERA_TIP, UPDATE_TO_SELECTION_TIP
-from ..widgets.scrolling import apply_expanding_list_policy
 from ..widgets.section import make_section
-from .anchor_table import (
-    POINT_ANCHOR_COL,
-    POINT_COLOR_COL,
-    POINT_ENABLED_COL,
-    POINT_NAME_COL,
-    POINT_SOURCE_COL,
-    POINT_X_COL,
-    POINT_Y_COL,
-    POINT_Z_COL,
-    anchor_col_index,
-    block_table_selection_signals,
-    configure_point_table,
-    enabled_col_index,
-    point_columns,
-    set_coordinate_columns_visible,
-    sync_anchor_cell,
-    sync_color_cell,
-    sync_enabled_cell,
-    unblock_table_selection_signals,
-    update_color_cell,
-)
+from .anchor_table import point_columns
 from .appearance_section import (
     COLOR_ALL_LABEL,
     COLOR_SELECTION_LABEL,
@@ -39,20 +16,23 @@ from .base import BuilderPage
 from .colors import bind_color_pick_result, pick_rgb
 from .modifiers_section import ModifiersSection
 from .point_insertion import PointInsertionWidget
+from .point_list import PointListEditor
+from .pairs import MULTI_CLICKED, take_single_selection_point
+from ..pick import qt_widget_alive
 from .points import (
     VisualPoint,
-    assign_distinct_colors,
+    apply_location,
     enabled_points,
     export_points_to_selection,
     hide_exported_point_labels,
     update_points_from_camera,
     update_points_from_selection,
 )
-from .zoom_selection import points_from_rows, wire_zoom_to_selection
+from .zoom_selection import zoom_to_visual_points
 
 
-def _table_delete_filter_type(QtCore):
-    class _TableDeleteKeyFilter(QtCore.QObject):
+def _list_delete_filter_type(QtCore):
+    class _ListDeleteKeyFilter(QtCore.QObject):
         def __init__(self, owner):
             QtCore.QObject.__init__(self)
             self._owner = owner
@@ -60,16 +40,15 @@ def _table_delete_filter_type(QtCore):
         def eventFilter(self, obj, event):
             if event.type() != QtCore.QEvent.KeyPress:
                 return False
+            if event.key() == QtCore.Qt.Key_Escape:
+                self._owner._abort_atom_pick()
+                return True
             if event.key() not in (QtCore.Qt.Key_Delete, QtCore.Qt.Key_Backspace):
-                return False
-            table = self._owner._table
-            _, _, QtWidgets = qt_modules()
-            if QtWidgets is not None and table.state() == QtWidgets.QAbstractItemView.EditingState:
                 return False
             self._owner._delete_selected()
             return True
 
-    return _TableDeleteKeyFilter
+    return _ListDeleteKeyFilter
 
 
 class PointTableBuilderPage(BuilderPage):
@@ -89,10 +68,15 @@ class PointTableBuilderPage(BuilderPage):
     def _init_editor(self):
         self._points: List[VisualPoint] = []
         self._table = None
+        self._list = None
+        self._selected_index = None
         self._appearance = None
         self._insertion = None
         self._modifiers = None
         self._table_filter = None
+        self._pick_index = None
+        self._ignore_xyz = None
+        self._poll_timer = None
         self._preview = self._make_preview()
         self._init_options_state()
 
@@ -104,6 +88,7 @@ class PointTableBuilderPage(BuilderPage):
 
     def _cleanup_ephemeral(self):
         hide_exported_point_labels(self.cmd)
+        self._clear_atom_pick()
         if self._insertion is not None:
             self._insertion.stop_timer()
         if self._modifiers is not None:
@@ -116,12 +101,15 @@ class PointTableBuilderPage(BuilderPage):
         self._apply_create_chrome()
         self._points = []
         self._reset_options()
+        self._reset_preview_mode()
         if self._appearance is not None:
             self._appearance.bind_points(self._points)
         if self._modifiers is not None:
             self._modifiers.clip.reset()
             self._modifiers.refresh_summary()
-        if self._table is not None:
+        self._selected_index = None
+        self._clear_atom_pick()
+        if self._list is not None or self._table is not None:
             self._sync_table()
         if self._insertion is not None:
             self._insertion.start_preview_timer(self._page)
@@ -138,9 +126,11 @@ class PointTableBuilderPage(BuilderPage):
         try:
             self._apply_edit_chrome(name)
             self._load_options(obj)
+            self._load_preview_mode(obj)
             if self._appearance is not None:
                 self._appearance.bind_points(self._points)
-            if self._table is not None:
+            self._selected_index = 0 if self._points else None
+            if self._list is not None or self._table is not None:
                 self._sync_table()
         finally:
             self._suspend_preview = False
@@ -150,6 +140,18 @@ class PointTableBuilderPage(BuilderPage):
 
     def _reset_options(self):
         """Restore option widgets to create-mode defaults."""
+
+    def _reset_preview_mode(self):
+        from .preview_mode import DEFAULT_PREVIEW_MODE
+
+        if self._appearance is not None:
+            self._appearance.set_preview_mode(DEFAULT_PREVIEW_MODE)
+
+    def _load_preview_mode(self, obj):
+        from .preview_mode import read_preview_mode
+
+        if self._appearance is not None:
+            self._appearance.set_preview_mode(read_preview_mode(obj))
 
     def _load_options(self, obj):
         """Copy mesh-specific options from a persisted object."""
@@ -185,19 +187,26 @@ class PointTableBuilderPage(BuilderPage):
     def _build(self, parent):
         QtCore, QtGui, QtWidgets = self._require_qt()
         page, root, back = self._mount_shell(parent, QtWidgets)
+        left, right = self._mount_editor_columns(root, QtWidgets)
         tips = []
-        tips.extend(self._mount_geometry(root, QtCore, QtGui, QtWidgets) or ())
-        tips.extend(self._mount_appearance(root, QtCore, QtGui, QtWidgets) or ())
-        tips.extend(self._mount_points_section(root, QtCore, QtGui, QtWidgets) or ())
-        tips.extend(self._mount_modifiers(root, QtCore, QtGui, QtWidgets) or ())
+        tips.extend(self._mount_points_section(left, QtCore, QtGui, QtWidgets) or ())
+        tips.extend(self._mount_geometry(right, QtCore, QtGui, QtWidgets) or ())
+        tips.extend(self._mount_options(right, QtCore, QtGui, QtWidgets) or ())
+        tips.extend(self._mount_appearance(right, QtCore, QtGui, QtWidgets) or ())
+        tips.extend(self._mount_modifiers(right, QtCore, QtGui, QtWidgets) or ())
+        right.addStretch(1)
         self._mount_action_bar(page, root)
+        self._poll_timer = QtCore.QTimer(page)
+        self._poll_timer.setInterval(250)
+        self._poll_timer.timeout.connect(self._poll_atom_pick)
         self._finish_build(page, back, tips)
 
     def _mount_geometry(self, root, QtCore, QtGui, QtWidgets) -> Sequence:
         """Geometry-only controls (subclass implements)."""
-        return self._mount_options(root, QtCore, QtGui, QtWidgets)
+        return ()
 
     def _mount_options(self, root, QtCore, QtGui, QtWidgets) -> Sequence:
+        """Type-specific options bound to the persisted data model."""
         return ()
 
     def _mount_appearance(self, root, QtCore, QtGui, QtWidgets) -> Sequence:
@@ -208,15 +217,13 @@ class PointTableBuilderPage(BuilderPage):
             self.CONTEXT,
             show_wireframe=cfg.get("show_wireframe", True),
             show_quality=cfg.get("show_quality", False),
-            show_specular=cfg.get("show_specular", True),
             show_per_point=cfg.get("show_per_point", True),
-            show_live_preview=cfg.get("show_live_preview", False),
+            show_live_preview=cfg.get("show_live_preview", True),
             live_preview_tooltip=cfg.get("live_preview_tooltip", ""),
             quality_range=cfg.get("quality_range", (1, 5)),
             quality_tooltip=cfg.get("quality_tooltip", ""),
             on_changed=self._on_appearance_changed,
             on_preview=self._on_appearance_preview,
-            on_look_changed=self._on_look_changed,
         )
         self._appearance.bind_points(self._points)
         self._appearance.set_selected_rows_provider(self._selected_rows)
@@ -243,29 +250,14 @@ class PointTableBuilderPage(BuilderPage):
     def _on_appearance_changed(self):
         self._sync_table(preview=True)
 
-    def _specular_enabled(self) -> bool:
-        if self._appearance is None:
-            return True
-        return self._appearance.specular()
-
-    def _on_look_changed(self):
-        if self._preview is not None and hasattr(self._preview, "set_specular"):
-            self._preview.set_specular(self._specular_enabled())
-
     def _with_look(self, collection):
         if collection is None:
             return collection
-        collection.specular = self._specular_enabled()
+        collection.specular = True
         return collection
 
     def _refresh_color_cells(self):
-        if self._table is None:
-            return
-        _, _, QtWidgets = qt_modules()
-        for row, pt in enumerate(self._points):
-            update_color_cell(
-                self._table, row, POINT_COLOR_COL, pt, QtWidgets,
-            )
+        return
 
     def _sync_color_selection_button(self):
         if self._appearance is None:
@@ -284,14 +276,14 @@ class PointTableBuilderPage(BuilderPage):
         return self._modifiers.clip.active_planes()
 
     def _configure_table(self, QtCore, QtGui, QtWidgets):
-        if self.TABLE_STRONG_FOCUS:
-            self._table.setFocusPolicy(QtCore.Qt.StrongFocus)
+        return
 
     def _mount_points_section(self, root, QtCore, QtGui, QtWidgets) -> Sequence:
         pts = make_section("Points", expanding=True)
         pts_box = pts.body
         pts_layout = pts.layout
 
+        self._list = PointListEditor(pts_box, self)
         self._insertion = PointInsertionWidget(
             pts_box,
             self.cmd,
@@ -300,38 +292,28 @@ class PointTableBuilderPage(BuilderPage):
             on_add=self._add_resolved_points,
             on_show_coords=self._on_show_coords,
             on_export=self._export_selection,
+            hide_add=True,
+            hide_coords=True,
+            on_can_add_changed=self._list.set_add_enabled,
+            on_wait_changed=self._list.set_add_waiting,
         )
         pts_layout.addWidget(self._insertion.widget)
-
-        self._table = QtWidgets.QTableWidget(0, len(self.COLS))
-        configure_point_table(self._table, self.COLS, QtWidgets, QtCore)
-        apply_expanding_list_policy(self._table, QtWidgets)
-        self._configure_table(QtCore, QtGui, QtWidgets)
-        self._table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-        self._table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
-        self._table.cellChanged.connect(self._on_cell_changed)
-        self._table.itemSelectionChanged.connect(self._sync_color_selection_button)
-        self._table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
-        self._table.customContextMenuRequested.connect(self._show_points_context_menu)
-        wire_zoom_to_selection(
-            self._table,
-            self._insertion.zoom_checkbox,
-            self.cmd,
-            lambda rows: points_from_rows(self._points, rows),
-        )
-
-        filter_type = _table_delete_filter_type(QtCore)
-        self._table_filter = filter_type(self)
-        self._table.installEventFilter(self._table_filter)
-        self._table.viewport().installEventFilter(self._table_filter)
-        pts_layout.addWidget(self._table, stretch=1)
+        pts_layout.addWidget(self._list.widget, stretch=1)
+        self._list.attach_add_to_section(pts)
         root.addWidget(pts.widget, stretch=1)
+
+        filter_type = _list_delete_filter_type(QtCore)
+        self._table_filter = filter_type(self)
+        self._list.widget.installEventFilter(self._table_filter)
         self._insertion.start_preview_timer(self._page)
-        tips = list(self._insertion.tooltips())
-        return tips
+        return list(self._insertion.tooltips())
 
     def _selected_rows(self) -> List[int]:
-        return sorted({i.row() for i in self._table.selectedIndexes()})
+        if self._selected_index is None:
+            return []
+        if 0 <= self._selected_index < len(self._points):
+            return [self._selected_index]
+        return []
 
     def _apply_color_to_selected(self):
         if self._appearance is not None:
@@ -355,7 +337,6 @@ class PointTableBuilderPage(BuilderPage):
         initial = self._points[rows[0]].color_choice()
         targets = list(rows)
         original = {row: self._points[row].color_choice() for row in targets}
-        _, _, QtWidgets = qt_modules()
 
         def on_preview(choice):
             if choice is None:
@@ -364,11 +345,6 @@ class PointTableBuilderPage(BuilderPage):
                 if 0 <= row < len(self._points):
                     self._points[row] = self._points[row].with_color_choice(choice)
             self._schedule_preview()
-            for row in targets:
-                if 0 <= row < len(self._points):
-                    update_color_cell(
-                        self._table, row, POINT_COLOR_COL, self._points[row], QtWidgets,
-                    )
 
         def apply_choice(choice):
             for row in targets:
@@ -389,11 +365,172 @@ class PointTableBuilderPage(BuilderPage):
             cmd=self.cmd,
         )
 
+    def add_point(self):
+        if self._insertion is None:
+            return
+        self._insertion._clicked_add()
+
+    def select_point(self, index: int):
+        if index < 0 or index >= len(self._points):
+            return
+        if self._selected_index == index:
+            self._selected_index = None
+        else:
+            self._selected_index = index
+        self._sync_table(preview=False)
+        if (
+            self._selected_index is not None
+            and self._insertion is not None
+            and self._insertion.zoom_checkbox.isChecked()
+        ):
+            zoom_to_visual_points(self.cmd, [self._points[self._selected_index]])
+
+    def delete_point(self, index: int):
+        if index < 0 or index >= len(self._points):
+            return
+        self._remove_preview_rows([index])
+        if getattr(self, "_pick_index", None) == index:
+            self._clear_atom_pick()
+        elif getattr(self, "_pick_index", None) is not None and self._pick_index > index:
+            self._pick_index -= 1
+        del self._points[index]
+        if self._selected_index is None:
+            pass
+        elif self._selected_index == index:
+            if self._points:
+                self._selected_index = min(index, len(self._points) - 1)
+            else:
+                self._selected_index = None
+        elif self._selected_index > index:
+            self._selected_index -= 1
+        self._sync_table(preview=self._preview_after_delete())
+
+    def set_point_enabled(self, index: int, checked: bool):
+        if index < 0 or index >= len(self._points):
+            return
+        self._points[index] = self._points[index].with_enabled(checked)
+        self._schedule_preview()
+
+    def set_point_xyz(self, index: int, xyz):
+        if index < 0 or index >= len(self._points):
+            return
+        self._points[index] = self._points[index].with_xyz(xyz)
+        self._schedule_preview()
+
+    def pick_point_atom(self, index: int):
+        if index < 0 or index >= len(self._points):
+            return
+        if self._pick_index == index:
+            self._abort_atom_pick()
+            return
+        self._selected_index = index
+        self._clear_pymol_selection()
+        self._ignore_xyz = self._points[index].xyz()
+        self._pick_index = index
+        self._start_atom_pick_timer()
+        self._sync_table(preview=False)
+
+    def _abort_atom_pick(self):
+        if self._pick_index is None:
+            return
+        self._clear_atom_pick()
+        self._sync_table(preview=False)
+
+    def _clear_atom_pick(self):
+        self._pick_index = None
+        self._ignore_xyz = None
+        self._stop_atom_pick_timer()
+
+    def _start_atom_pick_timer(self):
+        if not qt_widget_alive(self._poll_timer):
+            return
+        try:
+            self._poll_timer.start()
+        except RuntimeError:
+            pass
+
+    def _stop_atom_pick_timer(self):
+        if not qt_widget_alive(self._poll_timer):
+            return
+        try:
+            self._poll_timer.stop()
+        except RuntimeError:
+            pass
+
+    def _same_as_ignored(self, point: VisualPoint) -> bool:
+        if self._ignore_xyz is None or point is None:
+            return False
+        dx = point.x - self._ignore_xyz[0]
+        dy = point.y - self._ignore_xyz[1]
+        dz = point.z - self._ignore_xyz[2]
+        return (dx * dx + dy * dy + dz * dz) < 1e-6
+
+    def _clear_pymol_selection(self):
+        try:
+            self.cmd.select("sele", "none")
+        except Exception:
+            pass
+        try:
+            self.cmd.unpick()
+        except Exception:
+            pass
+
+    def _poll_atom_pick(self):
+        if self._pick_index is None:
+            return
+        if not qt_widget_alive(self._page):
+            self._stop_atom_pick_timer()
+            return
+        hook = self._insertion.hook_checkbox.isChecked() if self._insertion else True
+        point, status = take_single_selection_point(
+            self.cmd,
+            self._points,
+            interactive_only=True,
+            hook_to_selection=hook,
+            multi_atom=MULTI_CLICKED,
+        )
+        if status != "one" or point is None or self._same_as_ignored(point):
+            return
+        idx = self._pick_index
+        if not (0 <= idx < len(self._points)):
+            self._clear_atom_pick()
+            return
+        self._points[idx] = apply_location(self._points[idx], point)
+        self._clear_pymol_selection()
+        self._clear_atom_pick()
+        self._sync_table()
+
+    def camera_point(self, index: int):
+        self._selected_index = index
+        if self._pick_index == index:
+            self._clear_atom_pick()
+        snap = self._insertion.snap_checkbox.isChecked() if self._insertion else False
+        hook = self._insertion.hook_checkbox.isChecked() if self._insertion else True
+        self._points = update_points_from_camera(
+            self.cmd, self._points, [index], snap, hook_to_selection=hook,
+        )
+        self._sync_table()
+
+    def set_point_anchor(self, index: int, checked: bool):
+        if index < 0 or index >= len(self._points):
+            return
+        pt = self._points[index]
+        if not pt.can_anchor():
+            return
+        self._points[index] = pt.with_anchor_intent(checked)
+
+    def edit_point_color(self, index: int):
+        self._selected_index = index
+        self._pick_color_at_row(index)
+
+    def point_editor_extras(self, index: int, pt: VisualPoint) -> Sequence:
+        return ()
+
     def _context_color_action(self) -> bool:
         return True
 
     def _extend_points_context_menu(self, menu, rows):
-        """Add mesh-specific actions after the shared camera/selection/delete items."""
+        """Keep surface/radius overflow hooks on the shared overflow menu."""
         reset = menu.addAction(RESET_COLORS_LABEL)
         reset.triggered.connect(self._reset_colors)
         apply_all = menu.addAction(COLOR_ALL_LABEL)
@@ -402,35 +539,6 @@ class PointTableBuilderPage(BuilderPage):
         apply_sel.setEnabled(bool(rows))
         apply_sel.triggered.connect(self._apply_color_to_selected)
 
-    def _show_points_context_menu(self, pos):
-        _, _, QtWidgets = qt_modules()
-        index = self._table.indexAt(pos)
-        if not index.isValid():
-            return
-        row = index.row()
-        if row not in self._selected_rows():
-            self._table.selectRow(row)
-
-        rows = self._selected_rows()
-        menu = QtWidgets.QMenu(self._table)
-        if self._context_color_action():
-            color_act = menu.addAction("Color selection…")
-            color_act.setEnabled(bool(rows))
-            color_act.triggered.connect(self._pick_selected_color)
-        cam_act = menu.addAction("Update to camera center")
-        cam_act.setToolTip(UPDATE_TO_CAMERA_TIP)
-        cam_act.setEnabled(bool(rows))
-        cam_act.triggered.connect(self._update_selected_to_camera)
-        sel_act = menu.addAction("Update to selection")
-        sel_act.setToolTip(UPDATE_TO_SELECTION_TIP)
-        sel_act.setEnabled(bool(rows))
-        sel_act.triggered.connect(self._update_selected_to_selection)
-        del_act = menu.addAction("Delete selected")
-        del_act.setEnabled(bool(rows))
-        del_act.triggered.connect(self._delete_selected)
-        self._extend_points_context_menu(menu, rows)
-        menu.exec_(self._table.viewport().mapToGlobal(pos))
-
     def _stamp_new_points(self, new_pts: List[VisualPoint]) -> List[VisualPoint]:
         if self._appearance is not None:
             return self._appearance.stamp_new_points(new_pts)
@@ -438,30 +546,14 @@ class PointTableBuilderPage(BuilderPage):
         palette = colors_for_new_points(len(new_pts), start_index=len(self._points))
         return [pt.with_color(palette[i]) for i, pt in enumerate(new_pts)]
 
-    def _anchor_col(self) -> int:
-        return anchor_col_index(self.COLS)
-
-    def _enabled_col(self) -> int:
-        return enabled_col_index(self.COLS)
-
     def _on_enabled_toggled(self, row: int, checked: bool):
-        if row < 0 or row >= len(self._points):
-            return
-        self._points[row] = self._points[row].with_enabled(checked)
-        self._sync_table()
+        self.set_point_enabled(row, checked)
 
     def _on_anchor_toggled(self, row: int, checked: bool):
-        if row < 0 or row >= len(self._points):
-            return
-        pt = self._points[row]
-        if not pt.can_anchor():
-            return
-        self._points[row] = pt.with_anchor_intent(checked)
+        self.set_point_anchor(row, checked)
 
     def _on_show_coords(self, checked=False):
-        if self._table is None:
-            return
-        set_coordinate_columns_visible(self._table, bool(checked))
+        return
 
     def _on_table_sync_begin(self):
         """Called at the start of ``_sync_table`` (e.g. quality caps)."""
@@ -469,95 +561,20 @@ class PointTableBuilderPage(BuilderPage):
     def _extra_row_values(self, pt: VisualPoint) -> Sequence[Tuple[int, str]]:
         return ()
 
-    def _style_cell(self, item, col: int, pt: VisualPoint):
-        """Optional per-cell styling after the text is written."""
-
     def _sync_table(self, preview=True):
         self._on_table_sync_begin()
-        QtCore, QtGui, QtWidgets = qt_modules()
-        anchor_col = self._anchor_col()
-        enabled_col = self._enabled_col()
-        sel_blocked = block_table_selection_signals(self._table)
-        self._table.blockSignals(True)
-        try:
-            self._table.setRowCount(len(self._points))
-            for row, pt in enumerate(self._points):
-                sync_enabled_cell(
-                    self._table, row, enabled_col, pt,
-                    self._on_enabled_toggled, QtWidgets, QtCore,
-                )
-                sync_anchor_cell(
-                    self._table, row, anchor_col, pt,
-                    self._on_anchor_toggled, QtWidgets, QtCore,
-                )
-                sync_color_cell(
-                    self._table, row, POINT_COLOR_COL, pt,
-                    self._pick_color_at_row, QtWidgets, QtCore,
-                )
-                values = (
-                    (POINT_NAME_COL, pt.name),
-                    (POINT_SOURCE_COL, pt.source),
-                    (POINT_X_COL, "%.3f" % pt.x),
-                    (POINT_Y_COL, "%.3f" % pt.y),
-                    (POINT_Z_COL, "%.3f" % pt.z),
-                ) + tuple(self._extra_row_values(pt))
-                for col, text in values:
-                    item = self._table.item(row, col)
-                    if item is None:
-                        item = QtWidgets.QTableWidgetItem()
-                        self._table.setItem(row, col, item)
-                    item.setText(text)
-                    item.setBackground(QtGui.QBrush())
-                    item.setForeground(QtGui.QBrush())
-                    self._style_cell(item, col, pt)
-        finally:
-            self._table.blockSignals(False)
-            unblock_table_selection_signals(self._table, sel_blocked)
+        if self._selected_index is not None and not (
+            0 <= self._selected_index < len(self._points)
+        ):
+            self._selected_index = None
+        if self._list is not None:
+            self._list.rebuild(self._points, self._selected_index, getattr(self, "_pick_index", None))
         if self._appearance is not None:
             self._appearance.bind_points(self._points)
         self._sync_color_selection_button()
         self._sync_commit_enabled()
         if preview:
             self._schedule_preview()
-
-    def _apply_extra_cell(self, pt: VisualPoint, col: int, text: str):
-        return None
-
-    def _on_cell_changed(self, row, col):
-        if row < 0 or row >= len(self._points):
-            return
-        item = self._table.item(row, col)
-        if item is None:
-            return
-        text = item.text()
-        pt = self._points[row]
-        if col in (self._anchor_col(), self._enabled_col(), POINT_COLOR_COL):
-            return
-        resync = False
-        try:
-            if col == POINT_NAME_COL:
-                pt = pt.with_name(text)
-            elif col == POINT_SOURCE_COL:
-                pt = pt.with_source(text)
-            elif col == POINT_X_COL:
-                pt = pt.with_xyz((float(text), pt.y, pt.z))
-            elif col == POINT_Y_COL:
-                pt = pt.with_xyz((pt.x, float(text), pt.z))
-            elif col == POINT_Z_COL:
-                pt = pt.with_xyz((pt.x, pt.y, float(text)))
-            else:
-                extra = self._apply_extra_cell(pt, col, text)
-                if extra is None:
-                    return
-                pt, resync = extra
-            self._points[row] = pt
-        except ValueError:
-            self._sync_table()
-            return
-        if resync:
-            self._sync_table()
-            return
-        self._schedule_preview()
 
     def _update_selected_to_camera(self):
         rows = self._selected_rows()
@@ -579,7 +596,7 @@ class PointTableBuilderPage(BuilderPage):
             self.cmd, self._points, rows, hook_to_selection=hook,
         )
         if updated is None:
-            self._warn_empty_pymol_selection("Update to selection")
+            self._warn_empty_pymol_selection("Pick atom")
             return
         self._points = updated
         self._sync_table()
@@ -592,10 +609,11 @@ class PointTableBuilderPage(BuilderPage):
         if not new_pts:
             return
         new_pts = self._stamp_new_points(new_pts)
+        start = len(self._points)
         self._points.extend(new_pts)
+        self._selected_index = start + len(new_pts) - 1
         self._add_preview_points(new_pts)
         if self._insertion is not None and self._insertion.zoom_checkbox.isChecked():
-            from .zoom_selection import zoom_to_visual_points
             zoom_to_visual_points(self.cmd, new_pts)
 
     def _add_preview_points(self, new_pts):
@@ -613,13 +631,17 @@ class PointTableBuilderPage(BuilderPage):
         return True
 
     def _delete_selected(self):
-        rows = sorted({i.row() for i in self._table.selectedIndexes()}, reverse=True)
+        rows = self._selected_rows()
         if not rows:
             return
         self._remove_preview_rows(rows)
-        for row in rows:
+        for row in sorted(rows, reverse=True):
             if 0 <= row < len(self._points):
                 del self._points[row]
+        if self._points:
+            self._selected_index = min(rows[0], len(self._points) - 1)
+        else:
+            self._selected_index = None
         self._sync_table(preview=self._preview_after_delete())
 
     def _export_selection(self):

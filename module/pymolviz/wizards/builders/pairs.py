@@ -6,9 +6,16 @@ import uuid
 from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from ...points import PointUnresolvedError
+from ...points import FixedPoint, PointUnresolvedError
 from ...util.line_style import LineStyle, default_head_length
-from .points import VisualPoint, atom_anchor_label, selection_points
+from ..last_click import last_clicked_atom
+from .points import (
+    VisualPoint,
+    atom_anchor_label,
+    manual_fallback_name,
+    points_from_selection_expr,
+    selection_points,
+)
 
 RGB = Tuple[float, float, float]
 
@@ -28,6 +35,9 @@ STATUS_GLYPH = {
 PENDING_START = "[pick start…]"
 PENDING_END = "[pick end…]"
 
+MULTI_CLICKED = "clicked"
+MULTI_CENTER = "center"
+
 
 def new_pair_id() -> str:
     return "arrow-" + uuid.uuid4().hex[:8]
@@ -45,6 +55,15 @@ class VisualPair:
 
     def is_complete(self) -> bool:
         return self.end is not None
+
+    @property
+    def enabled(self) -> bool:
+        return bool(getattr(self.start, "enabled", True))
+
+    def with_enabled(self, enabled: bool) -> "VisualPair":
+        start = self.start.with_enabled(enabled)
+        end = self.end.with_enabled(enabled) if self.end is not None else None
+        return replace(self, start=start, end=end)
 
     @property
     def color(self) -> RGB:
@@ -100,7 +119,7 @@ class VisualPair:
 
 
 def complete_pairs(pairs: Sequence[VisualPair]) -> List[VisualPair]:
-    return [pair for pair in pairs if pair.is_complete()]
+    return [pair for pair in pairs if pair.is_complete() and pair.enabled]
 
 
 def pair_index(pairs: Sequence[VisualPair], pair_id: str) -> int:
@@ -122,7 +141,7 @@ def flatten_pair_points(pairs: Sequence[VisualPair]) -> List[VisualPoint]:
 def commit_pair_anchors(pairs: Sequence[VisualPair]) -> List[VisualPair]:
     out = []
     for pair in pairs:
-        if not pair.is_complete():
+        if not pair.is_complete() or not pair.enabled:
             continue
         out.append(replace(
             pair,
@@ -132,11 +151,69 @@ def commit_pair_anchors(pairs: Sequence[VisualPair]) -> List[VisualPair]:
     return out
 
 
+def _atom_key(pt: Optional[VisualPoint]):
+    if pt is None:
+        return None
+    ref = getattr(pt, "atom_ref", None)
+    if ref is None:
+        return None
+    return (str(getattr(ref, "model", "")), int(getattr(ref, "atom_id", 0)))
+
+
+def selection_center_point(
+    pts: Sequence[VisualPoint],
+    existing: Sequence[VisualPoint] = (),
+) -> VisualPoint:
+    """One free point at the mean of ``pts`` (not attached to an atom)."""
+    n = max(len(pts), 1)
+    cx = sum(float(pt.x) for pt in pts) / n
+    cy = sum(float(pt.y) for pt in pts) / n
+    cz = sum(float(pt.z) for pt in pts) / n
+    pos = (cx, cy, cz)
+    name = manual_fallback_name("center", existing)
+    return VisualPoint(name, "manual", cx, cy, cz, point_source=FixedPoint(pos))
+
+
+def clicked_atom_point(
+    cmd_,
+    pts: Sequence[VisualPoint],
+    existing: Sequence[VisualPoint] = (),
+    hook_to_selection: bool = True,
+) -> Optional[VisualPoint]:
+    """Atom that was clicked, preferring one that is in ``pts``.
+
+    Selecting mode does not create ``pk1``. Use the last viewer click, then
+    ``pk1`` only when that pick name actually exists.
+    """
+    if not pts:
+        return None
+    clicked = last_clicked_atom()
+    if clicked is not None:
+        for pt in pts:
+            if _atom_key(pt) == clicked:
+                return pt
+    picked = points_from_selection_expr(
+        cmd_, "(pk1)", existing=existing, hook_to_selection=hook_to_selection,
+    )
+    keys = {_atom_key(pt) for pt in pts}
+    for cand in picked:
+        key = _atom_key(cand)
+        if key is None or key not in keys:
+            continue
+        for pt in pts:
+            if _atom_key(pt) == key:
+                return pt
+    if picked:
+        return picked[0]
+    return None
+
+
 def take_single_selection_point(
     cmd_,
     existing: Sequence[VisualPoint] = (),
     interactive_only: bool = False,
     hook_to_selection: bool = True,
+    multi_atom: str = MULTI_CLICKED,
 ) -> Tuple[Optional[VisualPoint], str]:
     """Return (point, status) where status is empty / one / multiple."""
     start, end, status = take_selection_endpoints(
@@ -144,6 +221,8 @@ def take_single_selection_point(
         existing,
         interactive_only=interactive_only,
         hook_to_selection=hook_to_selection,
+        multi_atom=multi_atom,
+        pair_on_two=False,
     )
     if status == "pair":
         return None, "multiple"
@@ -157,10 +236,15 @@ def take_selection_endpoints(
     existing: Sequence[VisualPoint] = (),
     interactive_only: bool = False,
     hook_to_selection: bool = True,
+    multi_atom: str = MULTI_CLICKED,
+    pair_on_two: bool = True,
 ) -> Tuple[Optional[VisualPoint], Optional[VisualPoint], str]:
-    """Return (start, end, status) for 0 / 1 / 2 selected atoms.
+    """Return (start, end, status) for the current selection.
 
-    Status is ``empty``, ``one``, ``pair``, or ``multiple`` (>2 atoms).
+    Status is ``empty``, ``one``, ``pair``, or ``multiple``.
+
+    ``multi_atom`` is ``clicked`` (pk1 / two-atom arrow) or ``center``
+    (one endpoint at the mean of all selected atoms).
     """
     pts = selection_points(
         cmd_, existing,
@@ -171,8 +255,16 @@ def take_selection_endpoints(
         return None, None, "empty"
     if len(pts) == 1:
         return pts[0], None, "one"
-    if len(pts) == 2:
+    use_center = str(multi_atom) == MULTI_CENTER
+    if use_center:
+        return selection_center_point(pts, existing), None, "one"
+    if pair_on_two and len(pts) == 2:
         return pts[0], pts[1], "pair"
+    clicked = clicked_atom_point(
+        cmd_, pts, existing=existing, hook_to_selection=hook_to_selection,
+    )
+    if clicked is not None:
+        return clicked, None, "one"
     return None, None, "multiple"
 
 

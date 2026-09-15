@@ -152,25 +152,33 @@ class Mesh(Points):
         Returns:
             Mesh: A wireframe mesh.
         """
-        from .Lines import Lines
+        from .Arrows import Arrows
+        from ..util.line_style import LineStyle
         if not "state" in kwargs:
             kwargs["state"] = self.state
         if not "colormap" in kwargs and not getattr(self, "bypass_colormap", False):
             kwargs["colormap"] = self.colormap
         kwargs.setdefault("bypass_colormap", getattr(self, "bypass_colormap", False))
         kwargs.setdefault("transparency", getattr(self, "transparency", 0))
-        if not "render_as" in kwargs:
-            kwargs["render_as"] = "lines"
+        shaft = kwargs.pop("linewidth", 0.05)
+        render_as = str(kwargs.pop("render_as", "cylinders") or "cylinders")
+        quality = 0 if render_as in ("line", "lines") else 3
 
         edges = _unique_undirected_edges(self.faces)
         if edges.shape[0] == 0:
-            empty = np.zeros((0, 3), dtype=float)
-            return Lines(empty, empty, *args, **kwargs)
+            empty = np.zeros((0, 6), dtype=float)
+            return Arrows(
+                empty, *args, line_style=LineStyle(ends="None"), quality=quality,
+                shaft_radius=shaft, **kwargs,
+            )
         vertex_indices = edges.reshape(-1)
-        return Lines(
+        return Arrows(
             self.vertices[vertex_indices],
             self._colors_for_indices(vertex_indices),
             *args,
+            line_style=LineStyle(ends="None"),
+            quality=quality,
+            shaft_radius=shaft,
             **kwargs,
         )
 

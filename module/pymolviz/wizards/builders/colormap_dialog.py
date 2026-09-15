@@ -24,6 +24,7 @@ from ...util.colormap_spec import (
     FieldColorMapping,
     Normalization,
     alpha_to_screen_y,
+    axis_to_unit,
     clamp_range,
     colorbar_caption,
     data_to_unit,
@@ -39,7 +40,6 @@ from ...util.colormap_spec import (
     resolve_limits,
     reverse_definition,
     sample_unit,
-    save_custom_preset,
     screen_y_to_alpha,
     tick_values,
     unit_to_axis,
@@ -59,6 +59,7 @@ from ..pick import (
 )
 from ..widgets.ascii_locale import apply_ascii_float_locale
 from ..widgets.section import make_section
+from ..widgets.switch import make_switch
 from ..widgets.theme import (
     BORDER,
     INK,
@@ -68,6 +69,7 @@ from ..widgets.theme import (
     apply_secondary_button_style,
     apply_wizard_page_style,
     catalog_table_css,
+    compact_primary_button_css,
     mark_primary_button,
     rgb_css,
     swatch_button_css,
@@ -96,8 +98,9 @@ HELP_TITLE = "Colormap editor"
 HELP_TEXT = (
     "Drag the distribution handles to set min/max. Right-click a range handle to "
     "type an explicit value. Color stops move left/right along the mapped range and "
-    "up/down for opacity. Left-click empty space to add a stop; right-click a stop "
-    "to edit its color, position, and opacity. The colorbar below is the live preview."
+    "up/down for opacity. Left-click empty space to add a stop. Left-click a "
+    "selected stop again (without dragging) to edit its color, position, and opacity. "
+    "The colorbar below is the live preview."
 )
 
 RANGE_AUTO_LABEL = "Auto"
@@ -304,6 +307,32 @@ def _value_for_x(rect, x, dmin, dmax) -> float:
     return unit_to_data(data_to_unit(x, rect.left(), rect.right()), dmin, dmax)
 
 
+def _stop_neighbor_limits(index: int, stops) -> Tuple[float, float]:
+    """Unit-interval bounds for stop ``index`` (endpoints may move inward from 0/1)."""
+    n = len(stops or ())
+    if n <= 0:
+        return 0.0, 1.0
+    index = max(0, min(int(index), n - 1))
+    lo = 0.0 if index <= 0 else float(stops[index - 1].position) + 0.004
+    hi = 1.0 if index >= n - 1 else float(stops[index + 1].position) - 0.004
+    if hi < lo:
+        mid = 0.5 * (lo + hi)
+        return mid, mid
+    return lo, hi
+
+
+def _clamp_stop_position(index: int, stops, position: float) -> float:
+    lo, hi = _stop_neighbor_limits(index, stops)
+    return max(lo, min(hi, float(position)))
+
+
+def _unit_position_for_histogram_x(hist, x, vmin, vmax, dmin, dmax) -> float:
+    """Map a histogram x pixel to colormap unit position along ``vmin``…``vmax``."""
+    x_lo = _x_for_value(hist, vmin, dmin, dmax)
+    x_hi = _x_for_value(hist, vmax, dmin, dmax)
+    return axis_to_unit(x, x_lo, x_hi)
+
+
 def _ask_float(parent, title, label, value, lo=-1e8, hi=1e8, decimals=4):
     QtCore, _, QtWidgets = qt_modules()
     if QtWidgets is None or not hasattr(QtWidgets, "QDialog"):
@@ -353,6 +382,8 @@ class _DistributionEditor:
         self._defn = definition_from_preset(DEFAULT_SURFACE_COLORMAP)
         self._selected = 0
         self._drag = None
+        self._drag_moved = False
+        self._press_was_already_selected = False
         view = QtWidgets.QWidget(parent)
         view.setObjectName("pmvColormapDistribution")
         view.setMinimumHeight(168)
@@ -369,7 +400,8 @@ class _DistributionEditor:
         view.setToolTip(
             "Drag min/max handles to set the colormap range. Drag color stops "
             "left/right (value) and up/down (opacity). Left-click empty space to add a "
-            "stop. Right-click a stop to edit it; right-click a range handle to type a value."
+            "stop. Left-click a selected stop again to edit it; right-click a range handle "
+            "to type a value."
         )
         view.paintEvent = lambda _event: self._paint(view, QtCore, QtGui)
         view.mousePressEvent = lambda event: self._press(view, event, QtCore)
@@ -559,6 +591,12 @@ class _DistributionEditor:
             self._add_at(widget, x, y)
             return
         kind, payload = hit
+        self._drag_moved = False
+        if kind == "stop":
+            index = int(payload)
+            self._press_was_already_selected = index == self._selected
+        else:
+            self._press_was_already_selected = False
         self._drag = hit
         grab = getattr(widget, "grabMouse", None)
         if callable(grab):
@@ -575,13 +613,24 @@ class _DistributionEditor:
     def _release(self, widget, _event):
         if self._drag is None:
             return
+        kind, payload = self._drag
+        moved = self._drag_moved
+        already = self._press_was_already_selected
         self._drag = None
+        self._drag_moved = False
         release = getattr(widget, "releaseMouse", None)
         if callable(release):
             try:
                 release()
             except Exception:
                 pass
+        if (
+            kind == "stop"
+            and not moved
+            and already
+            and self._on_edit_stop is not None
+        ):
+            self._on_edit_stop(int(payload))
         if self._on_drag_end is not None:
             self._on_drag_end()
         widget.update()
@@ -602,6 +651,7 @@ class _DistributionEditor:
     def _move(self, widget, event):
         if self._drag is None:
             return
+        self._drag_moved = True
         kind, payload = self._drag
         x, y = _event_xy(event)
         hist = self._plot(widget)
@@ -618,12 +668,8 @@ class _DistributionEditor:
             return
         index = int(payload)
         stops = self._defn.stops
-        vmin, vmax = self._limits
-        value = _value_for_x(hist, x, dmin, dmax)
-        pos = data_to_unit(value, vmin, vmax)
-        lo = 0.0 if index == 0 else stops[index - 1].position + 0.004
-        hi = 1.0 if index == len(stops) - 1 else stops[index + 1].position - 0.004
-        pos = max(lo, min(hi, pos))
+        pos = _unit_position_for_histogram_x(hist, x, self._limits[0], self._limits[1], dmin, dmax)
+        pos = _clamp_stop_position(index, stops, pos)
         inset = 10
         alpha = screen_y_to_alpha(y, hist.top() + inset, hist.bottom() - inset)
         if self._on_stop is not None:
@@ -642,23 +688,25 @@ class _DistributionEditor:
             current = vmin if payload == "vmin" else vmax
             self._on_ask("range", payload, current)
             return
-        index = int(payload)
-        if self._on_edit_stop is not None:
-            self._on_edit_stop(index)
-            return
-        if self._on_ask is None:
-            return
-        stop = self._defn.stops[index]
-        vmin, vmax = self._limits
-        current = unit_to_data(stop.position, vmin, vmax)
-        self._on_ask("stop", index, current)
+        return
 
 class _ColorbarPreview:
     """Live colorbar with ticks and values — this is the editor preview."""
 
     _TICK_PAD = 42
 
-    def __init__(self, parent, vertical=False, compact=False, show_stops=False, on_select=None, on_add=None, on_edit_stop=None):
+    def __init__(
+        self,
+        parent,
+        vertical=False,
+        compact=False,
+        show_stops=False,
+        on_select=None,
+        on_add=None,
+        on_edit_stop=None,
+        on_stop=None,
+        on_drag_end=None,
+    ):
         QtCore, QtGui, QtWidgets = qt_modules()
         self._vertical = bool(vertical)
         self._compact = bool(compact)
@@ -666,10 +714,15 @@ class _ColorbarPreview:
         self._on_select = on_select
         self._on_add = on_add
         self._on_edit_stop = on_edit_stop
+        self._on_stop = on_stop
+        self._on_drag_end = on_drag_end
         self._defn = definition_from_preset(DEFAULT_SURFACE_COLORMAP)
         self._limits = (0.0, 1.0)
         self._settings = ColorbarExportSettings()
         self._selected = 0
+        self._drag = None
+        self._drag_moved = False
+        self._press_was_already_selected = False
         bar = QtWidgets.QWidget(parent)
         bar.setObjectName("pmvColormapColorbar")
         expanding = getattr(QtWidgets.QSizePolicy, "Expanding", None)
@@ -689,9 +742,14 @@ class _ColorbarPreview:
             bar.setMaximumHeight(80)
             if expanding is not None and preferred is not None:
                 bar.setSizePolicy(expanding, preferred)
-        bar.setToolTip("Colormap preview with tick values. Right-click a stop to edit it.")
+        bar.setToolTip(
+            "Colormap preview with tick values. Left-click a selected stop again to edit it."
+        )
         bar.paintEvent = lambda _event: self._paint(bar, QtCore, QtGui)
+        bar.setMouseTracking(True)
         bar.mousePressEvent = lambda event: self._press(bar, event, QtCore)
+        bar.mouseMoveEvent = lambda event: self._move(bar, event)
+        bar.mouseReleaseEvent = lambda event: self._release(bar, event)
         bar.contextMenuEvent = lambda event: self._context(bar, event)
 
         def _resize(event):
@@ -832,9 +890,22 @@ class _ColorbarPreview:
         x, y = _event_xy(event)
         index = self._hit_stop(widget, x, y)
         if index is not None:
+            was_selected = int(index) == self._selected
             self._selected = int(index)
             if self._on_select is not None:
                 self._on_select(int(index))
+            if self._on_stop is not None:
+                self._drag_moved = False
+                self._press_was_already_selected = was_selected
+                self._drag = ("stop", int(index))
+                grab = getattr(widget, "grabMouse", None)
+                if callable(grab):
+                    try:
+                        grab()
+                    except Exception:
+                        pass
+            elif was_selected and self._on_edit_stop is not None:
+                self._on_edit_stop(int(index))
             widget.update()
             return
         if self._on_add is None:
@@ -842,15 +913,53 @@ class _ColorbarPreview:
         bar = self._bar_rect(widget)
         if x < bar.left() or x > bar.right() or y < bar.top() - 4 or y > bar.bottom() + 8:
             return
-        pos = data_to_unit(x, bar.left(), bar.right())
+        pos = axis_to_unit(x, bar.left(), bar.right())
         self._on_add(pos, None)
 
-    def _context(self, widget, event):
-        x, y = _event_xy(event)
-        index = self._hit_stop(widget, x, y)
-        if index is None or self._on_edit_stop is None:
+    def _release(self, widget, _event):
+        if self._drag is None:
             return
-        self._on_edit_stop(int(index))
+        kind, payload = self._drag
+        moved = self._drag_moved
+        already = self._press_was_already_selected
+        self._drag = None
+        self._drag_moved = False
+        release = getattr(widget, "releaseMouse", None)
+        if callable(release):
+            try:
+                release()
+            except Exception:
+                pass
+        if (
+            kind == "stop"
+            and not moved
+            and already
+            and self._on_edit_stop is not None
+        ):
+            self._on_edit_stop(int(payload))
+        if self._on_drag_end is not None:
+            self._on_drag_end()
+        widget.update()
+
+    def _move(self, widget, event):
+        if self._drag is None or self._on_stop is None:
+            return
+        kind, payload = self._drag
+        if kind != "stop":
+            return
+        self._drag_moved = True
+        index = int(payload)
+        x, _y = _event_xy(event)
+        bar = self._bar_rect(widget)
+        stops = getattr(self._defn, "stops", ()) or ()
+        pos = axis_to_unit(x, bar.left(), bar.right())
+        pos = _clamp_stop_position(index, stops, pos)
+        stop = stops[index]
+        rgba = _as_rgba(stop.rgba)
+        self._on_stop(index, pos, float(rgba[3]))
+
+    def _context(self, widget, event):
+        return
 
     def _draw_checker(self, painter, QtGui, rect):
         if rect.width() <= 1 or rect.height() <= 1:
@@ -1033,7 +1142,26 @@ class ColormapEditorDialog:
         on_done=None,
     ):
         QtCore, _, QtWidgets = qt_modules()
-        dialog = QtWidgets.QDialog()
+
+        class _Window(QtWidgets.QDialog):
+            def closeEvent(inner, event):
+                if self._user_cancel or self._closing:
+                    event.accept()
+                    return
+                self._close_stop_editor()
+                if not self._store_custom_colormap():
+                    event.ignore()
+                    return
+                self._applied = True
+                if self._on_apply is not None:
+                    self._on_apply(self._mapping)
+                if self._on_done is not None:
+                    self._on_done(self._mapping)
+                self._closing = True
+                _forget_editor(self)
+                event.accept()
+
+        dialog = _Window()
         dialog.setWindowTitle(EDITOR_TITLE)
         dialog.setModal(False)
         dialog.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
@@ -1051,6 +1179,9 @@ class ColormapEditorDialog:
         self._selected = 0
         self._syncing = False
         self._applied = False
+        self._stored_key = None
+        self._user_cancel = False
+        self._closing = False
         self._debounce = QtCore.QTimer(dialog)
         self._debounce.setSingleShot(True)
         self._debounce.setInterval(250)
@@ -1119,6 +1250,8 @@ class ColormapEditorDialog:
             on_select=self._on_handle_selected,
             on_add=self._add_color_stop_at,
             on_edit_stop=self._open_stop_editor,
+            on_stop=self._on_stop_dragged,
+            on_drag_end=self._on_handle_drag_finished,
         )
         hist.layout.addWidget(self._colorbar.widget)
         self._hist_section = hist
@@ -1158,7 +1291,7 @@ class ColormapEditorDialog:
             spin.setRange(-1e8, 1e8)
             spin.setSingleStep(0.1)
             apply_ascii_float_locale(spin, QtCore)
-        self._link_zero = QtWidgets.QCheckBox("Link center to 0")
+        self._link_zero = make_switch("Link center to 0")
         self._link_zero.setChecked(True)
         self._pct_lo = QtWidgets.QDoubleSpinBox()
         self._pct_hi = QtWidgets.QDoubleSpinBox()
@@ -1194,7 +1327,7 @@ class ColormapEditorDialog:
         self._levels.setRange(2, 32)
         self._levels.setValue(5)
         self._nan_swatch = QtWidgets.QPushButton()
-        self._nan_transparent = QtWidgets.QCheckBox("Transparent")
+        self._nan_transparent = make_switch("Transparent")
         self._oor = QtWidgets.QComboBox()
         self._oor.addItem(OOR_CLAMP_LABEL, OOR_CLAMP)
         self._oor.addItem(OOR_TRANSPARENT_LABEL, OOR_TRANSPARENT)
@@ -1310,10 +1443,19 @@ class ColormapEditorDialog:
             ridx = self._range.findData(norm.mode)
             if ridx >= 0:
                 self._range.setCurrentIndex(ridx)
-            if norm.vmin is not None:
-                self._vmin.setValue(float(norm.vmin))
-            if norm.vmax is not None:
-                self._vmax.setValue(float(norm.vmax))
+            limits = resolve_limits(norm, self._values)
+            if norm.mode in (RANGE_MODE_CUSTOM, RANGE_MODE_SYMMETRIC):
+                if norm.vmin is not None:
+                    self._vmin.setValue(float(norm.vmin))
+                elif limits is not None:
+                    self._vmin.setValue(float(limits[0]))
+                if norm.vmax is not None:
+                    self._vmax.setValue(float(norm.vmax))
+                elif limits is not None:
+                    self._vmax.setValue(float(limits[1]))
+            elif limits is not None:
+                self._vmin.setValue(float(limits[0]))
+                self._vmax.setValue(float(limits[1]))
             if norm.center is not None:
                 self._center.setValue(float(norm.center))
             self._link_zero.setChecked(bool(norm.link_center_zero))
@@ -1374,10 +1516,12 @@ class ColormapEditorDialog:
         self._pct_hi.setEnabled(pct)
 
     def _current_normalization(self) -> Normalization:
+        mode = str(self._range.currentData() or RANGE_MODE_AUTO)
+        manual = mode in (RANGE_MODE_CUSTOM, RANGE_MODE_SYMMETRIC)
         return Normalization(
-            mode=str(self._range.currentData() or RANGE_MODE_AUTO),
-            vmin=float(self._vmin.value()),
-            vmax=float(self._vmax.value()),
+            mode=mode,
+            vmin=float(self._vmin.value()) if manual else None,
+            vmax=float(self._vmax.value()) if manual else None,
             center=float(self._center.value()),
             percentile_low=float(self._pct_lo.value()),
             percentile_high=float(self._pct_hi.value()),
@@ -1466,19 +1610,29 @@ class ColormapEditorDialog:
         self._commit_ui()
 
     def _save_as(self):
+        from .colormap_similar import persist_custom_colormap
+        from ...util.colormap_spec import custom_preset_definition
+
         QtCore, _, QtWidgets = qt_modules()
         name, ok = QtWidgets.QInputDialog.getText(self._dialog, "Save colormap", "Preset name")
         if not ok or not str(name).strip():
             return
         name = str(name).strip()
-        self._replace_colormap(preset=name, customized=True)
-        save_custom_preset(name, self._mapping.colormap)
+        kept = persist_custom_colormap(self._dialog, self._mapping.colormap, name)
+        if kept is None:
+            return
+        if kept != name:
+            existing = custom_preset_definition(kept)
+            if existing is not None:
+                self._replace_colormap(preset=kept, stops=existing.stops, customized=True)
+        else:
+            self._replace_colormap(preset=name, customized=True)
+        self._stored_key = repr(self._mapping.colormap.to_dict())
         self._commit_ui()
 
     def _add_custom_preset(self):
         name = unused_custom_preset_name()
         self._replace_colormap(preset=name, customized=True)
-        save_custom_preset(name, self._mapping.colormap)
         self._commit_ui()
 
     def _fill_stop_editor(self):
@@ -1488,10 +1642,12 @@ class ColormapEditorDialog:
         stops = self._mapping.colormap.stops
         self._selected = max(0, min(self._selected, len(stops) - 1))
         stop = stops[self._selected]
+        lo, hi = _stop_neighbor_limits(self._selected, stops)
         was = self._syncing
         self._syncing = True
         try:
-            self._pos.setValue(stop.position)
+            self._pos.setRange(lo, hi)
+            self._pos.setValue(_clamp_stop_position(self._selected, stops, stop.position))
             if self._opacity is not None and qt_widget_alive(self._opacity):
                 self._opacity.setValue(int(round(stop.rgba[3] * 100)))
             if self._swatch is not None and qt_widget_alive(self._swatch):
@@ -1552,7 +1708,8 @@ class ColormapEditorDialog:
         self._delete = QtWidgets.QPushButton(DELETE_STOP_LABEL)
         apply_secondary_button_style(self._delete)
         done = QtWidgets.QPushButton("Done")
-        mark_primary_button(done)
+        done.setObjectName("pmvStopEditorDone")
+        done.setStyleSheet(compact_primary_button_css("pmvStopEditorDone"))
         form.addRow("Position", self._pos)
         form.addRow("Color", self._swatch)
         form.addRow("Opacity", self._opacity)
@@ -1625,11 +1782,23 @@ class ColormapEditorDialog:
 
     def _on_stop_dragged(self, index: int, position: float, alpha: float):
         stops = list(self._mapping.colormap.stops)
+        index = max(0, min(int(index), len(stops) - 1))
         stop = stops[index]
         rgba = _as_rgba(stop.rgba)
-        stops[index] = ColorStop(position, (rgba[0], rgba[1], rgba[2], float(alpha)), stop.label)
+        position = _clamp_stop_position(index, stops, position)
+        rgba = (rgba[0], rgba[1], rgba[2], float(alpha))
+        stops[index] = ColorStop(position, rgba, stop.label)
         self._replace_colormap(stops=tuple(stops), customized=True)
-        self._selected = index
+        new_stops = self._mapping.colormap.stops
+        selected = index
+        for i, item in enumerate(new_stops):
+            if abs(float(item.position) - float(position)) > 1e-6:
+                continue
+            if abs(float(item.rgba[3]) - float(rgba[3])) > 1e-5:
+                continue
+            selected = i
+            break
+        self._selected = selected
         self._sync_plot()
 
     def _on_range_dragged(self, vmin: float, vmax: float):
@@ -1686,9 +1855,7 @@ class ColormapEditorDialog:
         stops = list(self._mapping.colormap.stops)
         index = int(payload)
         stop = stops[index]
-        lo = 0.0 if index == 0 else stops[index - 1].position + 0.004
-        hi = 1.0 if index == len(stops) - 1 else stops[index + 1].position - 0.004
-        pos = max(lo, min(hi, pos))
+        pos = _clamp_stop_position(index, stops, pos)
         stops[index] = ColorStop(pos, stop.rgba, stop.label)
         self._replace_colormap(stops=tuple(stops), customized=True)
         self._selected = index
@@ -1713,7 +1880,10 @@ class ColormapEditorDialog:
         stop = stops[self._selected]
         rgba = _as_rgba(stop.rgba)
         rgba = (rgba[0], rgba[1], rgba[2], opacity.value() / 100.0)
-        stops[self._selected] = ColorStop(float(pos.value()), rgba, stop.label)
+        position = _clamp_stop_position(
+            self._selected, stops, float(pos.value()),
+        )
+        stops[self._selected] = ColorStop(position, rgba, stop.label)
         self._replace_colormap(stops=tuple(stops), customized=True)
         self._commit_ui()
 
@@ -1897,21 +2067,58 @@ class ColormapEditorDialog:
     def _export_colorbar(self):
         ExportColorbarDialog(self._dialog, self._mapping, values=self._values, cmd=self._cmd).show()
 
+    def _store_custom_colormap(self) -> bool:
+        from .colormap_similar import persist_custom_colormap
+        from ...util.colormap_spec import builtin_preset_names, custom_preset_definition
+
+        cmap = self._mapping.colormap
+        name = cmap.preset
+        if not cmap.customized or not name:
+            return True
+        if name in builtin_preset_names() and custom_preset_definition(name) is None:
+            return True
+        key = repr(cmap.to_dict())
+        if key == getattr(self, "_stored_key", None):
+            return True
+        kept = persist_custom_colormap(self._dialog, cmap, name)
+        if kept is None:
+            return False
+        if kept != name:
+            existing = custom_preset_definition(kept)
+            if existing is not None:
+                self._replace_colormap(
+                    preset=kept, stops=existing.stops, interpolation=existing.interpolation,
+                    map_type=existing.map_type, levels=existing.levels,
+                    nan_rgba=existing.nan_rgba, nan_transparent=existing.nan_transparent,
+                    out_of_range=existing.out_of_range, below_rgba=existing.below_rgba,
+                    above_rgba=existing.above_rgba, customized=True,
+                )
+                self._commit_ui()
+        self._stored_key = repr(self._mapping.colormap.to_dict())
+        return True
+
     def _apply(self):
+        if not self._store_custom_colormap():
+            return False
         self._applied = True
         if self._on_apply is not None:
             self._on_apply(self._mapping)
         elif self._on_change is not None:
             self._on_change(self._mapping)
+        return True
 
     def _ok(self):
-        self._apply()
+        if not self._apply():
+            return
         if self._on_done is not None:
             self._on_done(self._mapping)
         self._close_stop_editor()
+        self._closing = True
         self._dialog.accept()
 
     def _cancel(self):
+        self._user_cancel = True
+        self._closing = True
         if self._on_done is not None:
             self._on_done(None if not self._applied else self._mapping)
         self._close_stop_editor()
@@ -1957,7 +2164,11 @@ def open_colormap_editor(
             units=mapping.units or field_units(mapping.field_id),
         )
     existing = _LIVE_EDITOR[-1] if _LIVE_EDITOR else None
-    if existing is not None and qt_widget_alive(existing.widget):
+    if (
+        existing is not None
+        and not getattr(existing, "_closing", False)
+        and qt_widget_alive(existing.widget)
+    ):
         try:
             existing._on_change = on_change
             existing._on_apply = on_apply
@@ -1966,6 +2177,9 @@ def open_colormap_editor(
             existing._values = values
             existing._original = mapping
             existing._applied = False
+            existing._stored_key = None
+            existing._user_cancel = False
+            existing._closing = False
             existing._load_mapping(mapping)
             existing.widget.show()
             existing.widget.raise_()

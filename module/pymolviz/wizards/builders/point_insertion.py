@@ -6,18 +6,20 @@ from typing import Callable, List, Optional, Sequence, Tuple
 
 from ..pick import qt_modules, qt_widget_alive
 from ..tooltips import HOOK_TO_SELECTION_TIP, SNAP_TO_ATOM_TIP
+from ..widgets.switch import make_switch
 from ..widgets.theme import (
     BANNER_INFO,
     BANNER_WARNING,
-    EDITABLE_FIELD,
     mark_primary_button,
     style_info_banner,
 )
-from ..widgets.type_icons import SOURCE_ICON_SIZE, source_icon_kind, source_icon_pixmap
+from ..widgets.type_icons import apply_source_icon, source_icon_kind, source_icon_pixmap
 from .points import (
     ADD_POINT_LABEL,
     INSERT_SOURCE_CAMERA,
+    INSERT_SOURCE_FRESH,
     INSERT_SOURCE_SELECTION,
+    INSERTION_FRESH_WAITING,
     INSERTION_NOTHING_SELECTED,
     VisualPoint,
     insertion_add_label,
@@ -27,38 +29,104 @@ from .points import (
     insertion_selection_count,
     resolve_insertion_points,
 )
+from .zoom_selection import ZOOM_TO_SELECTION_TIP
 
 SOURCE_SELECTION = INSERT_SOURCE_SELECTION
 SOURCE_CAMERA = INSERT_SOURCE_CAMERA
-from .zoom_selection import ZOOM_TO_SELECTION_TIP
+SOURCE_FRESH = INSERT_SOURCE_FRESH
 
-SNAP_LABEL = "Snap camera-center points to atoms"
-HOOK_LABEL = "Keep atom-associated points attached to atoms"
-ZOOM_LABEL = "Zoom to newly added point(s)"
+SNAP_LABEL = "Snap to atoms"
+HOOK_LABEL = "Anchor to atoms"
+ZOOM_LABEL = "Zoom to new points"
 SHOW_COORDS_LABEL = "Show coordinates"
 EXPORT_SEL_LABEL = "Create PyMOL selection"
 SOURCE_SELECTION_LABEL = "Current selection"
-SOURCE_CAMERA_LABEL = "Camera center"
+SOURCE_CAMERA_LABEL = "Camera"
+SOURCE_FRESH_LABEL = "Fresh selection"
+ADD_FROM_LABEL = "Add from"
 
-ADD_POINT_HEADER_LABEL = ADD_POINT_LABEL
-ADD_POINT_TIP = (
-    "Insert points from the chosen source. Selection: one atom → one point, "
-    "N atoms → N points, residue/object/named sele → every atom. "
-    "Camera center is always available. Snap only applies to camera placement."
+CANCEL_FRESH_TIP = "Cancel waiting for a new PyMOL selection."
+FRESH_SELECTION_TIP = (
+    "Click Add, then select atoms in PyMOL. The current selection is ignored."
 )
 SOURCE_TIP = "Where new points come from. Manual placement is not in this editor."
+CURRENT_SELECTION_TIP = (
+    "Use the atoms already selected in PyMOL when you click Add."
+)
+CAMERA_SOURCE_TIP = "Place at the current view center. Always available."
+ADD_POINT_HEADER_LABEL = ADD_POINT_LABEL
+ADD_POINT_TIP = (
+    "Insert points from the chosen source. Current selection uses atoms "
+    "selected now. Fresh selection waits for a new pick after Add. "
+    "Camera is always available. Snap only applies to camera placement."
+)
 PREVIEW_TIP = (
     "Live preview of what Add will insert. The actual click re-reads PyMOL, "
     "so this label is never used as the inserted coordinates."
 )
 SHOW_COORDS_TIP = (
-    "Show X/Y/Z columns. When a point is attached to an atom, coordinates are "
+    "Show X/Y/Z columns. When a point is anchored to an atom, coordinates are "
     "usually an implementation detail until you edit them."
 )
 EXPORT_SEL_TIP = (
     "Create a PyMOL selection from enabled points and show their labels. "
     "Labels hide again when this editor closes."
 )
+
+
+class AddFromSourceRadios:
+    """Current selection / Camera / Fresh selection radios."""
+
+    def __init__(self, on_changed=None):
+        QtCore, QtGui, QtWidgets = qt_modules()
+        wrap = QtWidgets.QWidget()
+        row = QtWidgets.QHBoxLayout(wrap)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        row.addWidget(QtWidgets.QLabel(ADD_FROM_LABEL))
+        group = QtWidgets.QButtonGroup(wrap)
+        group.setExclusive(True)
+        self._buttons = {}
+        choices = (
+            (INSERT_SOURCE_SELECTION, SOURCE_SELECTION_LABEL, CURRENT_SELECTION_TIP),
+            (INSERT_SOURCE_CAMERA, SOURCE_CAMERA_LABEL, CAMERA_SOURCE_TIP),
+            (INSERT_SOURCE_FRESH, SOURCE_FRESH_LABEL, FRESH_SELECTION_TIP),
+        )
+        for value, label, tip in choices:
+            radio = QtWidgets.QRadioButton(label)
+            radio.setToolTip(tip)
+            apply_source_icon(radio, value, QtGui, QtCore, QtWidgets)
+            group.addButton(radio)
+            row.addWidget(radio)
+            self._buttons[value] = radio
+        self._buttons[INSERT_SOURCE_SELECTION].setChecked(True)
+        group.buttonToggled.connect(lambda *_: self._emit(on_changed))
+        self.widget = wrap
+        self._group = group
+
+    def source(self) -> str:
+        for value, btn in self._buttons.items():
+            if btn.isChecked():
+                return value
+        return INSERT_SOURCE_SELECTION
+
+    def buttons(self):
+        return self._buttons
+
+    def connect_changed(self, callback):
+        if callback is None:
+            return
+        self._group.buttonToggled.connect(lambda *_: callback(self.source()))
+
+    def _emit(self, on_changed):
+        if on_changed is not None:
+            on_changed(self.source())
+
+
+def make_add_from_source_toggle(on_changed=None):
+    """Current / Camera / Fresh radios with source icons."""
+    radios = AddFromSourceRadios(on_changed=on_changed)
+    return radios.widget, radios
 
 
 def insertion_banner_kind(text: str) -> str:
@@ -68,7 +136,7 @@ def insertion_banner_kind(text: str) -> str:
 
 
 class PointInsertionWidget:
-    """Add-from dropdown, live preview, placement flags, and compact Add."""
+    """Add-from radios, live preview, placement flags, and compact Add."""
 
     def __init__(
         self,
@@ -80,17 +148,27 @@ class PointInsertionWidget:
         on_export: Callable[[], None],
         on_show_coords: Optional[Callable[[bool], None]] = None,
         get_existing: Optional[Callable[[], Sequence[VisualPoint]]] = None,
+        hide_add: bool = False,
+        hide_coords: bool = False,
+        on_can_add_changed: Optional[Callable[[bool], None]] = None,
+        on_wait_changed: Optional[Callable[[bool], None]] = None,
     ):
         self.cmd = cmd
         self._context = context
         self._on_add = on_add
         self._get_existing = get_existing or (lambda: ())
+        self._hide_add = bool(hide_add)
+        self._hide_coords = bool(hide_coords)
+        self._on_can_add_changed = on_can_add_changed
+        self._on_wait_changed = on_wait_changed
+        self._waiting_fresh = False
         self._timer = None
         self._poll_page = None
         self._focus_filter = None
         self._last_fingerprint = None
         self._last_preview_ui = None
         self._source = None
+        self._source_radios = None
         self._source_icon = None
         self._preview = None
         self._add_btn = None
@@ -107,9 +185,13 @@ class PointInsertionWidget:
         return self._widget
 
     def source(self) -> str:
-        if self._source is None:
+        radios = getattr(self, "_source_radios", None)
+        if radios is not None:
+            return radios.source()
+        combo = getattr(self, "_source", None)
+        if combo is None:
             return INSERT_SOURCE_SELECTION
-        data = self._source.currentData()
+        data = combo.currentData()
         return str(data) if data else INSERT_SOURCE_SELECTION
 
     def snap_checked(self) -> bool:
@@ -137,16 +219,45 @@ class PointInsertionWidget:
         self.stop_preview_timer()
 
     def _clicked_add(self) -> None:
+        if getattr(self, "_waiting_fresh", False):
+            self._set_waiting_fresh(False)
+            self.refresh_preview()
+            return
+        if self.source() == INSERT_SOURCE_FRESH:
+            self._clear_pymol_selection()
+            self._set_waiting_fresh(True)
+            self.refresh_preview()
+            return
         pts = self.resolve_points(existing=self._get_existing())
         if not pts:
             return
         self._on_add(pts)
 
+    def _set_waiting_fresh(self, waiting: bool) -> None:
+        self._waiting_fresh = bool(waiting)
+        callback = getattr(self, "_on_wait_changed", None)
+        if callback is not None:
+            callback(self._waiting_fresh)
+
+    def _clear_pymol_selection(self) -> None:
+        try:
+            self.cmd.select("sele", "none")
+        except Exception:
+            pass
+        try:
+            self.cmd.unpick()
+        except Exception:
+            pass
+
     def can_add(self) -> bool:
+        if getattr(self, "_waiting_fresh", False):
+            return True
         return insertion_can_add(self.cmd, self.source())
 
     def resolve_points(self, existing: Sequence[VisualPoint] = ()) -> List[VisualPoint]:
         source = self.source()
+        if source == INSERT_SOURCE_FRESH:
+            source = INSERT_SOURCE_SELECTION
         snap = self.snap_checked() if source == INSERT_SOURCE_CAMERA else False
         hook = self.hook_checked()
         return resolve_insertion_points(
@@ -168,24 +279,33 @@ class PointInsertionWidget:
             return False
 
     def _current_fingerprint(self):
+        source = self.source()
+        if getattr(self, "_waiting_fresh", False):
+            source = INSERT_SOURCE_SELECTION
         return insertion_preview_fingerprint(
-            self.cmd, self.source(), snap=self.snap_checked(),
+            self.cmd, source, snap=self.snap_checked(),
         )
 
     def refresh_preview(self) -> None:
         """Update preview copy and Add enabled state. Never schedules a CGO remesh."""
         source = self.source()
+        if source != INSERT_SOURCE_FRESH and getattr(self, "_waiting_fresh", False):
+            self._set_waiting_fresh(False)
         if self.snap is not None:
             self.snap.setEnabled(source == INSERT_SOURCE_CAMERA)
         if self.hook is not None:
             self.hook.setEnabled(True)
         fingerprint = self._current_fingerprint()
-        text = insertion_preview_text(
-            self.cmd, source, snap=self.snap_checked(),
-        )
+        waiting = getattr(self, "_waiting_fresh", False)
+        if waiting:
+            text = INSERTION_FRESH_WAITING
+        else:
+            text = insertion_preview_text(
+                self.cmd, source, snap=self.snap_checked(),
+            )
         enabled = self.can_add()
         kind = insertion_banner_kind(text)
-        ui = (text, bool(enabled), kind, str(source))
+        ui = (text, bool(enabled), kind, str(source), bool(waiting))
         self._last_fingerprint = fingerprint
         if ui == getattr(self, "_last_preview_ui", None):
             return
@@ -195,8 +315,17 @@ class PointInsertionWidget:
             if hasattr(self._preview, "palette"):
                 style_info_banner(self._preview, kind=kind)
         if self._add_btn is not None:
-            self._add_btn.setText(ADD_POINT_HEADER_LABEL)
+            if waiting:
+                self._add_btn.setText("Cancel pick")
+            else:
+                self._add_btn.setText(ADD_POINT_HEADER_LABEL)
+            set_tip = getattr(self._add_btn, "setToolTip", None)
+            if callable(set_tip):
+                set_tip(CANCEL_FRESH_TIP if waiting else ADD_POINT_TIP)
             self._add_btn.setEnabled(enabled)
+        callback = getattr(self, "_on_can_add_changed", None)
+        if callback is not None:
+            callback(bool(enabled))
         self._sync_source_icon(source)
 
     def _sync_source_icon(self, source: str) -> None:
@@ -211,14 +340,9 @@ class PointInsertionWidget:
         if pix is None:
             return
         set_pix(pix)
-        tip = (
-            SOURCE_CAMERA_LABEL
-            if source_icon_kind(source) == "camera"
-            else SOURCE_SELECTION_LABEL
-        )
         set_tip = getattr(icon, "setToolTip", None)
         if callable(set_tip):
-            set_tip(tip)
+            set_tip(source_icon_kind(source))
 
     def _poll_preview(self) -> None:
         page = self._poll_page
@@ -229,6 +353,15 @@ class PointInsertionWidget:
             self.stop_preview_timer()
             return
         fingerprint = self._current_fingerprint()
+        if getattr(self, "_waiting_fresh", False):
+            count = int(fingerprint[1]) if fingerprint is not None else 0
+            if count > 0:
+                pts = self.resolve_points(existing=self._get_existing())
+                self._set_waiting_fresh(False)
+                if pts:
+                    self._on_add(pts)
+                self.refresh_preview()
+                return
         if fingerprint == getattr(self, "_last_fingerprint", None):
             return
         self.refresh_preview()
@@ -297,8 +430,18 @@ class PointInsertionWidget:
             pass
 
     def tooltips(self) -> Sequence[Tuple[object, str]]:
-        return (
-            (self._source, SOURCE_TIP, "Add from"),
+        radios = getattr(self, "_source_radios", None)
+        radio_tips = ()
+        if radios is not None:
+            buttons = radios.buttons()
+            radio_tips = (
+                (buttons[INSERT_SOURCE_SELECTION], CURRENT_SELECTION_TIP, SOURCE_SELECTION_LABEL),
+                (buttons[INSERT_SOURCE_CAMERA], CAMERA_SOURCE_TIP, SOURCE_CAMERA_LABEL),
+                (buttons[INSERT_SOURCE_FRESH], FRESH_SELECTION_TIP, SOURCE_FRESH_LABEL),
+            )
+        elif self._source is not None:
+            radio_tips = ((self._source, SOURCE_TIP, "Add from"),)
+        return radio_tips + (
             (self._preview, PREVIEW_TIP, "Insertion preview"),
             (self._add_btn, ADD_POINT_TIP, ADD_POINT_HEADER_LABEL),
             (self.snap, SNAP_TO_ATOM_TIP),
@@ -317,26 +460,18 @@ class PointInsertionWidget:
 
         source_row = QtWidgets.QHBoxLayout()
         source_row.setSpacing(8)
-        source_row.addWidget(QtWidgets.QLabel("Add from"))
-        self._source_icon = QtWidgets.QLabel()
-        self._source_icon.setObjectName("pmvSourceModeIcon")
-        self._source_icon.setFixedSize(SOURCE_ICON_SIZE, SOURCE_ICON_SIZE)
-        align = getattr(getattr(QtCore, "Qt", None), "AlignCenter", None)
-        if align is not None:
-            self._source_icon.setAlignment(align)
-        source_row.addWidget(self._source_icon)
-        self._source = QtWidgets.QComboBox()
-        self._source.setObjectName(EDITABLE_FIELD)
-        self._source.addItem(SOURCE_SELECTION_LABEL, INSERT_SOURCE_SELECTION)
-        self._source.addItem(SOURCE_CAMERA_LABEL, INSERT_SOURCE_CAMERA)
-        self._source.currentIndexChanged.connect(lambda *_: self.refresh_preview())
-        source_row.addWidget(self._source)
+        self._add_from, self._source_radios = make_add_from_source_toggle(
+            on_changed=lambda *_: self.refresh_preview(),
+        )
+        source_row.addWidget(self._add_from)
         self._add_btn = QtWidgets.QPushButton(ADD_POINT_HEADER_LABEL)
         self._add_btn.setAutoDefault(False)
         self._add_btn.setDefault(False)
         self._add_btn.clicked.connect(lambda *_args: self._clicked_add())
         mark_primary_button(self._add_btn)
         source_row.addWidget(self._add_btn)
+        if self._hide_add:
+            self._add_btn.hide()
         source_row.addStretch(1)
         layout.addLayout(source_row)
 
@@ -351,13 +486,13 @@ class PointInsertionWidget:
         flags.setContentsMargins(0, 0, 0, 0)
         flags.setHorizontalSpacing(16)
         flags.setVerticalSpacing(6)
-        self.snap = QtWidgets.QCheckBox(SNAP_LABEL)
+        self.snap = make_switch(SNAP_LABEL, icon="snap")
         self.snap.setChecked(True)
         self.snap.toggled.connect(lambda *_: self.refresh_preview())
-        self.hook = QtWidgets.QCheckBox(HOOK_LABEL)
+        self.hook = make_switch(HOOK_LABEL, icon="anchor")
         self.hook.setChecked(True)
-        self.zoom = QtWidgets.QCheckBox(ZOOM_LABEL)
-        self.show_coords = QtWidgets.QCheckBox(SHOW_COORDS_LABEL)
+        self.zoom = make_switch(ZOOM_LABEL, icon="zoom")
+        self.show_coords = make_switch(SHOW_COORDS_LABEL)
         self.show_coords.setChecked(False)
         if on_show_coords is not None:
             self.show_coords.toggled.connect(on_show_coords)
@@ -365,6 +500,8 @@ class PointInsertionWidget:
         flags.addWidget(self.hook, 0, 1)
         flags.addWidget(self.zoom, 1, 0)
         flags.addWidget(self.show_coords, 1, 1)
+        if self._hide_coords:
+            self.show_coords.hide()
         flags.setColumnStretch(0, 1)
         flags.setColumnStretch(1, 1)
         layout.addLayout(flags)
