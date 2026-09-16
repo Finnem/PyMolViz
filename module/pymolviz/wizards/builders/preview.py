@@ -326,7 +326,11 @@ def _preview_pairs(pairs, highlight_id=None):
         ).with_end(
             pair.end.with_color(_mix_highlight(pair.end.color)),
         )
-        out.append(brighter.with_width(float(pair.width) * 1.35))
+        # Fatten the shaft only. with_width used to reset head to the default
+        # for the new radius, so Head length / Head radius spinners looked dead.
+        out.append(
+            brighter.with_width(float(pair.width) * 1.35).with_head(float(pair.head))
+        )
     return out
 
 

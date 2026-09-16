@@ -544,7 +544,17 @@ def _mount_field_picker(layout, QtWidgets, cmd, initial: ColorChoice, state: dic
     form = section.layout
     field_combo = QtWidgets.QComboBox()
     apply_shrinking_combo(field_combo, QtWidgets, min_chars=10)
-    editor = ColormapEditor(section.widget, on_changed=lambda: None, cmd=cmd)
+
+    def _selected_field_id():
+        fid = field_combo.currentData()
+        return str(fid) if fid else None
+
+    editor = ColormapEditor(
+        section.widget,
+        on_changed=lambda: None,
+        cmd=cmd,
+        field_id_provider=_selected_field_id,
+    )
     editor.set_colormap(
         initial.colormap or DEFAULT_SURFACE_COLORMAP,
         range_mode=effective_clim_mode(initial),

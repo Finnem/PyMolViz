@@ -375,6 +375,51 @@ def test_gauss_hydrogen_blob_is_smaller_than_carbon():
     assert r_h < r_c
 
 
+def test_gauss_uniform_atom_radius_scales_blob():
+    center = np.zeros(3)
+    small = build_solvent_surface(
+        [center], atom_radius=1.2, algorithm="GAUSS", quality=1, elements=["C"],
+    )
+    large = build_solvent_surface(
+        [center], atom_radius=2.4, algorithm="GAUSS", quality=1, elements=["C"],
+    )
+    r_small = float(np.median(np.linalg.norm(small[0] - center, axis=1)))
+    r_large = float(np.median(np.linalg.norm(large[0] - center, axis=1)))
+    assert r_large > r_small * 1.6
+    assert r_large == pytest.approx(2.4, rel=0.15)
+
+
+def test_gauss_target_vdw_radius_matches_median_extent():
+    center = np.zeros(3)
+    from pymolviz.util.solvent_params import vdw_for_element
+
+    r_vdw = float(vdw_for_element("C"))
+    mesh = build_solvent_surface(
+        [center], atom_radius=r_vdw, algorithm="GAUSS", quality=1, elements=["C"],
+    )
+    med = float(np.median(np.linalg.norm(mesh[0] - center, axis=1)))
+    assert med == pytest.approx(r_vdw, rel=0.12)
+    bigger = build_solvent_surface(
+        [center], atom_radius=r_vdw * 1.5, algorithm="GAUSS", quality=1, elements=["C"],
+    )
+    med_big = float(np.median(np.linalg.norm(bigger[0] - center, axis=1)))
+    assert med_big == pytest.approx(r_vdw * 1.5, rel=0.18)
+
+
+def test_gauss_multi_atom_uniform_radius_inflates_with_atom_radius():
+    rng = np.random.default_rng(3)
+    pts = rng.normal(size=(40, 3))
+    small = build_solvent_surface(
+        pts, atom_radius=1.2, algorithm="GAUSS", quality=1, elements=["C"] * 40,
+    )
+    large = build_solvent_surface(
+        pts, atom_radius=2.4, algorithm="GAUSS", quality=1, elements=["C"] * 40,
+    )
+    span_small = float(np.ptp(small[0], axis=0).max())
+    span_large = float(np.ptp(large[0], axis=0).max())
+    assert span_large > span_small * 1.03
+
+
 def _boundary_edge_count(faces):
     count = {}
     for a, b, c in np.asarray(faces, dtype=int):

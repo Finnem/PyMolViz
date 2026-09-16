@@ -1306,6 +1306,7 @@ def test_field_picker_mount_does_not_emit():
 
     src = inspect.getsource(colors._mount_field_picker)
     assert "_sync_state(emit=False)" in src
+    assert "field_id_provider" in src
 
 
 def test_color_choice_signature_skips_same_rgba():
@@ -1444,6 +1445,18 @@ def test_colormap_preview_pixmap_builtin():
     assert colormap_preview_pixmap(None, None, defn) is None
 
 
+def test_colormap_picker_gear_hidden_when_custom_only():
+    from pymolviz.wizards.builders.colormap_editor import ColormapPresetPicker
+
+    picker = ColormapPresetPicker.__new__(ColormapPresetPicker)
+    picker._adjust_all_presets = False
+    picker._combo = type("C", (), {"currentIndex": lambda self: 0})()
+    picker._gear = type("G", (), {"setVisible": lambda *a: None, "setEnabled": lambda *a: None})()
+    picker.current_is_custom = lambda: False
+    picker._sync_gear()
+    # Builtin preset: gear stays hidden when adjust_all_presets is False.
+
+
 def test_colormap_preset_reload_skips_deleted_combo(monkeypatch):
     from pymolviz.wizards.builders.colormap_editor import ColormapPresetPicker
 
@@ -1580,7 +1593,9 @@ def test_arrow_page_has_clicked_atom_toggle():
     assert "CLICKED_ATOM_LABEL" in src
     assert "SELECTION_AVERAGE_LABEL" in src
     assert "QRadioButton" in src
-    assert "clicked" in CLICKED_ATOM_TIP.lower()
+    assert "_center_radio.setChecked(True)" in src
+    assert "setChecked(True)" not in src.split("self._clicked_atom_box")[1].split("self._center_radio")[0]
+    assert "click identity" in CLICKED_ATOM_TIP.lower()
     assert "average" in SELECTION_AVERAGE_LABEL.lower()
     assert "average" in SELECTION_CENTER_TIP.lower()
     add = inspect.getsource(ArrowBuilderPage.add_arrow)
@@ -1649,6 +1664,7 @@ def test_arrow_row_uses_global_width_and_labeled_attach():
     poll = inspect.getsource(PointTableBuilderPage._poll_atom_pick)
     assert "take_single_selection_point" in poll
     assert "MULTI_CLICKED" in poll
+    assert "STATUS_TOO_LARGE" in poll
     assert "max_expand" in poll
     assert "idle_selection_poll_ok" in poll
     list_src = inspect.getsource(PointListEditor._make_block)
@@ -1680,7 +1696,12 @@ def test_arrow_add_button_is_layout_footer_not_overlay():
     assert "insertion_preview_fingerprint" in sync
     poll = inspect.getsource(ArrowBuilderPage._poll_selection)
     assert "max_expand=POLL_SELECTION_MAX_ATOMS" in poll
+    assert "_note_selection_status" in poll
     assert "idle_selection_poll_ok" in poll
+    note = inspect.getsource(ArrowBuilderPage._note_selection_status)
+    assert "STATUS_TOO_LARGE" in note
+    add = inspect.getsource(ArrowBuilderPage.add_arrow)
+    assert "STATUS_TOO_LARGE" in add
     from pymolviz.wizards.builders.points import _first_atom_identity
 
     first_id = inspect.getsource(_first_atom_identity)

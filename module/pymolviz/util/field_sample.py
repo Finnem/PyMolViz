@@ -1092,6 +1092,11 @@ def paint_mesh_by_field(
     values = sample_grid(grid, vertices, smooth=smooth)
     faces = getattr(mesh, "faces", None)
     normals = getattr(mesh, "normals", None)
+    # Refinement splits triangles for smoother CGO color on large solvent surfaces.
+    # On analytic meshes (sphere/box) it wrecks the icosphere / box topology and,
+    # with clip planes, can pull new vertices off the cut patch.
+    if refine and kind in ("Sphere", "CenteredBox"):
+        refine = False
     if refine and faces is not None and np.asarray(faces).size:
         vertices, normals, faces, values = refine_mesh_for_field(
             vertices,

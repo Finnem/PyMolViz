@@ -75,8 +75,25 @@ class ModifiersSection:
     def refresh_summary(self) -> None:
         self.refresh_header()
 
+    def apply_gizmo_state(self, state) -> None:
+        from ...util.clip_gizmo import normalize_clip_gizmo_state
+
+        shown = normalize_clip_gizmo_state(state)["shown"]
+        if self._show_gizmos is not None:
+            self._show_gizmos.blockSignals(True)
+            self._show_gizmos.setChecked(shown)
+            self._show_gizmos.blockSignals(False)
+        self._controller.apply_gizmo_state(state)
+
+    def gizmo_state(self):
+        return self._controller.gizmo_state()
+
     def cleanup(self) -> None:
         self._controller.reset()
+        if self._show_gizmos is not None:
+            self._show_gizmos.blockSignals(True)
+            self._show_gizmos.setChecked(True)
+            self._show_gizmos.blockSignals(False)
 
     def _build(self, parent):
         _, _, QtWidgets = qt_modules()

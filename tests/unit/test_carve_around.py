@@ -13,6 +13,19 @@ def test_normalize_carve_args_requires_target_and_positive_radius():
     assert normalize_carve_args("protein", None) == ("protein", None)
     assert normalize_carve_args("protein", 0.0) == (None, None)
     assert normalize_carve_args("protein", 2.5) == ("protein", 2.5)
+    assert normalize_carve_args("(choose target)", 2.0) == (None, None)
+    assert normalize_carve_args("", 2.0) == (None, None)
+
+
+def test_placeholder_carve_is_not_stored_on_volume():
+    from tests.unit.test_field_visuals import _tiny_grid
+
+    grid = _tiny_grid()
+    vol = make_field_visual(
+        "Volume", grid, "vol", selection="(choose target)", carve=2.0,
+    )
+    assert vol.selection is None
+    assert vol.carve is None
 
 
 def test_make_field_visual_passes_carve_to_iso_and_volume():

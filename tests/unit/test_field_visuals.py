@@ -466,6 +466,13 @@ def test_persist_field_visual_replaces_same_id():
     persist_field_visual(cmd, second)
     assert session_mod.get("vol_edit") is second
     assert session_mod.get("vol_edit") is not first
+    assert getattr(second, "_name", None) == "density_volume"
+    third = make_field_visual("Volume", grid, "density_volume", obj_id="vol_edit")
+    persist_field_visual(cmd, third)
+    assert getattr(third, "_name", None) == "density_volume"
+    names = [str(n) for n in cmd.get_names("objects")]
+    assert "density_volume" in names
+    assert "density_volume_1" not in names
     volumes = [o for o in session_mod.all_objects() if type(o).__name__ == "Volume"]
     assert len(volumes) == 1
     rows = field_library_rows(session_mod.all_objects(), cmd=cmd)

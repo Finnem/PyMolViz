@@ -265,6 +265,10 @@ class FieldVisualBuilderPage(BuilderPage):
         aabb = opts.get("clip_aabb")
         domain = self._field_domain_aabb(self._field, resolve_field_grid(self._field))
         self._set_cardinal_planes(aabb_to_cardinal_planes(aabb, domain))
+        if self._cardinal_clip is not None:
+            from ...util.clip_gizmo import read_clip_gizmo_state
+
+            self._cardinal_clip.set_gizmo_state(opts.get("clip_gizmos") or read_clip_gizmo_state(obj))
         if self._carve is not None:
             self._carve.set_carve(opts.get("selection"), opts.get("carve"))
             self._carve.refresh(opts.get("selection"))
@@ -727,6 +731,10 @@ class FieldVisualBuilderPage(BuilderPage):
             else DEFAULT_PREVIEW_MODE
         )
         stamp_preview_mode(visual, mode)
+        from ...util.clip_gizmo import stamp_clip_gizmo_state
+
+        if self._cardinal_clip is not None:
+            stamp_clip_gizmo_state(visual, self._cardinal_clip.gizmo_state())
         persist_field_visual(self.cmd, visual)
         if self._on_create is not None:
             self._on_create()

@@ -165,3 +165,29 @@ def test_hiding_selected_gizmo_drops_drag_poll_index():
     _planes, selected = ctrl.preview_gizmos()
     assert selected is None
     assert preview.released == 1
+
+
+def test_apply_gizmo_state_hides_without_dropping_planes():
+    preview = _DragPreview(None)
+    ctrl = _controller(preview, lambda: None)
+
+    ctrl.apply_gizmo_state({"shown": False})
+    assert ctrl.gizmos_shown() is False
+    assert ctrl.preview_gizmos() == ([], None)
+    assert ctrl.clip_planes
+
+    ctrl._list = None
+    ctrl.reset()
+    assert ctrl.gizmos_shown() is True
+    assert ctrl.clip_planes == []
+
+
+def test_wizard_plane_keeps_hidden_gizmo_flag():
+    ctrl = _controller(_DragPreview(None), lambda: None)
+    plane = ctrl.wizard_plane({
+        "origin": [0.0, 0.0, 0.0],
+        "normal": [0.0, 0.0, 1.0],
+        "scale": 5.0,
+        "gizmo": False,
+    })
+    assert plane["gizmo"] is False

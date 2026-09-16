@@ -46,13 +46,14 @@ def persist_field_visual(cmd, visual) -> None:
         ensure_map_loaded(cmd, grid, reload=True)
     raw = display_name(visual) or getattr(visual, "_name", None)
     vid = str(getattr(visual, "id", "") or "")
-    keep = None
+    existing = None
     try:
         existing = session_get(vid) if vid else None
-        if existing is visual and raw:
-            keep = raw
     except Exception:
-        keep = raw
+        existing = None
+    # Same session id is an in-place update, even when the editor built a
+    # new visual instance. Keep the requested name instead of density_volume_1…
+    keep = raw if existing is not None else None
     name = unused_object_name(raw or "visual", cmd, keep=keep)
     if name and name != raw:
         try:

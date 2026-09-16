@@ -101,7 +101,10 @@ def test_done_button_calls_wizard_do_done():
     done = panel[-1]
     assert done[1] == "Done"
     assert done[2] == "cmd.get_wizard().do_done()"
-    assert any(str(row).startswith("Cam center:") for row in labels)
+    assert not any(str(label).startswith("Cam center:") for label in labels)
+    wizard.prompt = ["PyMOLViz"]
+    prompt = PyMolVizWizard.get_prompt(wizard)
+    assert any(str(line).startswith("Cam center:") for line in prompt)
 
 
 def test_wizard_menu_includes_field_visuals():

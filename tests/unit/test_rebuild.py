@@ -373,6 +373,21 @@ def _vertex_radial_max(tokens):
     return max((v[1] ** 2 + v[2] ** 2) ** 0.5 for v in verts)
 
 
+def _head_base_x(tokens):
+    """Min x of vertices that sit off-axis (the cone base on a +x arrow)."""
+    verts = []
+    i = 0
+    n = len(tokens)
+    while i < n:
+        if tokens[i] == "VERTEX" and i + 3 < n:
+            verts.append((float(tokens[i + 1]), float(tokens[i + 2]), float(tokens[i + 3])))
+            i += 4
+            continue
+        i += 1
+    wide = [v[0] for v in verts if (v[1] ** 2 + v[2] ** 2) ** 0.5 > 0.06]
+    assert wide
+    return min(wide)
+
 def test_head_radius_follows_shaft_helper():
     from pymolviz.meshes.Arrows import default_head_radius, head_radius_follows_shaft
 
@@ -460,6 +475,34 @@ def test_retarget_arrow_width_rebuilds_cgo():
     assert coll[0].head_radius is None
     assert _vertex_radial_max(after) > _vertex_radial_max(before) * 2
 
+
+def test_retarget_arrow_head_length_and_radius_rebuilds_cgo():
+    from dataclasses import replace
+
+    from pymolviz.points import FixedPoint
+    from pymolviz.util.line_style import LineStyle
+    from pymolviz.wizards.builders.pairs import VisualPair
+    from pymolviz.wizards.builders.points import VisualPoint
+    from pymolviz.wizards.builders.preview import (
+        build_arrow_collection,
+        retarget_arrow_collection,
+    )
+
+    def pt(xyz):
+        return VisualPoint(
+            "p", "manual", xyz[0], xyz[1], xyz[2], point_source=FixedPoint(xyz),
+        )
+
+    pair = VisualPair(pt((0.0, 0.0, 0.0)), pt((10.0, 0.0, 0.0)), width=0.045, head=0.36)
+    coll = build_arrow_collection([pair], 3, LineStyle(), "a", head_radius=None)
+    short = coll[0]._create_CGO_list()
+    long_pair = replace(pair, head=2.5)
+    assert retarget_arrow_collection(coll, [long_pair], head_radius=0.4) is True
+    after = coll[0]._create_CGO_list()
+    assert coll[0].pair_heads[0] == pytest.approx(2.5)
+    assert coll[0].head_radius == pytest.approx(0.4)
+    assert _vertex_radial_max(after) > _vertex_radial_max(short) * 2
+    assert _head_base_x(after) < _head_base_x(short) - 1.0
 
 def test_independent_heads_cgo():
     from pymolviz.meshes.Arrows import build_styled_arrow_cgo

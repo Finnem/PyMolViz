@@ -9,6 +9,18 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 from .marching_cubes import march_cubes_mesh
+from .solvent_params import signed_distance
+
+
+def _sas_owners(vertices, centers, radii):
+    if vertices.shape[0] == 0:
+        return np.zeros((0,), dtype=int)
+    if centers.shape[0] == 1:
+        return np.zeros((vertices.shape[0],), dtype=int)
+    offset = vertices[:, None, :] - centers[None, :, :]
+    sdf = np.linalg.norm(offset, axis=2) - np.asarray(radii, dtype=float).reshape(1, -1)
+    return np.argmin(sdf, axis=1)
+
 
 def _orient(tri, hint):
     a, b, c = tri

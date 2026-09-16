@@ -239,6 +239,11 @@ def _base_fields(obj) -> dict:
         from .wizards.builders.preview_mode import normalize_preview_mode
 
         data["preview_mode"] = normalize_preview_mode(mode)
+    gizmos = getattr(obj, "clip_gizmos", None)
+    if gizmos is not None:
+        from .util.clip_gizmo import normalize_clip_gizmo_state
+
+        data["clip_gizmos"] = normalize_clip_gizmo_state(gizmos)
     return data
 
 
@@ -248,6 +253,14 @@ def _restore_preview_mode(obj, data: dict) -> None:
     from .wizards.builders.preview_mode import stamp_preview_mode
 
     stamp_preview_mode(obj, data.get("preview_mode"))
+
+
+def _restore_clip_gizmos(obj, data: dict) -> None:
+    if obj is None or not isinstance(data, dict) or "clip_gizmos" not in data:
+        return
+    from .util.clip_gizmo import stamp_clip_gizmo_state
+
+    stamp_clip_gizmo_state(obj, data.get("clip_gizmos"))
 
 
 def _common_mesh_fields(obj) -> dict:
@@ -1164,6 +1177,7 @@ def displayable_from_dict(data: dict):
         raise SerializationError("Unknown Displayable type %r" % typ)
     obj = loader(cls, data)
     _restore_preview_mode(obj, data)
+    _restore_clip_gizmos(obj, data)
     oid = getattr(obj, "id", None)
     if oid:
         _INFLIGHT[str(oid)] = obj

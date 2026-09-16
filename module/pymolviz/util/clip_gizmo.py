@@ -12,6 +12,68 @@ import numpy as np
 
 from .math import get_perp
 
+_DEFAULT_GIZMO_AXES = (True, True, True)
+
+
+def normalize_clip_gizmo_state(raw=None) -> dict:
+    """Editor-only visibility: ``{shown, axes}`` with three per-axis flags."""
+    shown = True
+    axes = [True, True, True]
+    if isinstance(raw, dict):
+        if "shown" in raw:
+            shown = bool(raw.get("shown"))
+        elif "visible" in raw:
+            shown = bool(raw.get("visible"))
+        src = raw.get("axes")
+        if src is not None:
+            for i, value in enumerate(list(src)[:3]):
+                axes[i] = bool(value)
+    elif raw is not None:
+        shown = bool(raw)
+    return {"shown": shown, "axes": axes}
+
+
+def _clip_gizmo_children(obj):
+    if obj is None:
+        return ()
+    if isinstance(obj, (list, tuple)):
+        return list(obj)
+    for name in ("objects", "children"):
+        kids = getattr(obj, name, None)
+        if kids:
+            return list(kids)
+    return ()
+
+
+def read_clip_gizmo_state(obj):
+    if obj is None:
+        return normalize_clip_gizmo_state(None)
+    raw = getattr(obj, "clip_gizmos", None)
+    if raw is None:
+        for child in _clip_gizmo_children(obj):
+            raw = getattr(child, "clip_gizmos", None)
+            if raw is not None:
+                break
+    return normalize_clip_gizmo_state(raw)
+
+
+def stamp_clip_gizmo_state(obj, state) -> None:
+    if obj is None:
+        return
+    normalized = normalize_clip_gizmo_state(state)
+
+    def _set(target) -> None:
+        if target is None:
+            return
+        try:
+            target.clip_gizmos = normalized
+        except Exception:
+            pass
+
+    _set(obj)
+    for child in _clip_gizmo_children(obj):
+        _set(child)
+
 _PLANE_FILL = (0.30, 0.82, 1.00)
 _PLANE_FILL_SEL = (1.00, 0.72, 0.18)
 _PLANE_EDGE = (0.12, 0.55, 0.78)

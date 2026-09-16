@@ -249,10 +249,11 @@ cmd.set("volume_mode", 0)
             )
             return
         volume_kwargs = {"ramp": ramp_name, "state": self.state}
-        if self.selection:
-            volume_kwargs["selection"] = self.selection
-        if self.carve is not None:
-            volume_kwargs["carve"] = self.carve
+        sel = str(self.selection or "").strip()
+        if sel and not (sel.startswith("(") and sel.endswith(")")):
+            volume_kwargs["selection"] = sel
+            if self.carve is not None:
+                volume_kwargs["carve"] = self.carve
         cmd.volume(self.name, map_name, **volume_kwargs)
         cmd.set("volume_mode", 0)
         self.is_loaded = True

@@ -330,6 +330,7 @@ class ColorbarExportSettings:
     sig_digits: int = 3
     background: str = "transparent"
     fmt: str = "png"
+    scale: str = HISTOGRAM_VIEW_FULL
 
     def __post_init__(self):
         orient = str(self.orientation or "horizontal").strip().lower()
@@ -350,6 +351,10 @@ class ColorbarExportSettings:
         object.__setattr__(self, "tick_count", max(2, min(20, int(self.tick_count or 5))))
         object.__setattr__(self, "decimals", max(0, min(8, int(self.decimals or 2))))
         object.__setattr__(self, "sig_digits", max(1, min(8, int(self.sig_digits or 3))))
+        scale = normalize_histogram_view(self.scale)
+        if scale == HISTOGRAM_VIEW_AUTO:
+            scale = HISTOGRAM_VIEW_FULL
+        object.__setattr__(self, "scale", scale)
 
     def to_dict(self) -> dict:
         return {
@@ -365,6 +370,7 @@ class ColorbarExportSettings:
             "sig_digits": int(self.sig_digits),
             "background": self.background,
             "fmt": self.fmt,
+            "scale": self.scale,
         }
 
     @classmethod
@@ -375,7 +381,7 @@ class ColorbarExportSettings:
         return cls(**{key: data[key] for key in (
             "orientation", "width", "height", "dpi", "title", "units",
             "tick_count", "number_format", "decimals", "sig_digits",
-            "background", "fmt",
+            "background", "fmt", "scale",
         ) if key in data})
 
 
@@ -775,6 +781,124 @@ def format_number(value: float, mode: str = "auto", decimals: int = 2, sig_digit
     return text
 
 
+def _tick_format_use_scientific(values: Sequence[float]) -> bool:
+    finite = [float(v) for v in values if math.isfinite(float(v))]
+    if not finite:
+        return False
+    vmin, vmax = min(finite), max(finite)
+    span = abs(vmax - vmin)
+    peak = max(abs(vmin), abs(vmax), span, 1e-300)
+    if peak >= 1e4 or peak < 1e-2:
+        return True
+    if vmin > 0.0 and vmax > vmin and (vmax / vmin) > 50.0:
+        return True
+    if span > 0.0 and span < peak * 1e-2:
+        return True
+    return False
+
+
+def _tick_format_decimal_places(span: float, peak: float) -> int:
+    if span <= 0.0 or not math.isfinite(span):
+        return 2
+    if span >= 100.0:
+        return 0
+    if span >= 10.0:
+        return 1
+    if span >= 1.0:
+        return 2
+    if span >= 0.1:
+        return 3
+    order = int(math.floor(math.log10(max(span, peak, 1e-300))))
+    return max(0, min(6, 2 - order))
+
+
+def format_numbers_for_ticks(
+    values: Sequence[float],
+    mode: str = "auto",
+    decimals: int = 2,
+    sig_digits: int = 3,
+) -> List[str]:
+    """Format a tick set with one consistent style so labels stay compact."""
+    vals = [float(v) for v in values]
+    mode = str(mode or "auto").strip().lower()
+    if mode != "auto":
+        return [format_number(v, mode, decimals, sig_digits) for v in vals]
+    finite = [v for v in vals if math.isfinite(v)]
+    if not finite:
+        return ["" for _ in vals]
+    vmin, vmax = min(finite), max(finite)
+    span = abs(vmax - vmin)
+    peak = max(abs(vmin), abs(vmax), span, 1e-300)
+    sig = max(2, min(4, int(sig_digits or 3)))
+    if _tick_format_use_scientific(finite):
+        return [format_number(v, "scientific", decimals, sig) for v in vals]
+    places = _tick_format_decimal_places(span, peak)
+    out: List[str] = []
+    for v in vals:
+        if not math.isfinite(v):
+            out.append("")
+            continue
+        text = "%.*f" % (places, v)
+        if "." in text:
+            text = text.rstrip("0").rstrip(".")
+        out.append(text or "0")
+    return out
+
+
+def tick_label_span(widths: Sequence[float], index: int, x: float) -> Tuple[float, float]:
+    """Horizontal span ``[left, right]`` for a tick label at ``x`` (end labels hug ticks)."""
+    n = len(widths)
+    w = float(widths[index])
+    if n <= 1:
+        return (float(x) - w * 0.5, float(x) + w * 0.5)
+    if index == 0:
+        return (float(x), float(x) + w)
+    if index == n - 1:
+        return (float(x) - w, float(x))
+    return (float(x) - w * 0.5, float(x) + w * 0.5)
+
+
+def tick_label_indices_without_overlap(
+    widths: Sequence[float],
+    xs: Sequence[float],
+    *,
+    min_gap: float = 4.0,
+) -> List[int]:
+    """Return tick indices to draw; endpoints are kept when possible."""
+    n = len(widths)
+    if n == 0 or n != len(xs):
+        return []
+    if n <= 2:
+        return list(range(n))
+    keep = set(range(n))
+
+    def pair_overlaps(i: int, j: int) -> bool:
+        a = tick_label_span(widths, i, xs[i])
+        b = tick_label_span(widths, j, xs[j])
+        return max(a[0], b[0]) < min(a[1], b[1]) - float(min_gap)
+
+    changed = True
+    while changed:
+        changed = False
+        ordered = sorted(keep)
+        for idx in list(ordered):
+            if idx == 0 or idx == n - 1:
+                continue
+            if idx not in keep:
+                continue
+            left = max((k for k in ordered if k < idx), default=-1)
+            right = min((k for k in ordered if k > idx), default=n)
+            if left >= 0 and pair_overlaps(left, idx):
+                keep.discard(idx)
+                changed = True
+                break
+            if right < n and pair_overlaps(idx, right):
+                keep.discard(idx)
+                changed = True
+                break
+    return sorted(keep)
+
+
 def tick_values(vmin: float, vmax: float, count: int = 5) -> List[float]:
     n = max(2, int(count))
     lo, hi = float(vmin), float(vmax)
@@ -835,7 +959,7 @@ def colorbar_caption(title: str, units: str) -> str:
 
 def normalize_histogram_view(mode) -> str:
     text = str(mode or HISTOGRAM_VIEW_AUTO).strip().lower().replace("-", "_").replace(" ", "_")
-    if text in ("full", "linear", "all", "complete"):
+    if text in ("full", "linear", "all", "complete", "absolute"):
         return HISTOGRAM_VIEW_FULL
     if text in ("log", "log10", "log_scale"):
         return HISTOGRAM_VIEW_LOG
@@ -969,6 +1093,114 @@ def histogram_axis_to_value(unit, dmin, dmax, axis: str = HISTOGRAM_VIEW_FULL) -
         log_v = unit_to_axis(u, math.log10(lo), math.log10(hi))
         return float(10.0 ** log_v)
     return unit_to_data(u, dmin, dmax)
+
+
+def colorbar_tick_values(dmin, dmax, axis: str = HISTOGRAM_VIEW_FULL, count: int = 5) -> List[float]:
+    """Tick data values along a linear or log colorbar axis."""
+    n = max(2, int(count))
+    lo, hi = float(dmin), float(dmax)
+    if hi < lo:
+        lo, hi = hi, lo
+    if normalize_histogram_view(axis) == HISTOGRAM_VIEW_LOG:
+        lo = max(lo, 1e-30)
+        hi = max(hi, lo * 1.0001)
+        logs = np.linspace(math.log10(lo), math.log10(hi), n)
+        return [float(10.0 ** v) for v in logs]
+    return tick_values(lo, hi, n)
+
+
+def colorbar_export_display(norm: Normalization, values=None, scale: str = HISTOGRAM_VIEW_FULL):
+    """``(axis, display_lo, display_hi, map_lo, map_hi)`` for a publication colorbar."""
+    mapping_limits = resolve_limits(norm, values) or (0.0, 1.0)
+    map_lo, map_hi = float(mapping_limits[0]), float(mapping_limits[1])
+    view = normalize_histogram_view(scale)
+    if view == HISTOGRAM_VIEW_AUTO:
+        view = HISTOGRAM_VIEW_FULL
+    if view == HISTOGRAM_VIEW_FULL:
+        return HISTOGRAM_VIEW_FULL, map_lo, map_hi, map_lo, map_hi
+    samples = values
+    if samples is None:
+        samples = (map_lo, map_hi)
+    analysis = analyze_value_distribution(samples)
+    if analysis.get("vmin") is None:
+        analysis = dict(analysis)
+        analysis["vmin"] = map_lo
+        analysis["vmax"] = map_hi
+        analysis["p1"] = map_lo
+        analysis["p99"] = map_hi
+        analysis["display_lo"] = map_lo
+        analysis["display_hi"] = map_hi
+    axis, lo, hi = choose_histogram_display(analysis, view)
+    return axis, float(lo), float(hi), map_lo, map_hi
+
+
+def colorbar_ramp_rgba(
+    defn: ColormapDefinition,
+    n: int,
+    map_lo: float,
+    map_hi: float,
+    display_lo: float,
+    display_hi: float,
+    axis: str = HISTOGRAM_VIEW_FULL,
+) -> np.ndarray:
+    """RGBA samples along a colorbar axis (linear or log in data space)."""
+    n = max(2, int(n))
+    t = np.linspace(0.0, 1.0, n)
+    if normalize_histogram_view(axis) == HISTOGRAM_VIEW_LOG:
+        lo = max(float(display_lo), 1e-300)
+        hi = max(float(display_hi), lo * (1.0 + 1e-12))
+        values = 10.0 ** (math.log10(lo) + t * (math.log10(hi) - math.log10(lo)))
+    else:
+        values = float(display_lo) + t * (float(display_hi) - float(display_lo))
+    span = float(map_hi) - float(map_lo)
+    if abs(span) < 1e-15:
+        units = np.zeros_like(values)
+    else:
+        units = (values - float(map_lo)) / span
+    return np.asarray(sample_unit(defn, units), dtype=float)
+
+
+def spread_stops_on_histogram_axis(
+    stops: Sequence[ColorStop],
+    vmin: float,
+    vmax: float,
+    dmin: float,
+    dmax: float,
+    axis: str,
+) -> Tuple[ColorStop, ...]:
+    """Place interior color stops evenly along the histogram x-axis (log or linear).
+
+    End stops stay at unit positions 0 and 1 (colormap limits). Interior stops
+    are spaced uniformly between ``vmin`` and ``vmax`` in histogram display space,
+    then converted back to colormap unit positions.
+    """
+    stops = tuple(_sorted_stops(stops))
+    n = len(stops)
+    if n <= 2:
+        return stops
+    mode = normalize_histogram_view(axis)
+    if mode == HISTOGRAM_VIEW_AUTO:
+        mode = HISTOGRAM_VIEW_FULL
+    lo_u = value_to_histogram_axis(float(vmin), float(dmin), float(dmax), mode)
+    hi_u = value_to_histogram_axis(float(vmax), float(dmin), float(dmax), mode)
+    if not math.isfinite(lo_u) or not math.isfinite(hi_u):
+        return stops
+    if abs(hi_u - lo_u) < 1e-9:
+        return stops
+    out: List[ColorStop] = []
+    for i, stop in enumerate(stops):
+        if i == 0:
+            pos = 0.0
+        elif i == n - 1:
+            pos = 1.0
+        else:
+            t = float(i) / float(n - 1)
+            u = lo_u + t * (hi_u - lo_u)
+            value = histogram_axis_to_value(u, dmin, dmax, mode)
+            value = min(max(float(value), float(vmin)), float(vmax))
+            pos = data_to_unit(value, vmin, vmax)
+        out.append(ColorStop(_clip01(pos), stop.rgba, stop.label))
+    return tuple(_sorted_stops(out))
 
 
 def subsample_values(values, max_samples: int = HISTOGRAM_MAX_SAMPLES) -> np.ndarray:

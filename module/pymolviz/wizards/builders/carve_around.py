@@ -16,15 +16,28 @@ CARVE_ENABLE_TIP = (
 )
 CARVE_TARGET_TIP = "Object or selection name passed to PyMOL as the carve target."
 CARVE_RADIUS_TIP = "Radius in Ångströms around that target (PyMOL carve parameter)."
+EMPTY_CARVE_LABEL = "(choose target)"
+
+
+def is_carve_target_name(selection) -> bool:
+    """True when ``selection`` is a real PyMOL name, not the combo placeholder."""
+    sel = str(selection or "").strip()
+    if not sel:
+        return False
+    if sel == EMPTY_CARVE_LABEL:
+        return False
+    if sel.startswith("(") and sel.endswith(")"):
+        return False
+    return True
 
 
 def normalize_carve_args(selection, carve) -> Tuple[Optional[str], Optional[float]]:
     """Return ``(selection, carve)`` for volumetric visuals, or ``(None, None)`` when off."""
     sel = str(selection or "").strip()
-    if not sel:
+    if not is_carve_target_name(sel):
         return None, None
     if carve is None:
-        return sel if sel else None, None
+        return sel, None
     try:
         radius = float(carve)
     except (TypeError, ValueError):
@@ -66,7 +79,7 @@ def iter_carve_targets(cmd_) -> Sequence[str]:
     return names
 
 
-def populate_carve_target_combo(combo, cmd_, selected: Optional[str] = None, empty_label="(choose target)"):
+def populate_carve_target_combo(combo, cmd_, selected: Optional[str] = None, empty_label=EMPTY_CARVE_LABEL):
     _, _, QtWidgets = qt_modules()
     combo.blockSignals(True)
     try:
@@ -142,8 +155,10 @@ class CarveAroundWidget:
         if not self.is_enabled():
             return None
         data = self._target.currentData()
-        text = str(data or self._target.currentText() or "").strip()
-        return text or None
+        if data is None:
+            return None
+        text = str(data).strip()
+        return text if is_carve_target_name(text) else None
 
     def carve_radius(self) -> Optional[float]:
         if not self.is_enabled():

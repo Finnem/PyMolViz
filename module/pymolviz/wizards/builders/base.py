@@ -142,6 +142,15 @@ class BuilderPage:
         collection = getattr(self._preview, "collection", None)
         if collection is not None:
             stamp_preview_mode(collection, self._current_preview_mode())
+            self._stamp_clip_gizmos(collection)
+
+    def _stamp_clip_gizmos(self, obj) -> None:
+        mods = getattr(self, "_modifiers", None)
+        if mods is None or obj is None:
+            return
+        from ...util.clip_gizmo import stamp_clip_gizmo_state
+
+        stamp_clip_gizmo_state(obj, mods.gizmo_state())
 
     def _sync_commit_enabled(self):
         if self._action_bar is not None:
@@ -159,6 +168,7 @@ class BuilderPage:
 
             collection = self._collection(name)
             stamp_preview_mode(collection, mode)
+            self._stamp_clip_gizmos(collection)
             return collection
 
         persist_live_preview(

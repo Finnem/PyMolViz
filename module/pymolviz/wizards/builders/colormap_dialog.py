@@ -43,6 +43,7 @@ from ...util.colormap_spec import (
     field_title,
     field_units,
     format_number,
+    spread_stops_on_histogram_axis,
     listed_preset_names,
     load_custom_presets,
     ramp_rgba,
@@ -101,7 +102,6 @@ from .colors import (
 )
 
 EDITOR_TITLE = "Edit Colormap"
-EXPORT_TITLE = "Export Colorbar"
 EDIT_LABEL = "Edit..."
 EXPORT_COLORBAR_LABEL = "Export Colorbar..."
 SAVE_AS_LABEL = "Save As..."
@@ -151,25 +151,13 @@ def colormap_full_range_labels() -> Tuple[str, str, str, str]:
     return (RANGE_AUTO_LABEL, RANGE_CUSTOM_LABEL, RANGE_SYMMETRIC_LABEL, RANGE_PERCENTILE_LABEL)
 
 
-def _configure_editor_window(widget):
-    QtCore, _, QtWidgets = qt_modules()
-    if QtCore is None:
-        return
-    # Do not Qt-parent this to Fields or setTransientParent(PyMOL). Clicking
-    # the viewer used to hide the Fields window and delete this editor.
-    widget._pmv_window_anchor = None
-    widget._pmv_no_transient = True
-    widget._pmv_raise_last = True
-    widget.setWindowFlags(widget.windowFlags() | QtCore.Qt.WindowStaysOnTopHint)
-
-
-
 from .colormap_plot import (
     ExportColorbarDialog,
     _ColorbarPreview,
     _DistributionEditor,
     _as_rgba,
     _clamp_stop_position,
+    _configure_editor_window,
     _pixel,
     _qcolor,
     _ramp_image,
@@ -232,6 +220,7 @@ class ColormapEditorDialog:
         self._stored_key = None
         self._user_cancel = False
         self._closing = False
+        self._align_stops_to_hist = not mapping.colormap.customized
         self._debounce = QtCore.QTimer(dialog)
         self._debounce.setSingleShot(True)
         self._debounce.setInterval(250)
@@ -490,6 +479,7 @@ class ColormapEditorDialog:
     def _load_mapping(self, mapping: FieldColorMapping):
         if not qt_widget_alive(self._dialog):
             return
+        self._align_stops_to_hist = not mapping.colormap.customized
         self._syncing = True
         try:
             self._mapping = mapping
@@ -667,6 +657,7 @@ class ColormapEditorDialog:
             preset=defn.preset, stops=defn.stops, customized=False,
             interpolation=INTERP_RGB, map_type=MAP_CONTINUOUS,
         )
+        self._align_stops_to_hist = True
         self._commit_ui(reload=True)
 
     def _reset_preset(self):
@@ -678,6 +669,7 @@ class ColormapEditorDialog:
             nan_rgba=defn.nan_rgba, nan_transparent=False, out_of_range=OOR_CLAMP,
             below_rgba=None, above_rgba=None, levels=5,
         )
+        self._align_stops_to_hist = True
         self._commit_ui(reload=True)
 
     def _reverse_cmap(self):
@@ -1149,7 +1141,39 @@ class ColormapEditorDialog:
     def _on_hist_view_changed(self, *_args):
         if self._syncing:
             return
+        if not self._mapping.colormap.customized:
+            self._align_stops_to_hist = True
         self._refresh_histogram()
+
+    def _align_stops_to_histogram(self, hist) -> None:
+        if self._mapping.colormap.customized:
+            self._align_stops_to_hist = False
+            return
+        limits = self._resolve_limits(hist)
+        if limits is None:
+            self._align_stops_to_hist = False
+            return
+        dmin = float(hist.get("display_min") if hist.get("display_min") is not None else limits[0])
+        dmax = float(hist.get("display_max") if hist.get("display_max") is not None else limits[1])
+        axis = str(hist.get("axis") or HISTOGRAM_VIEW_FULL)
+        new_stops = spread_stops_on_histogram_axis(
+            self._mapping.colormap.stops,
+            limits[0],
+            limits[1],
+            dmin,
+            dmax,
+            axis,
+        )
+        if new_stops == self._mapping.colormap.stops:
+            self._align_stops_to_hist = False
+            return
+        self._syncing = True
+        try:
+            self._replace_colormap(stops=new_stops, customized=False)
+            self._rebuild_table()
+        finally:
+            self._syncing = False
+        self._align_stops_to_hist = False
 
     def _refresh_histogram(self):
         view = self._hist_view_mode()
@@ -1161,6 +1185,8 @@ class ColormapEditorDialog:
         if hist is None and self._values is not None:
             from ...util.colormap_spec import histogram_from_values
             hist = histogram_from_values(self._values, view=view)
+        if getattr(self, "_align_stops_to_hist", False) and hist and hist.get("n"):
+            self._align_stops_to_histogram(hist)
         limits = self._resolve_limits(hist)
         center = None
         if self._mapping.normalization.mode == RANGE_MODE_SYMMETRIC:

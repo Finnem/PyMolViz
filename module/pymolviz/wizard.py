@@ -258,7 +258,6 @@ class PyMolVizWizard(Wizard):
     def get_panel(self):
         panel = [
             [1, "PyMOLViz", ""],
-            [1, self._center_display_text(), ""],
         ]
         for index, (label, _) in enumerate(self.menu_items):
             panel.append([2, label, "cmd.get_wizard().select_item(%d)" % index])

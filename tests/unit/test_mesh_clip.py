@@ -71,6 +71,11 @@ def test_normalize_clip_planes_unit_normal_and_drop_zero():
     assert planes[0]["origin"] == pytest.approx([1.0, 2.0, 3.0])
     assert planes[0]["normal"] == pytest.approx([0.0, 0.0, 1.0])
     assert planes[0]["scale"] == pytest.approx(6.0)
+    assert planes[0]["gizmo"] is True
+    hidden = normalize_clip_planes([
+        {"origin": [0, 0, 0], "normal": [0, 0, 1], "gizmo": False},
+    ])
+    assert hidden[0]["gizmo"] is False
 
 
 def test_apply_clip_plane_pose_normalizes_and_rejects_zero():

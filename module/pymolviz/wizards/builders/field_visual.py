@@ -77,6 +77,7 @@ def field_visual_options(obj) -> dict:
         except (TypeError, ValueError):
             carve_radius = None
     from .preview_mode import read_preview_mode
+    from ...util.clip_gizmo import read_clip_gizmo_state
 
     return {
         "kind": type(obj).__name__,
@@ -95,6 +96,7 @@ def field_visual_options(obj) -> dict:
         "range_mode": range_mode,
         "clims": pair,
         "preview_mode": read_preview_mode(obj),
+        "clip_gizmos": read_clip_gizmo_state(obj),
     }
 
 

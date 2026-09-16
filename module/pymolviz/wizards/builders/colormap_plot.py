@@ -17,22 +17,27 @@ from ...util.colormap_spec import (
     axis_to_unit,
     clamp_range,
     colorbar_caption,
+    colorbar_export_display,
+    colorbar_ramp_rgba,
+    colorbar_tick_values,
     data_to_unit,
     field_histogram,
     histogram_axis_to_value,
     HISTOGRAM_VIEW_FULL,
     HISTOGRAM_VIEW_LOG,
+    HISTOGRAM_VIEW_PERCENTILE,
     value_to_histogram_axis,
     field_title,
     field_units,
     field_values_for_stats,
     format_number,
+    format_numbers_for_ticks,
     definition_from_preset,
+    tick_label_indices_without_overlap,
+    tick_label_span,
     ramp_rgba,
-    resolve_limits,
     sample_unit,
     screen_y_to_alpha,
-    tick_values,
     unit_to_axis,
     unit_to_data,
 )
@@ -47,8 +52,86 @@ from ..pick import (
     qt_widget_alive,
 )
 from ..widgets.ascii_locale import apply_ascii_float_locale
+from ..widgets.section import make_section
 from ..widgets.spin_step import apply_magnitude_step
-from ..widgets.theme import BORDER, DASH, INK, MUTED, PRIMARY, ROW, apply_secondary_button_style, swatch_button_css
+from ..widgets.theme import apply_wizard_page_style, mark_primary_button
+
+
+EXPORT_TITLE = "Export Colorbar"
+SCALE_FULL_LABEL = "Absolute (full range)"
+SCALE_LOG_LABEL = "Log scale"
+SCALE_PCT_LABEL = "Percentile (1–99%)"
+
+
+def _configure_editor_window(widget):
+    QtCore, _, QtWidgets = qt_modules()
+    if QtCore is None:
+        return
+    # Do not Qt-parent this to Fields or setTransientParent(PyMOL). Clicking
+    # the viewer used to hide the Fields window and delete this editor.
+    widget._pmv_window_anchor = None
+    widget._pmv_no_transient = True
+    widget._pmv_raise_last = True
+    widget.setWindowFlags(widget.windowFlags() | QtCore.Qt.WindowStaysOnTopHint)
+
+
+def _font_text_width(fm, text: str) -> float:
+    if hasattr(fm, "horizontalAdvance"):
+        return float(fm.horizontalAdvance(text))
+    return float(fm.width(text))
+
+
+def _tick_labels_for_paint(
+    painter,
+    ticks: Sequence[float],
+    xs: Sequence[float],
+    settings: Optional[ColorbarExportSettings] = None,
+) -> Tuple[List[float], List[str], List[int]]:
+    """Pick compact labels and drop indices that would overlap on screen."""
+    settings = settings or ColorbarExportSettings()
+    fmt = settings.number_format
+    decimals = settings.decimals
+    sig = int(settings.sig_digits or 3)
+    fm = painter.fontMetrics()
+    for sig_try in (sig, max(2, sig - 1), 2):
+        labels = format_numbers_for_ticks(ticks, fmt, decimals, sig_try)
+        widths = [_font_text_width(fm, t) for t in labels]
+        if len(widths) >= 2:
+            w0 = tick_label_span(widths, 0, xs[0])
+            w1 = tick_label_span(widths, len(widths) - 1, xs[-1])
+            if w0[1] + 4.0 > w1[0]:
+                continue
+        keep = tick_label_indices_without_overlap(widths, xs)
+        if keep:
+            return list(ticks), labels, keep
+    labels = format_numbers_for_ticks(ticks, fmt, decimals, 2)
+    widths = [_font_text_width(fm, t) for t in labels]
+    keep = tick_label_indices_without_overlap(widths, xs)
+    return list(ticks), labels, keep
+
+
+def _draw_horizontal_tick_labels(painter, QtCore, labels, xs, keep, y_line: int, y_text: int):
+    n = len(labels)
+    last = max(n - 1, 1)
+    align_top = getattr(QtCore.Qt, "AlignTop", 0x20)
+    align_left = getattr(QtCore.Qt, "AlignLeft", 0x1) | align_top
+    align_right = getattr(QtCore.Qt, "AlignRight", 0x2) | align_top
+    align_center = getattr(QtCore.Qt, "AlignHCenter", 0x4) | align_top
+    fm = painter.fontMetrics()
+    for i in keep:
+        x = int(round(xs[i]))
+        text = labels[i]
+        painter.drawLine(x, y_line, x, y_line + 4)
+        box = max(48, int(_font_text_width(fm, text)) + 8)
+        if i == 0:
+            painter.drawText(x, y_text, box, 16, align_left, text)
+        elif i == last:
+            painter.drawText(x - box, y_text, box, 16, align_right, text)
+        else:
+            painter.drawText(x - box // 2, y_text, box, 16, align_center, text)
+
+
+from ..widgets.theme import BORDER, INK, MUTED, PRIMARY, ROW, apply_secondary_button_style, swatch_button_css
 from .colors import ColorChoice, bind_color_pick_result, pick_rgb, rgba_to_css
 
 def _qcolor(QtGui, rgba):
@@ -96,7 +179,7 @@ def _image_format(QtGui, with_alpha=False):
     return None
 
 
-def _ramp_image(QtGui, defn, width, height, vertical=False):
+def _ramp_image(QtGui, defn, width, height, vertical=False, *, map_limits=None, display_limits=None, axis=HISTOGRAM_VIEW_FULL):
     width = max(2, int(width))
     height = max(2, int(height))
     n = height if vertical else width
@@ -106,7 +189,15 @@ def _ramp_image(QtGui, defn, width, height, vertical=False):
     if fmt is None:
         return empty
     try:
-        colors = ramp_rgba(defn, n=n)
+        if display_limits is not None and map_limits is not None:
+            colors = colorbar_ramp_rgba(
+                defn, n,
+                float(map_limits[0]), float(map_limits[1]),
+                float(display_limits[0]), float(display_limits[1]),
+                axis,
+            )
+        else:
+            colors = ramp_rgba(defn, n=n)
     except Exception:
         return empty
     try:
@@ -187,16 +278,7 @@ def _draw_stop_circle(painter, QtGui, x, y, rgba, selected, radius=8):
 
 def _histogram_tick_values(dmin, dmax, axis, count: int = 5):
     """Tick positions along the displayed histogram span (log or linear)."""
-    n = max(2, int(count))
-    lo, hi = float(dmin), float(dmax)
-    if hi < lo:
-        lo, hi = hi, lo
-    if str(axis) == HISTOGRAM_VIEW_LOG:
-        lo = max(lo, 1e-30)
-        hi = max(hi, lo * 1.0001)
-        logs = np.linspace(math.log10(lo), math.log10(hi), n)
-        return [float(10.0 ** v) for v in logs]
-    return tick_values(lo, hi, n)
+    return colorbar_tick_values(dmin, dmax, axis, count)
 
 
 def _data_span(hist, limits):
@@ -345,7 +427,8 @@ class _DistributionEditor:
         view.setMouseTracking(True)
         view.setToolTip(
             "Drag the blue triangles above the plot to set min/max. Drag interior "
-            "color stops left/right (value) and up/down for opacity. End colors stay "
+            "color stops left/right (value) and up/down for opacity on the histogram. "
+            "The top of the plot is opaque, the bottom is transparent. End colors stay "
             "on min/max and only move up/down. Left-click empty space to add a stop. "
             "Left-click a selected stop again to edit it; right-click a range handle "
             "to type a value."
@@ -377,21 +460,9 @@ class _DistributionEditor:
         return widget.rect().adjusted(12, 22, -12, -22)
 
     def _layout(self, widget):
-        """Split value axis (shared x) into opacity band (top) and histogram (bottom)."""
+        """Shared plot: histogram bars and stop alpha use the same vertical span."""
         plot = self._plot(widget)
-        QtCore, _, _ = qt_modules()
-        rect_cls = getattr(QtCore, "QRect", None)
-        if rect_cls is None:
-            return {"plot": plot, "bars": plot, "alpha": plot}
-        gap = 6
-        alpha_h = max(34, int(plot.height() * 0.34))
-        bars_h = max(48, plot.height() - alpha_h - gap)
-        top = int(plot.top())
-        left = int(plot.left())
-        width = int(plot.width())
-        alpha = rect_cls(left, top, width, alpha_h)
-        bars = rect_cls(left, top + alpha_h + gap, width, bars_h)
-        return {"plot": plot, "bars": bars, "alpha": alpha}
+        return {"plot": plot, "bars": plot, "alpha": plot}
 
     def _span(self):
         return _data_span(self._hist, self._limits)
@@ -428,9 +499,6 @@ class _DistributionEditor:
                 painter.setPen(QtGui.QPen(QtGui.QColor(*BORDER), 1))
                 painter.setBrush(QtGui.QColor(0, 0, 0, 0))
                 painter.drawRect(plot.adjusted(0, 0, -1, -1))
-                painter.setPen(QtGui.QPen(QtGui.QColor(*DASH), 1, getattr(QtCore.Qt, "DotLine", 3)))
-                bars = layout["bars"]
-                painter.drawLine(int(bars.left()), int(bars.top()) - 3, int(bars.right()), int(bars.top()) - 3)
             except Exception:
                 pass
             self._paint_axis_ticks(painter, QtCore, QtGui, layout, dmin, dmax)
@@ -509,23 +577,11 @@ class _DistributionEditor:
         ticks = _histogram_tick_values(dmin, dmax, axis, 5)
         if not ticks:
             return
-        labels = [format_number(v) for v in ticks]
+        xs = [_x_for_value(plot, value, dmin, dmax, axis) for value in ticks]
+        _, labels, keep = _tick_labels_for_paint(painter, ticks, xs)
         painter.setPen(QtGui.QColor(*INK))
-        align_top = getattr(QtCore.Qt, "AlignTop", 0x20)
-        align_left = getattr(QtCore.Qt, "AlignLeft", 0x1) | align_top
-        align_right = getattr(QtCore.Qt, "AlignRight", 0x2) | align_top
-        align_center = getattr(QtCore.Qt, "AlignHCenter", 0x4) | align_top
-        last = max(len(labels) - 1, 1)
         y0 = int(plot.bottom())
-        for i, (value, text) in enumerate(zip(ticks, labels)):
-            x = int(round(_x_for_value(plot, value, dmin, dmax, axis)))
-            painter.drawLine(x, y0, x, y0 + 4)
-            if i == 0:
-                painter.drawText(x, y0 + 4, 80, 16, align_left, text)
-            elif i == last:
-                painter.drawText(x - 80, y0 + 4, 80, 16, align_right, text)
-            else:
-                painter.drawText(x - 40, y0 + 4, 80, 16, align_center, text)
+        _draw_horizontal_tick_labels(painter, QtCore, labels, xs, keep, y0, y0 + 4)
 
     def _paint_handles(self, painter, QtCore, QtGui, layout, dmin, dmax, vmin, vmax):
         dash = getattr(QtCore.Qt, "DashLine", 2)
@@ -684,18 +740,14 @@ class _DistributionEditor:
         layout = self._layout(widget)
         plot = layout["plot"]
         alpha = layout["alpha"]
-        bars = layout["bars"]
-        if x < plot.left() or x > plot.right() or y < alpha.top() or y > bars.bottom():
+        if x < plot.left() or x > plot.right() or y < plot.top() or y > plot.bottom():
             return
         dmin, dmax = self._span()
         axis = self._axis()
         vmin, vmax = self._limits
         pos = data_to_unit(_value_for_x(plot, x, dmin, dmax, axis), vmin, vmax)
         inset = 6
-        if y <= alpha.bottom():
-            alpha_val = screen_y_to_alpha(y, alpha.top() + inset, alpha.bottom() - inset)
-        else:
-            alpha_val = 1.0
+        alpha_val = screen_y_to_alpha(y, alpha.top() + inset, alpha.bottom() - inset)
         self._on_add(pos, alpha_val)
 
     def _move(self, widget, event):
@@ -778,6 +830,8 @@ class _ColorbarPreview:
         self._on_drag_end = on_drag_end
         self._defn = definition_from_preset(DEFAULT_SURFACE_COLORMAP)
         self._limits = (0.0, 1.0)
+        self._map_limits = (0.0, 1.0)
+        self._axis = HISTOGRAM_VIEW_FULL
         self._settings = ColorbarExportSettings()
         self._selected = 0
         self._drag = None
@@ -824,9 +878,11 @@ class _ColorbarPreview:
     def tick_pad(self) -> int:
         return int(self._TICK_PAD)
 
-    def set_preview(self, defn, limits, settings: ColorbarExportSettings, selected=0):
+    def set_preview(self, defn, limits, settings: ColorbarExportSettings, selected=0, axis=HISTOGRAM_VIEW_FULL, map_limits=None):
         self._defn = defn
         self._limits = limits or (0.0, 1.0)
+        self._map_limits = tuple(map_limits) if map_limits is not None else self._limits
+        self._axis = axis or HISTOGRAM_VIEW_FULL
         self._settings = settings
         self._selected = int(selected or 0)
         self.widget.update()
@@ -858,6 +914,9 @@ class _ColorbarPreview:
                     QtGui, self._defn,
                     max(2, bar.width()), max(8, bar.height()),
                     vertical=self._vertical,
+                    map_limits=self._map_limits,
+                    display_limits=self._limits,
+                    axis=self._axis,
                 )
                 painter.drawPixmap(bar.topLeft(), grad)
                 painter.setPen(QtGui.QPen(QtGui.QColor(*BORDER), 1))
@@ -872,16 +931,18 @@ class _ColorbarPreview:
 
     def _paint_ticks(self, painter, QtCore, QtGui, widget, bar, caption, lo, hi):
         try:
-            ticks = tick_values(lo, hi, self._settings.tick_count)
-            labels = [
-                format_number(v, self._settings.number_format, self._settings.decimals, self._settings.sig_digits)
-                for v in ticks
-            ]
+            ticks = colorbar_tick_values(lo, hi, self._axis, self._settings.tick_count)
             painter.setPen(QtGui.QColor(*INK))
             if self._vertical:
+                labels = format_numbers_for_ticks(
+                    ticks,
+                    self._settings.number_format,
+                    self._settings.decimals,
+                    self._settings.sig_digits,
+                )
                 span = max(1, bar.height() - 1)
                 for i, text in enumerate(labels):
-                    t = i / float(max(len(labels) - 1, 1))
+                    t = value_to_histogram_axis(ticks[i], lo, hi, self._axis)
                     y = bar.bottom() - t * span
                     painter.drawLine(bar.left() - 4, int(y), bar.left(), int(y))
                     painter.drawText(4, int(y) + 4, text)
@@ -893,21 +954,20 @@ class _ColorbarPreview:
                     painter.restore()
                 return
             span = max(1, bar.width() - 1)
-            last = max(len(labels) - 1, 1)
-            align_top = getattr(QtCore.Qt, "AlignTop", 0x20)
-            align_left = getattr(QtCore.Qt, "AlignLeft", 0x1) | align_top
-            align_right = getattr(QtCore.Qt, "AlignRight", 0x2) | align_top
-            align_center = getattr(QtCore.Qt, "AlignHCenter", 0x4) | align_top
-            for i, text in enumerate(labels):
-                t = i / float(last)
-                x = bar.left() + t * span
-                painter.drawLine(int(x), bar.bottom(), int(x), bar.bottom() + 4)
-                if i == 0:
-                    painter.drawText(int(x), bar.bottom() + 4, 72, 16, align_left, text)
-                elif i == len(labels) - 1:
-                    painter.drawText(int(x) - 72, bar.bottom() + 4, 72, 16, align_right, text)
-                else:
-                    painter.drawText(int(x) - 36, bar.bottom() + 4, 72, 16, align_center, text)
+            xs = [
+                bar.left() + value_to_histogram_axis(tick, lo, hi, self._axis) * span
+                for tick in ticks
+            ]
+            _, labels, keep = _tick_labels_for_paint(painter, ticks, xs, self._settings)
+            _draw_horizontal_tick_labels(
+                painter,
+                QtCore,
+                labels,
+                xs,
+                keep,
+                int(bar.bottom()),
+                int(bar.bottom()) + 4,
+            )
         except Exception:
             return
 
@@ -1087,6 +1147,11 @@ class ExportColorbarDialog:
         orient.addWidget(self._orient_v)
         orient.addStretch(1)
         form.addRow("Orientation", orient)
+        self._scale = QtWidgets.QComboBox()
+        self._scale.addItem(SCALE_FULL_LABEL, HISTOGRAM_VIEW_FULL)
+        self._scale.addItem(SCALE_LOG_LABEL, HISTOGRAM_VIEW_LOG)
+        self._scale.addItem(SCALE_PCT_LABEL, HISTOGRAM_VIEW_PERCENTILE)
+        form.addRow("Scale", self._scale)
         self._width = QtWidgets.QSpinBox()
         self._height = QtWidgets.QSpinBox()
         self._dpi = QtWidgets.QSpinBox()
@@ -1148,7 +1213,7 @@ class ExportColorbarDialog:
         buttons.addWidget(export)
         root.addLayout(buttons)
         for widget in (
-            self._orient_h, self._orient_v, self._width, self._height, self._dpi,
+            self._orient_h, self._orient_v, self._scale, self._width, self._height, self._dpi,
             self._title, self._units, self._ticks, self._format, self._decimals,
             self._bg, self._fmt_png, self._fmt_svg,
         ):
@@ -1170,12 +1235,18 @@ class ExportColorbarDialog:
             decimals=int(self._decimals.value()),
             background=str(self._bg.currentData() or "transparent"),
             fmt="svg" if self._fmt_svg.isChecked() else "png",
+            scale=str(self._scale.currentData() or HISTOGRAM_VIEW_FULL),
         )
 
     def _refresh_preview(self):
         settings = self._current_settings()
-        limits = resolve_limits(self._mapping.normalization, self._values) or (0.0, 1.0)
-        self._preview.set_preview(self._mapping.colormap, limits, settings)
+        axis, lo, hi, map_lo, map_hi = colorbar_export_display(
+            self._mapping.normalization, self._values, settings.scale,
+        )
+        self._preview.set_preview(
+            self._mapping.colormap, (lo, hi), settings,
+            axis=axis, map_limits=(map_lo, map_hi),
+        )
 
     def _export(self):
         settings = self._current_settings()

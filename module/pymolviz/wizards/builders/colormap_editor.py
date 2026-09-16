@@ -45,6 +45,7 @@ RANGE_PERCENTILE_LABEL = "Percentile"
 ADD_CUSTOM_COLORMAP_LABEL = "+"
 ADD_CUSTOM_COLORMAP_TIP = "add custom colormap"
 ADJUST_CUSTOM_COLORMAP_TIP = "Adjust this custom colormap"
+EDIT_COLORMAP_TIP = "Open the full colormap editor (stops, histogram, range)."
 KIND_BUILTIN = "builtin"
 KIND_CUSTOM = "custom"
 
@@ -135,7 +136,7 @@ def _icon_button(QtWidgets, QtGui, QtCore, kind, text, tip, object_name, on_clic
 
 
 class ColormapPresetPicker:
-    """Preset combo with a plus button and a gear on every custom colormap."""
+    """Preset combo with add (+) and edit (gear) actions."""
 
     def __init__(
         self,
@@ -145,6 +146,7 @@ class ColormapPresetPicker:
         on_add: Optional[Callable[[], None]] = None,
         on_edit: Optional[Callable[[str], None]] = None,
         default_name: str = DEFAULT_SURFACE_COLORMAP,
+        adjust_all_presets: bool = True,
     ):
         QtCore, QtGui, QtWidgets = qt_modules()
         if QtWidgets is None:
@@ -153,6 +155,7 @@ class ColormapPresetPicker:
         self._on_add = on_add or (lambda: None)
         self._on_edit = on_edit or (lambda _name: None)
         self._default_name = str(default_name or DEFAULT_SURFACE_COLORMAP)
+        self._adjust_all_presets = bool(adjust_all_presets)
         self._syncing = False
 
         box = QtWidgets.QWidget(parent)
@@ -168,8 +171,9 @@ class ColormapPresetPicker:
         combo.setIconSize(QtCore.QSize(COLORMAP_COMBO_ICON_WIDTH, COLORMAP_COMBO_ICON_HEIGHT))
         self._combo = combo
 
+        gear_tip = EDIT_COLORMAP_TIP if self._adjust_all_presets else ADJUST_CUSTOM_COLORMAP_TIP
         self._gear = _icon_button(
-            QtWidgets, QtGui, QtCore, "gear", "⚙", ADJUST_CUSTOM_COLORMAP_TIP,
+            QtWidgets, QtGui, QtCore, "gear", "⚙", gear_tip,
             "pmvColormapAdjust", self._edit_current,
         )
         self._plus = _icon_button(
@@ -297,14 +301,20 @@ class ColormapPresetPicker:
             self._set_item_icon(idx, label, QtGui, QtCore)
 
     def tooltips(self) -> Sequence[Tuple[object, str, str]]:
+        gear_tip = EDIT_COLORMAP_TIP if self._adjust_all_presets else ADJUST_CUSTOM_COLORMAP_TIP
+        gear_label = "Edit colormap" if self._adjust_all_presets else "Adjust custom colormap"
         return (
             (self._combo, COLORMAP_PRESET_TIP, "Colormap"),
             (self._plus, ADD_CUSTOM_COLORMAP_TIP, "Add custom colormap"),
-            (self._gear, ADJUST_CUSTOM_COLORMAP_TIP, "Adjust custom colormap"),
+            (self._gear, gear_tip, gear_label),
         )
 
     def _sync_gear(self) -> None:
         if not qt_widget_alive(self._combo) or not qt_widget_alive(self._gear):
+            return
+        if self._adjust_all_presets:
+            self._gear.setVisible(True)
+            self._gear.setEnabled(True)
             return
         custom = self.current_is_custom()
         self._gear.setVisible(custom)
@@ -317,7 +327,7 @@ class ColormapPresetPicker:
         self._on_selected(self.current_name())
 
     def _edit_current(self) -> None:
-        if not self.current_is_custom():
+        if not self._adjust_all_presets and not self.current_is_custom():
             return
         self._on_edit(self.current_name())
 
@@ -655,11 +665,13 @@ class ColormapEditor:
         )
         self._open_editor(mapping, save_name=name)
 
-    def _adjust_custom(self, name: str):
-        defn = custom_preset_definition(name)
+    def _adjust_named(self, name: str):
+        """Open the full volume-style colormap editor for built-in or custom presets."""
+        label = str(name or self._preset_name())
+        defn = custom_preset_definition(label)
         if defn is None:
-            self._open_editor(save_name=name)
-            return
+            preset, parsed_reverse = parse_colormap_reverse(label, presets=FIELD_COLORMAPS)
+            defn = definition_from_preset(preset, reverse=parsed_reverse or self.reverse())
         mapping = self.mapping()
         mapping = FieldColorMapping(
             field_id=mapping.field_id,
@@ -669,11 +681,12 @@ class ColormapEditor:
             units=mapping.units,
         )
         if self._picker is not None:
-            self._picker.set_current(name)
+            self._picker.set_current(label)
         self._definition = defn
         if self._ui_alive():
             self._refresh_strip()
-        self._open_editor(mapping, save_name=name)
+        save_name = label if (defn.customized or is_custom_preset_name(label)) else None
+        self._open_editor(mapping, save_name=save_name)
 
     def _build(self, parent):
         QtCore, _, QtWidgets = qt_modules()
@@ -697,7 +710,7 @@ class ColormapEditor:
             box,
             on_selected=self._load_named_preset,
             on_add=self._add_custom,
-            on_edit=self._adjust_custom,
+            on_edit=self._adjust_named,
             default_name=self._default_name,
         )
         form.addRow("Colormap", self._picker.widget)

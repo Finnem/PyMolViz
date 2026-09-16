@@ -464,6 +464,78 @@ def test_field_recipe_and_visual_refs_roundtrip():
     session_mod.clear()
 
 
+def test_clip_gizmo_visibility_roundtrip():
+    from pymolviz.meshes.Surface import Surface
+    from pymolviz.util.clip_gizmo import read_clip_gizmo_state, stamp_clip_gizmo_state
+
+    planes = [{
+        "origin": [0.0, 0.0, 0.5],
+        "normal": [0.0, 0.0, 1.0],
+        "scale": 7.0,
+        "gizmo": False,
+    }]
+    surface = Surface(
+        [FixedPoint((0.0, 0.0, 0.0))],
+        algorithm="GAUSS",
+        quality=1,
+        clip_planes=planes,
+        bypass_colormap=True,
+        obj_id="surfclip-gizmo",
+    )
+    collection = CGOCollection([surface], name="pmv_surface", obj_id="collG")
+    stamp_clip_gizmo_state(collection, {"shown": False, "axes": [True, False, True]})
+    data = displayable_to_dict(collection)
+    assert_plain(data)
+    json.dumps(data)
+    assert data["clip_gizmos"]["shown"] is False
+    assert data["clip_gizmos"]["axes"] == [True, False, True]
+    assert data["objects"][0]["clip_planes"][0]["gizmo"] is False
+    restored = displayable_from_dict(data)
+    assert read_clip_gizmo_state(restored)["shown"] is False
+    assert read_clip_gizmo_state(restored)["axes"][1] is False
+    assert restored[0].clip_planes[0]["gizmo"] is False
+
+
+def test_field_visual_clip_gizmo_roundtrip():
+    from pymolviz.fields import Domain, Field, ensure_brick
+    from pymolviz.fields.domain import BOUNDS_AROUND_SELECTION
+    from pymolviz.fields.identity import GEN_DISTANCE
+    from pymolviz.runtime import session as session_mod
+    from pymolviz.util.clip_gizmo import read_clip_gizmo_state, stamp_clip_gizmo_state
+    from pymolviz.wizards.builders.field_visual import field_visual_options, make_field_visual
+
+    session_mod.clear()
+    field = Field(
+        name="dist",
+        units="Å",
+        generator={
+            "type": GEN_DISTANCE,
+            "atoms": [{"xyz": [0.0, 0.0, 0.0], "elem": "C"}],
+        },
+        domain=Domain(bounds_mode=BOUNDS_AROUND_SELECTION, padding=1.0, spacing=1.0),
+        obj_id="fld-gizmo",
+    )
+    ensure_brick(field)
+    visual = make_field_visual(
+        "IsoSurface",
+        field,
+        "iso",
+        level=0.5,
+        geometry_field_id=field.id,
+        isovalues=[{"value": 0.5, "side": 1, "enabled": True}],
+        clip_aabb=[[-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]],
+        obj_id="iso-gizmo",
+    )
+    stamp_clip_gizmo_state(visual, {"shown": False, "axes": [False, True, True]})
+    data = displayable_to_dict(visual)
+    assert data["clip_gizmos"]["shown"] is False
+    assert data["clip_gizmos"]["axes"][0] is False
+    restored = displayable_from_dict(data)
+    assert read_clip_gizmo_state(restored)["shown"] is False
+    assert field_visual_options(restored)["clip_gizmos"]["axes"][0] is False
+    session_mod.clear()
+
+
 def test_converted_surface_provenance_roundtrip():
     from pymolviz.meshes.Surface import Surface
 

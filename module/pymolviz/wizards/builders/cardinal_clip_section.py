@@ -134,6 +134,10 @@ class CardinalClipSection:
             for axis in range(3):
                 if self._clip_axis_on[axis] is not None:
                     self._clip_axis_on[axis].setChecked(False)
+                if self._clip_axis_gizmo[axis] is not None:
+                    self._clip_axis_gizmo[axis].setChecked(True)
+            if self._show_gizmos is not None:
+                self._show_gizmos.setChecked(True)
         finally:
             self._spin_suspend = False
         self.sync_widgets()
@@ -155,6 +159,32 @@ class CardinalClipSection:
         if box is None:
             return True
         return bool(box.isChecked())
+
+    def gizmo_state(self):
+        from ...util.clip_gizmo import normalize_clip_gizmo_state
+
+        axes = []
+        for i in range(3):
+            box = self._clip_axis_gizmo[i]
+            axes.append(True if box is None else bool(box.isChecked()))
+        return normalize_clip_gizmo_state({"shown": self.gizmos_shown(), "axes": axes})
+
+    def set_gizmo_state(self, state) -> None:
+        from ...util.clip_gizmo import normalize_clip_gizmo_state
+
+        state = normalize_clip_gizmo_state(state)
+        self._spin_suspend = True
+        try:
+            if self._show_gizmos is not None:
+                self._show_gizmos.setChecked(bool(state["shown"]))
+            for i, on in enumerate(state["axes"]):
+                box = self._clip_axis_gizmo[i]
+                if box is not None:
+                    box.setChecked(bool(on))
+        finally:
+            self._spin_suspend = False
+        self.sync_widgets()
+        self._on_gizmo_changed()
 
     def axis_gizmo_visible(self, axis: int) -> bool:
         if not self.gizmos_shown():

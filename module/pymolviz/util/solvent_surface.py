@@ -59,5 +59,12 @@ def build_solvent_surface(
     if kind == "MC":
         return _mc_mesh(centers, radii, quality, float(probe_radius))
     if kind == "GAUSS":
-        return _gauss_mesh(centers, elements, quality)
+        atom_radii = expanded_radii(atom_radius, centers.shape[0], 0.0)
+        if (
+            centers.shape[0] == 1
+            and atom_radii.size == 1
+            and abs(float(atom_radii[0]) - float(DEFAULT_ATOM_RADIUS)) < 1e-9
+        ):
+            atom_radii = None
+        return _gauss_mesh(centers, elements, quality, atom_radii=atom_radii)
     return _sas_mesh(centers, radii, quality, float(probe_radius))

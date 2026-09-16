@@ -123,6 +123,7 @@ def paint_gaussian_density(
     occupancies=None,
     resolution=DEFAULT_GAUSSIAN_RESOLUTION,
     b_floor=DEFAULT_GAUSSIAN_B_FLOOR,
+    radius_scales=None,
     backend=None,
 ) -> np.ndarray:
     """Splat PyMOL Gaussian density onto a cubic lattice. High inside atoms.
@@ -141,7 +142,7 @@ def paint_gaussian_density(
         return as_numpy(
             _paint_gaussian_density_xp(
                 xp, (nx, ny, nz), origin, h, centers, elements,
-                b_factors, occupancies, resolution, b_floor,
+                b_factors, occupancies, resolution, b_floor, radius_scales,
             )
         )
     except Exception:
@@ -150,7 +151,7 @@ def paint_gaussian_density(
         return as_numpy(
             _paint_gaussian_density_xp(
                 np, (nx, ny, nz), origin, h, centers, elements,
-                b_factors, occupancies, resolution, b_floor,
+                b_factors, occupancies, resolution, b_floor, radius_scales,
             )
         )
 
@@ -166,6 +167,7 @@ def _paint_gaussian_density_xp(
     occupancies,
     resolution,
     b_floor,
+    radius_scales,
 ):
     nx, ny, nz = shape
     field = xp.zeros((nx, ny, nz), dtype=float)
@@ -193,6 +195,14 @@ def _paint_gaussian_density_xp(
             occupancies = np.resize(occupancies, n)
     limx, limy, limz = nx - 1, ny - 1, nz - 1
     inv_h = 1.0 / h
+    if radius_scales is None:
+        scales = None
+    else:
+        scales = np.asarray(radius_scales, dtype=float).reshape(-1)
+        if scales.size == 1:
+            scales = np.repeat(scales, n)
+        elif scales.size != n:
+            scales = np.resize(scales, n)
     term_cache = {}
     for i in range(n):
         occup = float(occupancies[i])
@@ -209,7 +219,9 @@ def _paint_gaussian_density_xp(
             term_cache[cache_key] = packed
         amps, kappas, rcut = packed
         center = centers[i]
-        extent = rcut / blur if blur > 1e-12 else rcut
+        spatial_scale = 1.0 if scales is None else max(float(scales[i]), 1e-6)
+        rcut_phys = float(rcut) * spatial_scale
+        extent = (rcut_phys / blur if blur > 1e-12 else rcut_phys)
         lo0 = int(np.clip(math.floor((center[0] - extent - origin[0]) * inv_h), 0, limx))
         lo1 = int(np.clip(math.floor((center[1] - extent - origin[1]) * inv_h), 0, limy))
         lo2 = int(np.clip(math.floor((center[2] - extent - origin[2]) * inv_h), 0, limz))
@@ -218,13 +230,14 @@ def _paint_gaussian_density_xp(
         hi2 = int(np.clip(math.ceil((center[2] + extent - origin[2]) * inv_h), 0, limz))
         if hi0 < lo0 or hi1 < lo1 or hi2 < lo2:
             continue
-        xs = origin[0] + xp.arange(lo0, hi0 + 1, dtype=float) * h - float(center[0])
-        ys = origin[1] + xp.arange(lo1, hi1 + 1, dtype=float) * h - float(center[1])
-        zs = origin[2] + xp.arange(lo2, hi2 + 1, dtype=float) * h - float(center[2])
+        inv_scale = 1.0 / spatial_scale
+        xs = (origin[0] + xp.arange(lo0, hi0 + 1, dtype=float) * h - float(center[0])) * inv_scale
+        ys = (origin[1] + xp.arange(lo1, hi1 + 1, dtype=float) * h - float(center[1])) * inv_scale
+        zs = (origin[2] + xp.arange(lo2, hi2 + 1, dtype=float) * h - float(center[2])) * inv_scale
         xs2 = xs * xs
         ys2 = ys * ys
         zs2 = zs * zs
-        rcut2 = float(rcut) * float(rcut)
+        rcut2 = rcut_phys * rcut_phys
         dist2 = blur2 * (
             xs2[:, None, None] + ys2[None, :, None] + zs2[None, None, :]
         )

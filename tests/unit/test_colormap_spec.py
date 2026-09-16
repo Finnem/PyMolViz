@@ -8,6 +8,12 @@ import numpy as np
 import pytest
 
 from pymolviz.util.colormap_spec import (
+    HISTOGRAM_VIEW_FULL,
+    HISTOGRAM_VIEW_LOG,
+    HISTOGRAM_VIEW_PERCENTILE,
+    colorbar_export_display,
+    colorbar_ramp_rgba,
+    colorbar_tick_values,
     INTERP_HSV,
     MAP_DISCRETE,
     OOR_CUSTOM,
@@ -23,12 +29,15 @@ from pymolviz.util.colormap_spec import (
     colorbar_caption,
     definition_from_preset,
     format_number,
+    format_numbers_for_ticks,
+    tick_label_indices_without_overlap,
     histogram_from_values,
     map_scalars,
     ramp_rgba,
     resolve_limits,
     reverse_definition,
     sample_unit,
+    spread_stops_on_histogram_axis,
     subsample_values,
     tick_values,
 )
@@ -51,6 +60,26 @@ def test_stop_neighbor_limits_pin_endpoints():
     assert _clamp_stop_position(2, stops, 0.8) == pytest.approx(1.0)
     assert _stop_neighbor_limits(1, stops) == (pytest.approx(0.004), pytest.approx(0.996))
     assert _clamp_stop_position(1, stops, 0.25) == pytest.approx(0.25)
+
+
+def test_spread_stops_even_on_log_histogram_axis():
+    stops = (
+        ColorStop(0.0, (0.0, 0.0, 1.0, 1.0)),
+        ColorStop(0.5, (0.0, 1.0, 0.0, 1.0)),
+        ColorStop(1.0, (1.0, 0.0, 0.0, 1.0)),
+    )
+    vmin, vmax = 0.0, 100.0
+    dmin, dmax = 1.0, 100.0
+    spread = spread_stops_on_histogram_axis(
+        stops, vmin, vmax, dmin, dmax, HISTOGRAM_VIEW_LOG
+    )
+    assert spread[0].position == pytest.approx(0.0)
+    assert spread[-1].position == pytest.approx(1.0)
+    assert spread[1].position == pytest.approx(0.1)
+    linear = spread_stops_on_histogram_axis(
+        stops, dmin, dmax, dmin, dmax, HISTOGRAM_VIEW_FULL
+    )
+    assert linear[1].position == pytest.approx(0.5)
 
 
 def test_stop_drag_inverts_paint_on_log_axis():
@@ -330,6 +359,14 @@ def test_distribution_axis_mapping():
     assert hi == pytest.approx(3.0)
     lo, hi = clamp_range(1.0, 1.0)
     assert hi > lo
+    ticks_small = tick_values(3.36374e-05, 0.681577, 5)
+    labels_small = format_numbers_for_ticks(ticks_small)
+    assert all("e" in text for text in labels_small)
+    assert len(labels_small[0]) < len("3.36374e-05")
+    widths = [len(t) * 6.0 for t in labels_small]
+    xs = [float(i) * 50.0 for i in range(len(widths))]
+    keep = tick_label_indices_without_overlap(widths, xs, min_gap=4.0)
+    assert 0 in keep and len(labels_small) - 1 in keep
     assert format_number(0.30000000000004, "auto") in ("0.3", "0.30")
     assert format_number(1.0, "fixed", decimals=2) == "1"
     assert "e" in format_number(0.00123, "scientific", sig_digits=3)
@@ -380,6 +417,55 @@ def test_colorbar_export_png_and_svg(tmp_path):
     with open(svg, "r", encoding="utf-8") as handle:
         body = handle.read()
     assert "<svg" in body.lower()
+
+
+def test_colorbar_export_scale_absolute_log_percentile():
+    values = np.concatenate([np.linspace(0.2, 1.0, 200), np.array([0.0, 80.0])])
+    mapping = FieldColorMapping(
+        colormap=definition_from_preset("viridis"),
+        normalization=Normalization(mode=RANGE_MODE_CUSTOM, vmin=0.0, vmax=80.0),
+    )
+    axis_full, lo_full, hi_full, map_lo, map_hi = colorbar_export_display(
+        mapping.normalization, values, "absolute",
+    )
+    assert axis_full == HISTOGRAM_VIEW_FULL
+    assert lo_full == pytest.approx(0.0)
+    assert hi_full == pytest.approx(80.0)
+    assert map_lo == pytest.approx(0.0)
+    assert map_hi == pytest.approx(80.0)
+
+    axis_log, lo_log, hi_log, _, _ = colorbar_export_display(
+        mapping.normalization, values, HISTOGRAM_VIEW_LOG,
+    )
+    assert axis_log == HISTOGRAM_VIEW_LOG
+    assert lo_log > 0.0
+    logs = colorbar_tick_values(lo_log, hi_log, HISTOGRAM_VIEW_LOG, 5)
+    assert len(logs) == 5
+    ratios = [logs[i + 1] / logs[i] for i in range(len(logs) - 1)]
+    assert max(ratios) / min(ratios) == pytest.approx(1.0, rel=1e-6)
+
+    axis_pct, lo_pct, hi_pct, _, _ = colorbar_export_display(
+        mapping.normalization, values, HISTOGRAM_VIEW_PERCENTILE,
+    )
+    assert axis_pct == HISTOGRAM_VIEW_FULL
+    assert lo_pct > lo_full
+    assert hi_pct < hi_full
+
+    log_ramp = colorbar_ramp_rgba(
+        mapping.colormap, 8, map_lo, map_hi, lo_log, hi_log, HISTOGRAM_VIEW_LOG,
+    )
+    lin_ramp = colorbar_ramp_rgba(
+        mapping.colormap, 8, map_lo, map_hi, lo_full, hi_full, HISTOGRAM_VIEW_FULL,
+    )
+    assert log_ramp.shape == (8, 4)
+    assert not np.allclose(log_ramp, lin_ramp)
+
+
+def test_colorbar_export_settings_scale_roundtrip():
+    settings = ColorbarExportSettings(scale="log")
+    assert settings.scale == HISTOGRAM_VIEW_LOG
+    loaded = ColorbarExportSettings.from_dict(settings.to_dict())
+    assert loaded.scale == HISTOGRAM_VIEW_LOG
 
 
 def test_persist_colormap_attrs_only_stores_custom_maps():

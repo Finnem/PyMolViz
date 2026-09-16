@@ -40,7 +40,12 @@ def normalize_clip_planes(planes: Optional[Iterable[Mapping]] = None) -> List[di
             scale = 5.0
         if scale <= 0.0:
             scale = 5.0
-        out.append({"origin": origin, "normal": normal, "scale": scale})
+        out.append({
+            "origin": origin,
+            "normal": normal,
+            "scale": scale,
+            "gizmo": True if "gizmo" not in raw else bool(raw.get("gizmo")),
+        })
     return out
 
 

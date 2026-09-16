@@ -126,6 +126,7 @@ class ClipModifierController:
 
     def reset(self) -> None:
         self.clip_planes = []
+        self._gizmos_shown = True
         self.close_pose_dialog()
         self._cancel_mesh_commit()
         self.stop_drag_poll()
@@ -311,6 +312,19 @@ class ClipModifierController:
 
     def gizmos_shown(self) -> bool:
         return bool(self._gizmos_shown)
+
+    def gizmo_state(self):
+        from ...util.clip_gizmo import normalize_clip_gizmo_state
+
+        return normalize_clip_gizmo_state({"shown": self._gizmos_shown})
+
+    def apply_gizmo_state(self, state) -> None:
+        from ...util.clip_gizmo import normalize_clip_gizmo_state
+
+        shown = normalize_clip_gizmo_state(state)["shown"]
+        if shown == self._gizmos_shown:
+            return
+        self.set_gizmos_shown(shown)
 
     def set_gizmos_shown(self, shown: bool) -> None:
         shown = bool(shown)

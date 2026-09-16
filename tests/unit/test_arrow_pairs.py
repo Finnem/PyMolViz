@@ -121,8 +121,18 @@ def test_with_methods_preserve_pair_id():
     assert pair.with_end(other).pair_id == pid
     assert pair.with_color((1.0, 0.0, 0.0)).pair_id == pid
     assert pair.with_width(0.2).width == 0.2
-    assert pair.with_width(0.2).head == pytest.approx(1.6)
+    assert pair.with_width(0.2).head == pytest.approx(pair.head)
     assert pair.swapped().start.xyz() == (1.0, 0.0, 0.0)
+
+
+def test_preview_highlight_keeps_head_length():
+    from pymolviz.wizards.builders.preview import _preview_pairs
+
+    pair = VisualPair(_free_point((0, 0, 0)), _free_point((10, 0, 0)), head=2.0, width=0.045)
+    out = _preview_pairs([pair], highlight_id=pair.pair_id)
+    assert len(out) == 1
+    assert out[0].head == pytest.approx(2.0)
+    assert out[0].width == pytest.approx(0.045 * 1.35)
 
 
 def test_arrow_endpoint_colors_are_independent_until_unified():
@@ -202,9 +212,6 @@ def test_take_selection_endpoints_ignores_pk1_when_interactive_only(fake_cmd):
 
 
 def test_take_selection_endpoints_counts(fake_cmd):
-    from pymolviz.wizards.last_click import set_last_clicked_atom
-
-    set_last_clicked_atom(None)
     fake_cmd.add_atom(FakeAtom("prot", 1, 0.0, 0.0, 0.0, chain="A", resi="42", name="CA", elem="CA"))
     fake_cmd.add_atom(FakeAtom("prot", 2, 1.0, 0.0, 0.0, chain="A", resi="87", name="CA", elem="CA"))
     fake_cmd.add_atom(FakeAtom("prot", 3, 2.0, 0.0, 0.0, chain="B", resi="15", name="N", elem="N"))
@@ -219,7 +226,7 @@ def test_take_selection_endpoints_counts(fake_cmd):
     assert endpoint_label(start) == "A/42/CA"
 
     fake_cmd.select("sele", 'object "prot" and id 1 or object "prot" and id 2')
-    start, end, status = take_selection_endpoints(fake_cmd)
+    start, end, status = take_selection_endpoints(fake_cmd, multi_atom="clicked")
     assert status == "pair"
     assert endpoint_label(start) == "A/42/CA"
     assert endpoint_label(end) == "A/87/CA"
@@ -228,20 +235,18 @@ def test_take_selection_endpoints_counts(fake_cmd):
         "sele",
         'object "prot" and id 1 or object "prot" and id 2 or object "prot" and id 3',
     )
-    start, end, status = take_selection_endpoints(fake_cmd)
+    start, end, status = take_selection_endpoints(fake_cmd, multi_atom="clicked")
     assert status == "multiple"
     assert start is None
 
-    set_last_clicked_atom("prot", 3)
     start, end, status = take_selection_endpoints(fake_cmd)
     assert status == "one"
-    assert endpoint_label(start) == "B/15/N"
-    set_last_clicked_atom(None)
+    assert end is None
+    assert start.x == pytest.approx(1.0)
 
     fake_cmd.select("pk1", 'object "prot" and id 3')
-    start, end, status = take_selection_endpoints(fake_cmd)
-    assert status == "one"
-    assert endpoint_label(start) == "B/15/N"
+    start, end, status = take_selection_endpoints(fake_cmd, multi_atom="clicked")
+    assert status == "multiple"
 
     start, end, status = take_selection_endpoints(fake_cmd, multi_atom="center")
     assert status == "one"
@@ -252,11 +257,9 @@ def test_take_selection_endpoints_counts(fake_cmd):
 
 
 def test_take_selection_endpoints_max_expand_skips_full_iterate(fake_cmd):
-    from pymolviz.wizards.builders.pairs import take_selection_endpoints
-    from pymolviz.wizards.last_click import set_last_clicked_atom
+    from pymolviz.wizards.builders.pairs import STATUS_TOO_LARGE, take_selection_endpoints
     from tests.fakes.cmd import FakeAtom
 
-    set_last_clicked_atom(None)
     for i in range(1, 21):
         fake_cmd.add_atom(FakeAtom(
             "prot", i, float(i), 0.0, 0.0, chain="A", resi=str(i), name="CA",
@@ -273,20 +276,16 @@ def test_take_selection_endpoints_max_expand_skips_full_iterate(fake_cmd):
     start, end, status = take_selection_endpoints(
         fake_cmd, interactive_only=True, max_expand=2,
     )
-    assert status == "multiple"
+    assert status == STATUS_TOO_LARGE
     assert start is None and end is None
     assert calls == []
 
-    set_last_clicked_atom("prot", 4)
     start, end, status = take_selection_endpoints(
-        fake_cmd, interactive_only=True, max_expand=2,
+        fake_cmd, interactive_only=True, max_expand=2, multi_atom="clicked",
     )
-    assert status == "one"
-    assert endpoint_label(start) == "A/4/CA"
-    assert any("`" in item for item in calls)
-    assert all("object \"prot\"" != item.strip() for item in calls)
-    assert not any("pk1" in item for item in calls)
-    set_last_clicked_atom(None)
+    assert status == STATUS_TOO_LARGE
+    assert start is None and end is None
+    assert calls == []
 
 
 def test_fake_cmd_resolves_object_tick_inside_sele(fake_cmd):
@@ -337,7 +336,8 @@ def test_parse_atom_sele_and_last_click():
     set_last_clicked_atom(None)
 
 
-def test_you_clicked_path_picks_atom_in_molecule_sele(fake_cmd):
+def test_large_molecule_sele_is_too_large_without_you_clicked(fake_cmd):
+    from pymolviz.wizards.builders.pairs import STATUS_TOO_LARGE
     from pymolviz.wizards.last_click import note_click_feedback, set_last_clicked_atom
 
     set_last_clicked_atom(None)
@@ -351,11 +351,8 @@ def test_you_clicked_path_picks_atom_in_molecule_sele(fake_cmd):
     start, end, status = take_selection_endpoints(
         fake_cmd, interactive_only=True, max_expand=2,
     )
-    assert status == "one"
-    assert end is None
-    assert start.atom_ref.model == "4C1D-out"
-    assert start.atom_ref.atom_id == 7
-    assert endpoint_label(start) == "A/7/C"
+    assert status == STATUS_TOO_LARGE
+    assert start is None and end is None
     set_last_clicked_atom(None)
 
 

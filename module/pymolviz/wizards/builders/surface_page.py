@@ -183,6 +183,7 @@ class SurfaceBuilderPage(PointTableBuilderPage):
         apply_spin_step(self._vdw_scale, STEP_VDW_SCALE, decimals=2)
         self._vdw_scale.setValue(DEFAULT_VDW_SCALE)
         self._vdw_scale.setEnabled(DEFAULT_RADIUS_MODE == "vdw")
+        self._radius_widget.widget.setEnabled(DEFAULT_RADIUS_MODE != "vdw")
         apply_ascii_float_locale(self._vdw_scale, QtCore)
         self._use_vdw.toggled.connect(self._on_vdw_toggled)
         self._vdw_scale.valueChanged.connect(lambda *_: self._on_radius_policy_changed())
@@ -321,6 +322,8 @@ class SurfaceBuilderPage(PointTableBuilderPage):
     def _on_vdw_toggled(self, checked: bool):
         if self._vdw_scale is not None:
             self._vdw_scale.setEnabled(bool(checked))
+        if self._radius_widget is not None:
+            self._radius_widget.widget.setEnabled(not bool(checked))
         self._on_radius_policy_changed()
 
     def _on_radius_policy_changed(self):

@@ -367,6 +367,36 @@ def test_paint_mesh_by_point_colors_blends_anchor_colors():
     assert np.allclose(got, again)
 
 
+def test_paint_mesh_by_field_sphere_does_not_subdivide_by_default():
+    _NATIVE_GRIDS.clear()
+    values = np.linspace(0.0, 1.0, 8)
+    grid = GridData(
+        values,
+        step_sizes=(1.0, 1.0, 1.0),
+        step_counts=(1, 1, 1),
+        origin=(0.0, 0.0, 0.0),
+        name="grad",
+    )
+    _NATIVE_GRIDS[grid.id] = grid
+    from pymolviz.meshes.Sphere import Sphere
+    from pymolviz.points import FixedPoint
+
+    sphere = Sphere(
+        FixedPoint((0.5, 0.5, 0.5)), 0.5,
+        color=(1.0, 0.0, 0.0), bypass_colormap=True, frequency=2,
+    )
+    n_verts = int(sphere.vertices.shape[0])
+    n_faces = int(sphere.faces.shape[0])
+    assert paint_mesh_by_field(sphere, grid.id, colormap="coolwarm")
+    assert int(sphere.vertices.shape[0]) == n_verts
+    assert int(sphere.faces.shape[0]) == n_faces
+    radii = np.linalg.norm(
+        np.asarray(sphere.vertices, dtype=float) - np.array([0.5, 0.5, 0.5]),
+        axis=1,
+    )
+    assert np.allclose(radii, 0.5, atol=1e-5)
+
+
 def test_paint_mesh_by_field_sets_per_vertex_colors():
     _NATIVE_GRIDS.clear()
     values = np.zeros((2, 2, 2), dtype=float)

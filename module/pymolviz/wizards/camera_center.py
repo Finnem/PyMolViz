@@ -16,7 +16,7 @@ CAM_PSEUDOATOM_STEM = "cam_center"
 
 
 def format_center_xyz(pos, digits=3):
-    """One-line camera-center readout for the wizard panel / prompt."""
+    """One-line camera-center readout for the wizard prompt (viewer overlay)."""
     if pos is None or len(pos) < 3:
         return "Cam center: (unavailable)"
     fmt = "%%.%df" % max(0, int(digits))

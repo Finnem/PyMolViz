@@ -12,7 +12,7 @@ from ...util.line_style import (
     max_margin_for_length,
     style_margins,
 )
-from ..pick import idle_selection_poll_ok, qt_modules, qt_widget_alive
+from ..pick import idle_selection_poll_ok, overlay_information, qt_modules, qt_widget_alive
 from ..widgets.breadcrumb import CRUMB_ARROWS
 from ..widgets.ascii_locale import apply_ascii_float_locale
 from ..widgets.spin_step import STEP_RADIUS, apply_spin_step
@@ -29,11 +29,14 @@ from .pairs import (
     MULTI_CENTER,
     MULTI_CLICKED,
     POLL_SELECTION_MAX_ATOMS,
+    SELECTION_TOO_LARGE_TITLE,
+    STATUS_TOO_LARGE,
     VisualPair,
     commit_pair_anchors,
     complete_pairs,
     endpoint_label,
     pair_index,
+    selection_too_large_message,
     take_selection_endpoints,
     take_single_selection_point,
 )
@@ -50,8 +53,9 @@ from .zoom_selection import focus_visual_point, zoom_to_visual_points
 
 CLICKED_ATOM_LABEL = "Clicked atom"
 CLICKED_ATOM_TIP = (
-    "When several atoms are selected (residue, chain, or object), use the "
-    "atom that was clicked. Two selected atoms still create a full arrow."
+    "When one atom is selected, use it. Two selected atoms still create a full "
+    "arrow. Larger selections are not reduced via click identity — narrow the "
+    "selection, or use Average of selection."
 )
 SELECTION_AVERAGE_LABEL = "Average of selection"
 SELECTION_CENTER_TIP = (
@@ -96,9 +100,10 @@ class ArrowBuilderPage(BuilderPage):
         self._head_length_row = None
         self._head_radius_row = None
         self._head_follows_shaft = True
-        self._clicked_atom = True
+        self._clicked_atom = False
         self._clicked_atom_box = None
         self._center_radio = None
+        self._large_sele_warned = False
 
     def _cleanup_ephemeral(self):
         self._stop_poll_timer()
@@ -180,6 +185,9 @@ class ArrowBuilderPage(BuilderPage):
         self._preview.adopt(obj)
         if self._modifiers is not None:
             self._modifiers.clip.set_planes(clip)
+            from ...util.clip_gizmo import read_clip_gizmo_state
+
+            self._modifiers.apply_gizmo_state(read_clip_gizmo_state(obj))
             self._modifiers.refresh_summary()
         self._schedule_preview()
 
@@ -261,9 +269,9 @@ class ArrowBuilderPage(BuilderPage):
         mode_label = QtWidgets.QLabel("When several atoms:")
         mode_row.addWidget(mode_label)
         self._clicked_atom_box = QtWidgets.QRadioButton(CLICKED_ATOM_LABEL)
-        self._clicked_atom_box.setChecked(True)
         self._clicked_atom_box.setToolTip(CLICKED_ATOM_TIP)
         self._center_radio = QtWidgets.QRadioButton(SELECTION_AVERAGE_LABEL)
+        self._center_radio.setChecked(True)
         self._center_radio.setToolTip(SELECTION_CENTER_TIP)
         mode_group = QtWidgets.QButtonGroup(page)
         mode_group.setExclusive(True)
@@ -626,7 +634,7 @@ class ArrowBuilderPage(BuilderPage):
     def _multi_atom(self) -> str:
         if self._clicked_atom_box is not None:
             return MULTI_CLICKED if self._clicked_atom_box.isChecked() else MULTI_CENTER
-        return MULTI_CLICKED if self._clicked_atom else MULTI_CENTER
+        return MULTI_CENTER if not self._clicked_atom else MULTI_CLICKED
 
     def _on_clicked_atom_toggled(self, checked):
         self._clicked_atom = bool(checked)
@@ -687,6 +695,7 @@ class ArrowBuilderPage(BuilderPage):
             self._existing_points(),
             hook_to_selection=self._hook(),
             multi_atom=self._multi_atom(),
+            max_expand=POLL_SELECTION_MAX_ATOMS,
         )
         if status == "pair":
             pair = self._stamp_pair(start, end)
@@ -698,6 +707,9 @@ class ArrowBuilderPage(BuilderPage):
             return
         if status == "one":
             self._begin_incomplete(start)
+            return
+        if status == STATUS_TOO_LARGE:
+            self._warn_selection_too_large()
             return
         if status == "multiple":
             self._set_status("Select atoms to place an endpoint, or pick them one at a time.")
@@ -740,6 +752,22 @@ class ArrowBuilderPage(BuilderPage):
             return
         self._accept_point(pt)
 
+    def _warn_selection_too_large(self) -> None:
+        self._set_status("Selection is too large to scan.")
+        overlay_information(
+            self._page,
+            SELECTION_TOO_LARGE_TITLE,
+            selection_too_large_message(POLL_SELECTION_MAX_ATOMS),
+        )
+
+    def _note_selection_status(self, status: str) -> None:
+        if status == STATUS_TOO_LARGE:
+            if not self._large_sele_warned:
+                self._large_sele_warned = True
+                self._warn_selection_too_large()
+            return
+        self._large_sele_warned = False
+
     def _poll_selection(self):
         if self._pick_role is None:
             return
@@ -757,6 +785,7 @@ class ArrowBuilderPage(BuilderPage):
                 multi_atom=self._multi_atom(),
                 max_expand=POLL_SELECTION_MAX_ATOMS,
             )
+            self._note_selection_status(status)
             if status == "pair" and start is not None and end is not None:
                 if not self._same_as_ignored(start):
                     self._finish_new_pair(start, end)
@@ -772,6 +801,7 @@ class ArrowBuilderPage(BuilderPage):
             multi_atom=self._multi_atom(),
             max_expand=POLL_SELECTION_MAX_ATOMS,
         )
+        self._note_selection_status(status)
         if status == "one" and not self._same_as_ignored(point):
             self._accept_point(point)
 
@@ -1012,7 +1042,9 @@ class ArrowBuilderPage(BuilderPage):
         idx = pair_index(self._pairs, pair_id)
         if idx < 0:
             return
-        self._pairs[idx] = self._pairs[idx].with_width(value)
+        self._pairs[idx] = (
+            self._pairs[idx].with_width(value).with_head(default_head_length(value))
+        )
         self._schedule_preview()
 
     def set_arrow_head(self, pair_id, value):

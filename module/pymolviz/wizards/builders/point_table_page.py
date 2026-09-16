@@ -17,7 +17,12 @@ from .colors import bind_color_pick_result, pick_rgb
 from .modifiers_section import ModifiersSection
 from .point_insertion import PointInsertionWidget
 from .point_list import PointListEditor
-from .pairs import MULTI_CLICKED, POLL_SELECTION_MAX_ATOMS, take_single_selection_point
+from .pairs import (
+    MULTI_CLICKED,
+    POLL_SELECTION_MAX_ATOMS,
+    STATUS_TOO_LARGE,
+    take_single_selection_point,
+)
 from ..pick import idle_selection_poll_ok, qt_widget_alive
 from .points import (
     VisualPoint,
@@ -172,6 +177,9 @@ class PointTableBuilderPage(BuilderPage):
             opts = arrow_options(obj)
         if self._modifiers is not None:
             self._modifiers.clip.set_planes(opts.get("clip_planes") or [])
+            from ...util.clip_gizmo import read_clip_gizmo_state
+
+            self._modifiers.apply_gizmo_state(read_clip_gizmo_state(obj))
             self._modifiers.refresh_summary()
 
     def _points_from_object(self, obj) -> List[VisualPoint]:
@@ -494,6 +502,19 @@ class PointTableBuilderPage(BuilderPage):
             multi_atom=MULTI_CLICKED,
             max_expand=POLL_SELECTION_MAX_ATOMS,
         )
+        if status == STATUS_TOO_LARGE:
+            from ..pick import overlay_information
+            from .pairs import SELECTION_TOO_LARGE_TITLE, selection_too_large_message
+
+            if not getattr(self, "_large_sele_warned", False):
+                self._large_sele_warned = True
+                overlay_information(
+                    self._page,
+                    SELECTION_TOO_LARGE_TITLE,
+                    selection_too_large_message(POLL_SELECTION_MAX_ATOMS),
+                )
+            return
+        self._large_sele_warned = False
         if status != "one" or point is None or self._same_as_ignored(point):
             return
         idx = self._pick_index

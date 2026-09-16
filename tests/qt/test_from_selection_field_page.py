@@ -272,7 +272,7 @@ def test_field_visual_volume_has_no_isosurface_section_and_has_colormap_editor()
         assert editor._picker.plus_button.objectName() == "pmvColormapAdd"
         assert not editor._picker.plus_button.isHidden()
         assert editor._picker.gear_button.objectName() == "pmvColormapAdjust"
-        assert editor._picker.gear_button.isHidden()
+        assert not editor._picker.gear_button.isHidden()
     except Exception:
         pytest.skip("QApplication / QWidget not usable")
 
@@ -400,6 +400,12 @@ def test_open_colormap_editor_constructs():
     dist_view.widget.resize(400, 180)
     layout = dist_view._layout(dist_view.widget)
     plot = layout["plot"]
+    bars = layout["bars"]
+    alpha = layout["alpha"]
+    assert bars.top() == plot.top()
+    assert bars.bottom() == plot.bottom()
+    assert alpha.top() == plot.top()
+    assert alpha.bottom() == plot.bottom()
     dmin, dmax = dist_view._span()
     first = dist_view._defn.stops[0]
     last = dist_view._defn.stops[-1]

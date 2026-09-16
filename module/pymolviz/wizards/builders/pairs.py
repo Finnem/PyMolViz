@@ -13,7 +13,6 @@ from .points import (
     atom_anchor_label,
     insertion_selection_count,
     manual_fallback_name,
-    points_from_selection_expr,
     selection_points,
 )
 
@@ -38,6 +37,16 @@ PENDING_END = "[pick end…]"
 MULTI_CLICKED = "clicked"
 MULTI_CENTER = "center"
 POLL_SELECTION_MAX_ATOMS = 32
+STATUS_TOO_LARGE = "too_large"
+SELECTION_TOO_LARGE_TITLE = "Selection too large"
+
+
+def selection_too_large_message(limit: Optional[int] = None) -> str:
+    n = int(POLL_SELECTION_MAX_ATOMS if limit is None else limit)
+    return (
+        "The current selection has more than %d atoms, so it was not scanned. "
+        "Narrow the selection and try again."
+    ) % n
 
 
 def new_pair_id() -> str:
@@ -103,8 +112,7 @@ class VisualPair:
         return replace(self, title=str(title))
 
     def with_width(self, width: float) -> "VisualPair":
-        width = float(width)
-        return replace(self, width=width, head=default_head_length(width))
+        return replace(self, width=float(width))
 
     def with_head(self, head: float) -> "VisualPair":
         return replace(self, head=float(head))
@@ -152,15 +160,6 @@ def commit_pair_anchors(pairs: Sequence[VisualPair]) -> List[VisualPair]:
     return out
 
 
-def _atom_key(pt: Optional[VisualPoint]):
-    if pt is None:
-        return None
-    ref = getattr(pt, "atom_ref", None)
-    if ref is None:
-        return None
-    return (str(getattr(ref, "model", "")), int(getattr(ref, "atom_id", 0)))
-
-
 def selection_center_point(
     pts: Sequence[VisualPoint],
     existing: Sequence[VisualPoint] = (),
@@ -175,52 +174,15 @@ def selection_center_point(
     return VisualPoint(name, "manual", cx, cy, cz, point_source=FixedPoint(pos))
 
 
-def clicked_atom_point(
-    cmd_,
-    pts: Sequence[VisualPoint],
-    existing: Sequence[VisualPoint] = (),
-    hook_to_selection: bool = True,
-) -> Optional[VisualPoint]:
-    """Atom that was clicked, preferring one that is in ``pts``.
-
-    Selecting mode does not create ``pk1``. Use the last viewer click, then
-    ``pk1`` only when that pick name actually exists.
-    """
-    from ..last_click import last_clicked_atom, resolve_clicked_atom
-
-    if not pts:
-        return None
-    resolve_clicked_atom(cmd_)
-    clicked = last_clicked_atom()
-    if clicked is not None:
-        for pt in pts:
-            if _atom_key(pt) == clicked:
-                return pt
-    picked = points_from_selection_expr(
-        cmd_, "(pk1)", existing=existing, hook_to_selection=hook_to_selection,
-    )
-    keys = {_atom_key(pt) for pt in pts}
-    for cand in picked:
-        key = _atom_key(cand)
-        if key is None or key not in keys:
-            continue
-        for pt in pts:
-            if _atom_key(pt) == key:
-                return pt
-    if picked:
-        return picked[0]
-    return None
-
-
 def take_single_selection_point(
     cmd_,
     existing: Sequence[VisualPoint] = (),
     interactive_only: bool = False,
     hook_to_selection: bool = True,
-    multi_atom: str = MULTI_CLICKED,
+    multi_atom: str = MULTI_CENTER,
     max_expand: Optional[int] = None,
 ) -> Tuple[Optional[VisualPoint], str]:
-    """Return (point, status) where status is empty / one / multiple."""
+    """Return (point, status) where status is empty / one / multiple / too_large."""
     start, end, status = take_selection_endpoints(
         cmd_,
         existing,
@@ -237,62 +199,24 @@ def take_single_selection_point(
     return None, status
 
 
-def _cheap_clicked_endpoint(
-    cmd_,
-    existing: Sequence[VisualPoint] = (),
-    hook_to_selection: bool = True,
-    interactive_only: bool = False,
-) -> Tuple[Optional[VisualPoint], Optional[VisualPoint], str]:
-    """One atom from ``You clicked`` / last click, without iterating ``sele``."""
-    from ..last_click import clicked_atom_expr
-
-    expr = clicked_atom_expr()
-    if expr is None:
-        return None, None, "multiple"
-    sele = "(sele)" if interactive_only else None
-    if sele is None:
-        from .points import _active_selection
-
-        sele = _active_selection(cmd_, interactive_only=False)
-        if sele is None:
-            return None, None, "empty"
-    pts = points_from_selection_expr(
-        cmd_, expr, existing=existing, hook_to_selection=hook_to_selection,
-    )
-    if not pts:
-        return None, None, "multiple"
-    ref = getattr(pts[0], "atom_ref", None)
-    if ref is not None:
-        ident = "(%s)`%d" % (ref.model, int(ref.atom_id))
-    else:
-        ident = expr
-    try:
-        n = int(cmd_.count_atoms("((%s) and %s)" % (sele, ident)))
-    except Exception:
-        n = 0
-    if n > 0:
-        return pts[0], None, "one"
-    return None, None, "multiple"
-
-
 def take_selection_endpoints(
     cmd_,
     existing: Sequence[VisualPoint] = (),
     interactive_only: bool = False,
     hook_to_selection: bool = True,
-    multi_atom: str = MULTI_CLICKED,
+    multi_atom: str = MULTI_CENTER,
     pair_on_two: bool = True,
     max_expand: Optional[int] = None,
 ) -> Tuple[Optional[VisualPoint], Optional[VisualPoint], str]:
     """Return (start, end, status) for the current selection.
 
-    Status is ``empty``, ``one``, ``pair``, or ``multiple``.
+    Status is ``empty``, ``one``, ``pair``, ``multiple``, or ``too_large``.
 
-    ``multi_atom`` is ``clicked`` (pk1 / two-atom arrow) or ``center``
+    ``multi_atom`` is ``clicked`` (one or two scanned atoms) or ``center``
     (one endpoint at the mean of all selected atoms).
 
-    ``max_expand`` caps how many atoms a timer poll may iterate. Larger
-    selections fall back to the last clicked atom (or ``multiple``).
+    ``max_expand`` caps how many atoms may be iterated. Larger selections
+    return ``too_large`` without scanning.
     """
     use_center = str(multi_atom) == MULTI_CENTER
     if max_expand is not None:
@@ -300,11 +224,7 @@ def take_selection_endpoints(
         if count <= 0:
             return None, None, "empty"
         if count > int(max_expand):
-            if use_center:
-                return None, None, "multiple"
-            return _cheap_clicked_endpoint(
-                cmd_, existing, hook_to_selection, interactive_only,
-            )
+            return None, None, STATUS_TOO_LARGE
     pts = selection_points(
         cmd_, existing,
         interactive_only=interactive_only,
@@ -318,11 +238,6 @@ def take_selection_endpoints(
         return selection_center_point(pts, existing), None, "one"
     if pair_on_two and len(pts) == 2:
         return pts[0], pts[1], "pair"
-    clicked = clicked_atom_point(
-        cmd_, pts, existing=existing, hook_to_selection=hook_to_selection,
-    )
-    if clicked is not None:
-        return clicked, None, "one"
     return None, None, "multiple"
 
 

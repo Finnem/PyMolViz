@@ -114,10 +114,11 @@ cmd.set("transparency", %s, "%s")
         iso_kwargs = {"level": self.level}
         if getattr(self, "_native_iso_passes_side", True):
             iso_kwargs["side"] = self.side
-        if self.selection:
-            iso_kwargs["selection"] = self.selection
-        if self.carve is not None:
-            iso_kwargs["carve"] = self.carve
+        sel = str(self.selection or "").strip()
+        if sel and not (sel.startswith("(") and sel.endswith(")")):
+            iso_kwargs["selection"] = sel
+            if self.carve is not None:
+                iso_kwargs["carve"] = self.carve
         cmd_name = getattr(self, "_native_iso_cmd", "isosurface")
         getattr(cmd, cmd_name)(self.name, map_name, **iso_kwargs)
         if issubclass(type(self.color), ColorRamp):
