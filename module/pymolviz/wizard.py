@@ -483,6 +483,12 @@ def reconcile_wizard_after_session_load(cmd_=None):
 
 def start_wizard():
     """Open the PyMOLViz wizard panel."""
+    try:
+        from .runtime.integration import install
+
+        install()
+    except Exception:
+        pass
     register_wizard_commands()
     view = cmd.get_view()
     try:
