@@ -34,7 +34,7 @@ from pymolviz.util.colormap_spec import (
 )
 
 
-def test_stop_neighbor_limits_allow_endpoint_inset():
+def test_stop_neighbor_limits_pin_endpoints():
     from pymolviz.wizards.builders.colormap_dialog import (
         _clamp_stop_position,
         _stop_neighbor_limits,
@@ -45,10 +45,35 @@ def test_stop_neighbor_limits_allow_endpoint_inset():
         ColorStop(0.5, (0.0, 1.0, 0.0, 1.0)),
         ColorStop(1.0, (1.0, 0.0, 0.0, 1.0)),
     )
-    assert _stop_neighbor_limits(0, stops) == (0.0, pytest.approx(0.496))
-    assert _stop_neighbor_limits(2, stops) == (pytest.approx(0.504), 1.0)
-    assert _clamp_stop_position(0, stops, 0.25) == pytest.approx(0.25)
-    assert _clamp_stop_position(2, stops, 0.8) == pytest.approx(0.8)
+    assert _stop_neighbor_limits(0, stops) == (0.0, 0.0)
+    assert _stop_neighbor_limits(2, stops) == (1.0, 1.0)
+    assert _clamp_stop_position(0, stops, 0.25) == pytest.approx(0.0)
+    assert _clamp_stop_position(2, stops, 0.8) == pytest.approx(1.0)
+    assert _stop_neighbor_limits(1, stops) == (pytest.approx(0.004), pytest.approx(0.996))
+    assert _clamp_stop_position(1, stops, 0.25) == pytest.approx(0.25)
+
+
+def test_stop_drag_inverts_paint_on_log_axis():
+    from pymolviz.util.colormap_spec import HISTOGRAM_VIEW_LOG
+    from pymolviz.wizards.builders.colormap_plot import (
+        _unit_position_for_histogram_x,
+        _x_for_stop_position,
+    )
+
+    class _Rect:
+        def left(self):
+            return 20.0
+
+        def right(self):
+            return 220.0
+
+    plot = _Rect()
+    dmin, dmax = 1e-4, 10.0
+    vmin, vmax = 1e-3, 1.0
+    for pos in (0.0, 0.25, 0.5, 0.75, 1.0):
+        x = _x_for_stop_position(plot, pos, vmin, vmax, dmin, dmax, HISTOGRAM_VIEW_LOG)
+        back = _unit_position_for_histogram_x(plot, x, vmin, vmax, dmin, dmax, HISTOGRAM_VIEW_LOG)
+        assert back == pytest.approx(pos, rel=1e-6, abs=1e-6)
 
 
 def test_moving_endpoint_stop_does_not_spawn_sentinels():
@@ -73,6 +98,35 @@ def test_moving_endpoint_stop_does_not_spawn_sentinels():
     assert moved.stops[-1].position == pytest.approx(0.8)
     assert sample_unit(moved, 0.0)[:3] == pytest.approx(moved.stops[0].rgba[:3])
     assert sample_unit(moved, 1.0)[:3] == pytest.approx(moved.stops[-1].rgba[:3])
+
+
+def test_color_stops_sit_on_range_handles():
+    from pymolviz.wizards.builders.colormap_plot import _x_for_stop_position, _x_for_value
+
+    class _Rect:
+        def left(self):
+            return 0.0
+
+        def right(self):
+            return 100.0
+
+    plot = _Rect()
+    dmin, dmax = 0.0, 10.0
+    vmin, vmax = 2.0, 8.0
+    x_min = _x_for_value(plot, vmin, dmin, dmax)
+    x_max = _x_for_value(plot, vmax, dmin, dmax)
+    assert _x_for_stop_position(plot, 0.0, vmin, vmax, dmin, dmax) == pytest.approx(x_min)
+    assert _x_for_stop_position(plot, 1.0, vmin, vmax, dmin, dmax) == pytest.approx(x_max)
+    assert _x_for_stop_position(plot, 0.5, vmin, vmax, dmin, dmax) == pytest.approx(
+        0.5 * (x_min + x_max)
+    )
+    vmin, vmax = 1.0, 4.0
+    assert _x_for_stop_position(plot, 0.0, vmin, vmax, dmin, dmax) == pytest.approx(
+        _x_for_value(plot, vmin, dmin, dmax)
+    )
+    assert _x_for_stop_position(plot, 1.0, vmin, vmax, dmin, dmax) == pytest.approx(
+        _x_for_value(plot, vmax, dmin, dmax)
+    )
 
 
 def test_preset_stops_are_normalized_0_to_1():
@@ -178,15 +232,80 @@ def test_normalization_modes():
     assert pct[1] == pytest.approx(4.0)
 
 
-def test_histogram_is_capped_and_cached_shape():
+def test_histogram_zeros_not_dumped_into_first_bin():
+    zeros = np.zeros(9000)
+    pos = np.logspace(-4, -1, 1000)
+    hist = histogram_from_values(np.concatenate([zeros, pos]), bins=24, view="auto")
+    counts = np.asarray(hist["counts"], dtype=float)
+    assert counts.max() < 0.5 * counts.sum()
+    assert np.count_nonzero(counts) >= 5
     values = np.linspace(-3, 3, 100000)
     hist = histogram_from_values(values, bins=40, max_samples=2000)
     assert hist["n"] <= 2000
     assert len(hist["counts"]) == 40
     assert hist["vmin"] == pytest.approx(-3.0, abs=0.02)
     assert hist["n_total"] == 100000
+
+
+def test_limits_sane_for_field_rejects_stale_wide_limits():
+    from pymolviz.util.colormap_spec import limits_sane_for_field
+
+    values = np.linspace(0.0, 9.4, 100)
+    assert limits_sane_for_field((0.0, 511.0), values) == (0.0, 9.4)
+
+
+def test_histogram_auto_zooms_electron_density_like_tail():
+    bulk = np.random.default_rng(1).exponential(0.0008, size=12000)
+    bulk = np.clip(bulk, 0.0, 0.006)
+    spikes = np.array([9.4, 8.0, 7.2])
+    values = np.concatenate([bulk, spikes])
+    hist = histogram_from_values(values, bins=40, view="auto")
+    assert hist["display_max"] < 0.02
+    assert hist["vmax"] == pytest.approx(9.4)
+    assert len([c for c in hist["counts"] if c > 0]) >= 5
+
+
+def test_histogram_auto_focuses_heavy_tailed_positive_density():
+    from pymolviz.util.colormap_spec import (
+        HISTOGRAM_VIEW_LOG,
+        analyze_value_distribution,
+        histogram_axis_to_value,
+        value_to_histogram_axis,
+    )
+
+    rng = np.random.default_rng(0)
+    bulk = rng.exponential(0.02, size=8000)
+    spikes = rng.uniform(50.0, 200.0, size=40)
+    values = np.concatenate([bulk, spikes])
+    analysis = analyze_value_distribution(values)
+    assert analysis["suggest_percentile_range"] is True
+    hist = histogram_from_values(values, bins=32, max_samples=5000, view="auto")
+    assert hist["display_max"] < analysis["vmax"] * 0.5
+    assert max(hist["counts"]) > 0
+    assert len([c for c in hist["counts"] if c > 0]) >= 3
+    span = hist["display_max"] - hist["display_min"]
+    assert span > 0
+    assert max(hist["counts"]) > 0
+    dlo, dhi = hist["display_min"], hist["display_max"]
+    axis = hist["axis"]
+    mid = histogram_axis_to_value(0.5, dlo, dhi, axis)
+    assert dlo <= mid <= dhi
+    assert value_to_histogram_axis(mid, dlo, dhi, axis) == pytest.approx(0.5, abs=0.05)
     tiny = subsample_values(np.array([1.0, np.nan, 2.0]), max_samples=10)
     assert list(tiny) == pytest.approx([1.0, 2.0])
+
+
+def test_histogram_tick_values_log_and_linear():
+    from pymolviz.wizards.builders.colormap_plot import _histogram_tick_values
+
+    linear = _histogram_tick_values(0.0, 1.0, "full", 5)
+    assert linear[0] == pytest.approx(0.0)
+    assert linear[-1] == pytest.approx(1.0)
+    logs = _histogram_tick_values(1e-4, 1.0, "log", 5)
+    assert logs[0] == pytest.approx(1e-4, rel=1e-6)
+    assert logs[-1] == pytest.approx(1.0, rel=1e-6)
+    ratios = [logs[i + 1] / logs[i] for i in range(len(logs) - 1)]
+    assert max(ratios) / min(ratios) == pytest.approx(1.0, rel=1e-5)
 
 
 def test_distribution_axis_mapping():
@@ -280,6 +399,40 @@ def test_persist_colormap_attrs_only_stores_custom_maps():
     assert name == "custom"
     assert spec["customized"] is True
     assert persist_colormap_attrs("plasma") == ("plasma", None)
+
+
+def test_stored_colormap_spec_keeps_custom_range():
+    from pymolviz.util.colormap_spec import (
+        Normalization,
+        apply_colormap_alpha_to_volume_ramp,
+        persist_colormap_attrs,
+        stored_colormap_spec,
+        normalization_from_stored_spec,
+    )
+
+    named = definition_from_preset("viridis")
+    spec = stored_colormap_spec(
+        named, Normalization(mode=RANGE_MODE_CUSTOM, vmin=0.0, vmax=0.005),
+    )
+    assert spec is not None
+    assert spec["preset"] == "viridis"
+    norm = normalization_from_stored_spec(spec)
+    assert norm.mode == RANGE_MODE_CUSTOM
+    assert norm.vmax == pytest.approx(0.005)
+    name, stored = persist_colormap_attrs(named, spec)
+    assert name == "viridis"
+    assert stored["normalization"]["vmax"] == pytest.approx(0.005)
+    fades = ColormapDefinition(
+        preset="viridis",
+        stops=(
+            ColorStop(0.0, (0.0, 0.0, 1.0, 0.0)),
+            ColorStop(1.0, (1.0, 0.0, 0.0, 0.5)),
+        ),
+        customized=True,
+    )
+    alphas = apply_colormap_alpha_to_volume_ramp((0.0, 1.0), (1.0, 1.0), fades)
+    assert alphas[0] == pytest.approx(0.0)
+    assert alphas[-1] == pytest.approx(0.5)
 
 
 def test_unused_custom_preset_name_skips_existing(tmp_path, monkeypatch):
@@ -383,6 +536,24 @@ def test_maybe_reuse_leaves_named_custom_alone(tmp_path, monkeypatch):
     assert applied.cancelled is False
     assert applied.name == "Custom 1"
     assert applied.definition is defn
+
+
+def test_mpl_colormap_anchors_inner_stops_for_matplotlib():
+    from pymolviz.ColorMap import ColorMap
+    from pymolviz.util.colormap_spec import ColormapDefinition, ColorStop, mpl_colormap
+
+    defn = ColormapDefinition(
+        stops=(
+            ColorStop(0.15, (1.0, 0.0, 0.0, 1.0)),
+            ColorStop(0.85, (0.0, 0.0, 1.0, 1.0)),
+        ),
+        customized=True,
+    )
+    mpl = mpl_colormap(defn)
+    clims = [float(x) for x in __import__("numpy").linspace(-2.0, 2.0, 17)]
+    wrapped = ColorMap(clims, mpl, values_are_single_color=False)
+    rgba = wrapped.get_color(0.0)
+    assert len(rgba) >= 3
 
 
 def test_volume_colormap_arg_resolves_saved_custom_preset(tmp_path, monkeypatch):

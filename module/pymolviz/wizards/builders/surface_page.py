@@ -22,6 +22,7 @@ from ...util.solvent_surface import (
 from ..pick import overlay_warning, qt_modules, qt_widget_alive
 from .heavy_job import ask_heavy_job
 from ..widgets.ascii_locale import apply_ascii_float_locale
+from ..widgets.spin_step import STEP_RADIUS, STEP_VDW_SCALE, apply_spin_step
 from ..widgets.breadcrumb import CRUMB_SURFACE
 from ..widgets.log_slider import LogSegmentRadiusWidget
 from ..widgets.section import make_section
@@ -134,8 +135,8 @@ class SurfaceBuilderPage(PointTableBuilderPage):
         layout.setSpacing(4)
         caption = QtWidgets.QLabel("Atom radius (Å)")
         spin = QtWidgets.QDoubleSpinBox()
-        spin.setDecimals(2)
         spin.setRange(0.0, 100.0)
+        apply_spin_step(spin, STEP_RADIUS, decimals=2)
         spin.setSpecialValueText("inherit")
         inherited = self._inherited_radius(pt)
         if pt.radius is None:
@@ -178,9 +179,8 @@ class SurfaceBuilderPage(PointTableBuilderPage):
         self._use_vdw = make_switch("Scale by VDW")
         self._use_vdw.setChecked(DEFAULT_RADIUS_MODE == "vdw")
         self._vdw_scale = QtWidgets.QDoubleSpinBox()
-        self._vdw_scale.setDecimals(2)
         self._vdw_scale.setRange(0.10, 5.00)
-        self._vdw_scale.setSingleStep(0.05)
+        apply_spin_step(self._vdw_scale, STEP_VDW_SCALE, decimals=2)
         self._vdw_scale.setValue(DEFAULT_VDW_SCALE)
         self._vdw_scale.setEnabled(DEFAULT_RADIUS_MODE == "vdw")
         apply_ascii_float_locale(self._vdw_scale, QtCore)

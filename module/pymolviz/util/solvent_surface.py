@@ -17,6 +17,8 @@ from .solvent_gauss import *  # noqa: F401,F403
 
 # ``import *`` omits leading-underscore names; tests and convert.py import these from the facade.
 from .solvent_params import (
+    _ISO_SEC_PER_VOXEL,
+    _MC_SEC_PER_CUBE,
     _convex_cap_frequency,
     _phong_refine_params,
     _torus_n_phi_floor,

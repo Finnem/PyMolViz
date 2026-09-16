@@ -398,20 +398,31 @@ def test_open_colormap_editor_constructs():
     assert editor.mapping().normalization.vmin == pytest.approx(-1.5)
     dist_view = editor._histogram
     dist_view.widget.resize(400, 180)
-    plot = dist_view._plot(dist_view.widget)
+    layout = dist_view._layout(dist_view.widget)
+    plot = layout["plot"]
     dmin, dmax = dist_view._span()
     first = dist_view._defn.stops[0]
     last = dist_view._defn.stops[-1]
-    sx0, sy0 = dist_view._stop_xy(plot, first, dmin, dmax)
-    sx1, sy1 = dist_view._stop_xy(plot, last, dmin, dmax)
+    sx0, sy0 = dist_view._stop_xy(layout, first, dmin, dmax)
+    sx1, sy1 = dist_view._stop_xy(layout, last, dmin, dmax)
+    vmin, vmax = dist_view._limits
+    from pymolviz.wizards.builders.colormap_plot import _x_for_value
+
+    assert sx0 == pytest.approx(_x_for_value(plot, vmin, dmin, dmax), abs=1.5)
+    assert sx1 == pytest.approx(_x_for_value(plot, vmax, dmin, dmax), abs=1.5)
     assert dist_view._hit(dist_view.widget, sx0, sy0) == ("stop", 0)
     assert dist_view._hit(dist_view.widget, sx1, sy1) == ("stop", len(dist_view._defn.stops) - 1)
     assert dist_view._hit(dist_view.widget, sx0, 0.5 * (plot.top() + plot.bottom())) == ("stop", 0)
     before = len(editor.mapping().colormap.stops)
     target = 0.5 * editor.mapping().colormap.stops[1].position
-    editor._on_stop_dragged(0, target, editor.mapping().colormap.stops[0].rgba[3])
+    editor._on_stop_dragged(0, target, 0.62)
     assert len(editor.mapping().colormap.stops) == before
-    assert editor.mapping().colormap.stops[0].position == pytest.approx(target)
+    assert editor.mapping().colormap.stops[0].position == pytest.approx(0.0)
+    assert editor.mapping().colormap.stops[0].rgba[3] == pytest.approx(0.62)
+    last = len(editor.mapping().colormap.stops) - 1
+    editor._on_stop_dragged(last, 0.4, 0.31)
+    assert editor.mapping().colormap.stops[last].position == pytest.approx(1.0)
+    assert editor.mapping().colormap.stops[last].rgba[3] == pytest.approx(0.31)
     assert dist_view._hit(dist_view.widget, sx0, plot.top() - 8) == ("range", "vmin")
     assert dist_view._hit(dist_view.widget, sx1, plot.top() - 8) == ("range", "vmax")
     editor._open_stop_editor(0)

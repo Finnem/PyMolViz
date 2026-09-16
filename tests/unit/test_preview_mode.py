@@ -71,7 +71,7 @@ def test_preview_mode_labels_and_aliases():
 def test_simple_preview_uses_draft_meshes_and_isomesh():
     assert preview_mesh_quality(5, PREVIEW_SIMPLE) == 1
     assert preview_mesh_quality(5, PREVIEW_FULL) == 5
-    assert preview_arrow_quality(3, PREVIEW_SIMPLE) == 0
+    assert preview_arrow_quality(3, PREVIEW_SIMPLE) == 1
     assert preview_arrow_quality(3, PREVIEW_FULL) == 3
     assert preview_wireframe(False, PREVIEW_SIMPLE) is False
     assert preview_wireframe(True, PREVIEW_SIMPLE) is True

@@ -382,6 +382,53 @@ def test_convert_isosurface_stamps_provenance():
     assert np.asarray(surface.vertices).shape[0] >= 3
 
 
+def test_estimate_isosurface_convert_job_light_on_tiny_grid():
+    from pymolviz.fields.convert import (
+        HEAVY_EXPLICIT_TRIANGLES,
+        estimate_isosurface_convert_job,
+    )
+    from pymolviz.wizards.builders.field_visual import make_field_visual
+
+    values = np.zeros((3, 3, 3), dtype=float)
+    values[1, 1, 1] = 1.0
+    grid = GridData(
+        values.reshape(-1),
+        step_sizes=(1.0, 1.0, 1.0),
+        step_counts=(2, 2, 2),
+        origin=(0.0, 0.0, 0.0),
+        name="iso",
+    )
+    field = as_field(grid)
+    visual = make_field_visual("IsoSurface", field, "iso", level=0.5, obj_id="iso_est")
+    job = estimate_isosurface_convert_job(visual)
+    assert job["voxels"] == 27
+    assert int(job["cubes"]) >= 1
+    assert int(job["triangles"]) >= 4
+    assert job["heavy"] is False
+    assert HEAVY_EXPLICIT_TRIANGLES > int(job["triangles"])
+
+
+def test_estimate_isosurface_convert_job_marks_huge_voxel_brick():
+    from pymolviz.fields.convert import estimate_isosurface_convert_job
+    from pymolviz.util.solvent_surface import HEAVY_SURFACE_VOXELS
+    from pymolviz.wizards.builders.field_visual import make_field_visual
+
+    n = int(np.ceil(HEAVY_SURFACE_VOXELS ** (1.0 / 3.0))) + 2
+    values = np.zeros((n, n, n), dtype=float)
+    grid = GridData(
+        values.reshape(-1),
+        step_sizes=(1.0, 1.0, 1.0),
+        step_counts=(n - 1, n - 1, n - 1),
+        origin=(0.0, 0.0, 0.0),
+        name="big",
+    )
+    field = as_field(grid)
+    visual = make_field_visual("IsoSurface", field, "big", level=0.0, obj_id="iso_big")
+    job = estimate_isosurface_convert_job(visual)
+    assert job["voxels"] >= HEAVY_SURFACE_VOXELS
+    assert job["heavy"] is True
+
+
 def test_apply_point_color_keeps_field_id():
     from pymolviz.meshes.Sphere import Sphere
     from pymolviz.util.field_sample import _NATIVE_GRIDS

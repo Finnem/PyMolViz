@@ -45,6 +45,19 @@ FLIP_CLIP_TIP = (
     "Swap which side of this plane is kept. The eye jumps to the new keep side."
 )
 DELETE_CLIP_TIP = "Remove this clipping plane and recut the mesh."
+SHOW_CLIP_VISUALS_TIP = (
+    "Show clip-plane rectangles in the viewer while this editor is open. "
+    "Hiding them does not remove the cut."
+)
+SHOW_PLANE_GIZMO_TIP = (
+    "Show this plane's rectangle in the viewer. Clipping stays applied either way."
+)
+ADD_AXIS_PLANE_TIP = (
+    "Add a second plane on this axis so the field is clipped from both sides."
+)
+REMOVE_AXIS_PLANE_TIP = (
+    "Remove the extra plane on this axis, leaving a single one-sided clip."
+)
 EDIT_CLIP_TIP = (
     "Set this plane's position (origin) and orientation (keep-side normal) numerically."
 )

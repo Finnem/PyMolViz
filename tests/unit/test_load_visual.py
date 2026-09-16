@@ -184,6 +184,25 @@ def test_box_and_arrow_options_include_clip_planes():
     assert opts["head_radius"] == pytest.approx(0.2)
 
 
+def test_arrow_options_head_length_from_pair_heads():
+    from pymolviz.meshes.Arrows import Arrows
+    from pymolviz.wizards.builders.load_visual import arrow_options
+
+    arrows = Arrows(
+        starts=[FixedPoint((0.0, 0.0, 0.0))],
+        ends=[FixedPoint((1.0, 0.0, 0.0))],
+        color=[(1.0, 0.0, 0.0)],
+        shaft_radius=0.05,
+        head_length=0.25,
+        quality=3,
+        use_styled_cgo=True,
+        bypass_colormap=True,
+    )
+    arrows.pair_heads = [0.62]
+    opts = arrow_options(CGOCollection([arrows], name="pmv_arrows"))
+    assert opts["head_length"] == pytest.approx(0.62)
+
+
 def test_lines_mesh_options_match_arrow_line_style():
     from pymolviz.meshes.Arrows import Arrows
     from pymolviz.util.line_style import LineStyle

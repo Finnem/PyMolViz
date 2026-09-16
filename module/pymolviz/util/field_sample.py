@@ -317,6 +317,29 @@ def _field_names(obj) -> List[str]:
     return names
 
 
+def _session_visual_pymol_names(objects, cmd=None) -> set:
+    """PyMOL object names owned by interned field visuals (not sampleable fields)."""
+    from ..wizards.catalog import is_field_visual
+    from ..wizards.builders.field_visual import pymol_name_for
+    from ..volumetric.map_load import grid_map_name
+
+    names = set()
+    for obj in objects or ():
+        if not is_field_visual(obj):
+            continue
+        label = pymol_name_for(obj, cmd)
+        if not label:
+            label = getattr(obj, "_name", None) or getattr(obj, "name", None)
+        if label:
+            names.add(str(label))
+        grid = getattr(obj, "grid_data", None)
+        if grid is not None:
+            map_name = grid_map_name(grid)
+            if map_name:
+                names.add(str(map_name))
+    return names
+
+
 def discover_fields(objects: Optional[Iterable] = None, cmd=None) -> list:
     """Session fields plus native PyMOL maps/volumes that can be sampled."""
     if objects is None:
@@ -330,6 +353,7 @@ def discover_fields(objects: Optional[Iterable] = None, cmd=None) -> list:
     out = []
     seen_ids = set()
     seen_names = set()
+    visual_pymol_names = _session_visual_pymol_names(objects, cmd=cmd)
     for obj in objects:
         if type(obj).__name__ in ("Volume", "IsoVolume", "IsoSurface", "IsoMesh"):
             continue
@@ -345,7 +369,7 @@ def discover_fields(objects: Optional[Iterable] = None, cmd=None) -> list:
             seen_names.add(name)
         out.append(field)
     for name in iter_pymol_field_names(cmd):
-        if name in seen_names:
+        if name in seen_names or name in visual_pymol_names:
             continue
         grid = grid_from_pymol_map(name, cmd=cmd)
         if grid is None:

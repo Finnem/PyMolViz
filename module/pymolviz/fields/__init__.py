@@ -12,6 +12,7 @@ from .clip import (
     default_cardinal_plane,
     normalize_cardinal_planes,
     normalize_clip_aabb,
+    opposite_cardinal_plane,
 )
 from .crystal import (
     CrystalError,
@@ -145,6 +146,7 @@ __all__ = [
     "iter_fields",
     "normalize_clip_aabb",
     "normalize_cardinal_planes",
+    "opposite_cardinal_plane",
     "normalize_isovalues",
     "normalize_transfer_stops",
     "primary_isovalue",

@@ -26,10 +26,13 @@ from ..tooltips import (
     DELETE_CLIP_TIP,
     EDIT_CLIP_TIP,
     FLIP_CLIP_TIP,
+    SHOW_PLANE_GIZMO_TIP,
     apply_required_tooltips,
     install_item_widget_tooltips,
 )
 from ..widgets.ascii_locale import apply_ascii_float_locale
+from ..widgets.spin_step import STEP_ANGSTROM, STEP_NORMAL, apply_spin_step
+from ..widgets.switch import make_switch
 
 ADD_CLIP_TIP = (
     "Insert a clipping plane through the mesh, parallel to the current view. "
@@ -84,6 +87,7 @@ class ClipModifierController:
         self._span_points = span_points
         self._on_changed = on_changed
         self.clip_planes = []
+        self._gizmos_shown = True
         self._list = None
         self._suspend = False
         self._drag_timer = None
@@ -137,11 +141,16 @@ class ClipModifierController:
                 "origin": [0.0, 0.0, 0.0],
                 "normal": [0.0, 0.0, 1.0],
                 "scale": 5.0,
+                "gizmo": True,
             }
+        visible = True
+        if isinstance(stored, dict) and "gizmo" in stored:
+            visible = bool(stored.get("gizmo", True))
         return {
             "origin": list(plane[0]["origin"]),
             "normal": list(plane[0]["normal"]),
             "scale": float(plane[0]["scale"]),
+            "gizmo": visible,
         }
 
     def active_clip_planes(self):
@@ -248,6 +257,13 @@ class ClipModifierController:
         layout = QtWidgets.QHBoxLayout(row)
         layout.setContentsMargins(6, 1, 4, 1)
         layout.setSpacing(2)
+        visible = make_switch("", compact=True)
+        visible.blockSignals(True)
+        visible.setChecked(bool(self.clip_planes[index].get("gizmo", True)))
+        visible.setEnabled(bool(self._gizmos_shown))
+        visible.blockSignals(False)
+        visible.toggled.connect(lambda checked, i=index: self.set_plane_gizmo_visible(i, checked))
+        layout.addWidget(visible)
         label = QtWidgets.QLabel("Plane %d" % (index + 1))
         layout.addWidget(label, stretch=1)
         edit = self._clip_symbol_button(QtCore, QtWidgets, "⚙")
@@ -272,6 +288,7 @@ class ClipModifierController:
         row.mousePressEvent = on_press
         apply_required_tooltips(
             [
+                (visible, SHOW_PLANE_GIZMO_TIP, "Show clip plane"),
                 (edit, EDIT_CLIP_TIP, "Edit clip plane"),
                 (flip, FLIP_CLIP_TIP, "Flip clip plane"),
                 (delete, DELETE_CLIP_TIP, "Delete clip plane"),
@@ -292,14 +309,56 @@ class ClipModifierController:
             return bool(gizmos.drag_is_live())
         return False
 
+    def gizmos_shown(self) -> bool:
+        return bool(self._gizmos_shown)
+
+    def set_gizmos_shown(self, shown: bool) -> None:
+        shown = bool(shown)
+        if shown == self._gizmos_shown:
+            return
+        self._gizmos_shown = shown
+        if not shown:
+            self._relatch_drag()
+        self.refresh_gizmos()
+
+    def set_plane_gizmo_visible(self, idx: int, visible: bool) -> None:
+        if idx < 0 or idx >= len(self.clip_planes):
+            return
+        plane = self.clip_planes[idx]
+        visible = bool(visible)
+        if bool(plane.get("gizmo", True)) == visible:
+            return
+        plane["gizmo"] = visible
+        if not visible and self.selected_index() == idx:
+            self._relatch_drag()
+        self.refresh_gizmos()
+
+    def preview_gizmos(self):
+        """Planes drawn in the viewer, with selected index remapped into that list."""
+        if not self._gizmos_shown:
+            return [], None
+        visible = []
+        selected = None
+        sel = self.selected_index()
+        for i, plane in enumerate(self.clip_planes):
+            if not plane.get("gizmo", True):
+                continue
+            if sel is not None and i == sel:
+                selected = len(visible)
+            visible.append(plane)
+        return visible, selected
+
     def refresh_gizmos(self, attach_drag=None) -> None:
         if self._preview is None or not hasattr(self._preview, "set_gizmos"):
             return
+        planes, selected = self.preview_gizmos()
         if attach_drag is None:
             attach_drag = not self.clip_drag_live()
+        if selected is None:
+            attach_drag = False
         self._preview.set_gizmos(
-            self.clip_planes,
-            selected_index=self.selected_index(),
+            planes,
+            selected_index=selected,
             span_points=self.span_points(),
             attach_drag=attach_drag,
         )
@@ -307,7 +366,8 @@ class ClipModifierController:
 
     def sync_drag_poll(self) -> None:
         QtCore, _, _ = qt_modules()
-        has = self.selected_index() is not None
+        _planes, selected = self.preview_gizmos()
+        has = selected is not None
         if not has:
             self.stop_drag_poll()
             self._commit_pending_clip_mesh()
@@ -456,7 +516,7 @@ class ClipModifierController:
             spin = QtWidgets.QDoubleSpinBox()
             spin.setDecimals(decimals)
             spin.setRange(rng[0], rng[1])
-            spin.setSingleStep(0.1 if decimals <= 3 else 0.01)
+            apply_spin_step(spin, STEP_ANGSTROM if decimals <= 3 else STEP_NORMAL)
             spin.setKeyboardTracking(True)
             spin.setValue(float(value))
             spin.setPrefix("%s " % axis)

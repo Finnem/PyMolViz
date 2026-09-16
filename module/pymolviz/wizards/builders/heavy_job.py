@@ -7,8 +7,20 @@ from typing import Optional, Tuple
 from ...util.solvent_surface import (
     confirm_heavy_surface_job,
     format_heavy_surface_message,
+    surface_job_fingerprint,
 )
 from ..pick import overlay_question, qt_modules
+
+
+def _confirm_heavy_job(job, previous_ok, previous_denied, fingerprint):
+    fp = fingerprint(job)
+    if not job.get("heavy"):
+        return "allow", fp
+    if previous_ok == fp:
+        return "allow", fp
+    if previous_denied == fp:
+        return "deny", fp
+    return "ask", fp
 
 
 def ask_heavy_job(
@@ -20,15 +32,21 @@ def ask_heavy_job(
     previous_ok=None,
     previous_denied=None,
     no_qt_default: bool = True,
+    fingerprint=surface_job_fingerprint,
 ) -> Tuple[bool, object, object]:
     """Ask once per job fingerprint; return (allowed, new_ok_fp, new_denied_fp).
 
     ``new_ok_fp`` / ``new_denied_fp`` are the fingerprint when the user accepts or
     rejects; unchanged (``None``) when allow/deny came from cache without UI.
     """
-    decision, fingerprint = confirm_heavy_surface_job(
-        job, previous_ok=previous_ok, previous_denied=previous_denied,
-    )
+    if fingerprint is surface_job_fingerprint:
+        decision, fingerprint = confirm_heavy_surface_job(
+            job, previous_ok=previous_ok, previous_denied=previous_denied,
+        )
+    else:
+        decision, fingerprint = _confirm_heavy_job(
+            job, previous_ok, previous_denied, fingerprint,
+        )
     if decision == "allow":
         return True, None, None
     if decision == "deny":

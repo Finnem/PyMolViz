@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Optional, Sequence, Tuple
 
 from ..pick import qt_modules
+from ..widgets.ascii_locale import apply_ascii_float_locale
+from ..widgets.spin_step import STEP_ANGSTROM, apply_spin_step
 from ..widgets.switch import make_switch
 from ..widgets.theme import apply_shrinking_combo
 
@@ -99,12 +101,9 @@ class CarveAroundWidget:
         self._target = QtWidgets.QComboBox(row)
         apply_shrinking_combo(self._target, QtWidgets, min_chars=12)
         self._radius = QtWidgets.QDoubleSpinBox(row)
-        self._radius.setDecimals(2)
         self._radius.setRange(0.1, 500.0)
-        self._radius.setSingleStep(0.5)
+        apply_spin_step(self._radius, STEP_ANGSTROM, decimals=2)
         self._radius.setValue(2.0)
-        from ..widgets.ascii_locale import apply_ascii_float_locale
-
         apply_ascii_float_locale(self._radius, QtCore)
         layout.addWidget(self._enable)
         layout.addWidget(self._target, stretch=1)

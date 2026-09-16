@@ -2,6 +2,7 @@
 
 from ..pick import qt_modules
 from .ascii_locale import apply_ascii_float_locale
+from .spin_step import apply_spin_step, radius_step
 
 SLIDER_MAX = 300
 SEGMENTS = (
@@ -50,10 +51,8 @@ class LogSegmentRadiusWidget:
         self._slider.setMinimum(0)
         self._slider.setMaximum(SLIDER_MAX)
         self._spin = QtWidgets.QDoubleSpinBox()
-        self._spin.setDecimals(3)
         self._spin.setMinimum(0.0)
         self._spin.setMaximum(100.0)
-        self._spin.setSingleStep(0.1)
         apply_ascii_float_locale(self._spin, QtCore)
         if suffix:
             self._spin.setSuffix(str(suffix))
@@ -62,6 +61,7 @@ class LogSegmentRadiusWidget:
         self._slider.valueChanged.connect(self._on_slider)
         self._spin.valueChanged.connect(self._on_spin)
         self.set_value(initial)
+        self._sync_step()
 
     @property
     def widget(self):
@@ -75,8 +75,12 @@ class LogSegmentRadiusWidget:
         try:
             self._spin.setValue(float(value))
             self._slider.setValue(value_to_slider(value))
+            self._sync_step()
         finally:
             self._blocking = False
+
+    def _sync_step(self):
+        apply_spin_step(self._spin, radius_step(self._spin.value()), decimals=3)
 
     def setToolTip(self, text):
         text = str(text or "")
@@ -103,6 +107,7 @@ class LogSegmentRadiusWidget:
         try:
             val = slider_to_value(pos)
             self._spin.setValue(val)
+            self._sync_step()
         finally:
             self._blocking = False
 
@@ -112,5 +117,6 @@ class LogSegmentRadiusWidget:
         self._blocking = True
         try:
             self._slider.setValue(value_to_slider(val))
+            self._sync_step()
         finally:
             self._blocking = False

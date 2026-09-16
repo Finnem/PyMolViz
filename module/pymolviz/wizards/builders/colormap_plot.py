@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Callable, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -18,6 +19,10 @@ from ...util.colormap_spec import (
     colorbar_caption,
     data_to_unit,
     field_histogram,
+    histogram_axis_to_value,
+    HISTOGRAM_VIEW_FULL,
+    HISTOGRAM_VIEW_LOG,
+    value_to_histogram_axis,
     field_title,
     field_units,
     field_values_for_stats,
@@ -42,7 +47,8 @@ from ..pick import (
     qt_widget_alive,
 )
 from ..widgets.ascii_locale import apply_ascii_float_locale
-from ..widgets.theme import INK, PRIMARY, apply_secondary_button_style, swatch_button_css
+from ..widgets.spin_step import apply_magnitude_step
+from ..widgets.theme import BORDER, DASH, INK, MUTED, PRIMARY, ROW, apply_secondary_button_style, swatch_button_css
 from .colors import ColorChoice, bind_color_pick_result, pick_rgb, rgba_to_css
 
 def _qcolor(QtGui, rgba):
@@ -179,11 +185,23 @@ def _draw_stop_circle(painter, QtGui, x, y, rgba, selected, radius=8):
     painter.drawEllipse(cx - r, cy - r, r * 2, r * 2)
 
 
-def _plot_rect(widget, pad_l=10, pad_r=10, pad_t=8, pad_b=22):
-    return widget.rect().adjusted(pad_l, pad_t, -pad_r, -pad_b)
+def _histogram_tick_values(dmin, dmax, axis, count: int = 5):
+    """Tick positions along the displayed histogram span (log or linear)."""
+    n = max(2, int(count))
+    lo, hi = float(dmin), float(dmax)
+    if hi < lo:
+        lo, hi = hi, lo
+    if str(axis) == HISTOGRAM_VIEW_LOG:
+        lo = max(lo, 1e-30)
+        hi = max(hi, lo * 1.0001)
+        logs = np.linspace(math.log10(lo), math.log10(hi), n)
+        return [float(10.0 ** v) for v in logs]
+    return tick_values(lo, hi, n)
 
 
 def _data_span(hist, limits):
+    if hist and hist.get("display_min") is not None and hist.get("display_max") is not None:
+        return clamp_range(float(hist["display_min"]), float(hist["display_max"]))
     hmin = None if not hist else hist.get("vmin")
     hmax = None if not hist else hist.get("vmax")
     if limits:
@@ -199,28 +217,54 @@ def _data_span(hist, limits):
     return clamp_range(hmin, hmax)
 
 
-def _x_for_value(rect, value, dmin, dmax) -> float:
+def _hist_axis(hist) -> str:
+    return str((hist or {}).get("axis") or HISTOGRAM_VIEW_FULL)
+
+
+def _x_for_value(rect, value, dmin, dmax, axis=HISTOGRAM_VIEW_FULL) -> float:
     if value is None:
         value = dmin
-    return unit_to_axis(data_to_unit(value, dmin, dmax), rect.left(), rect.right())
+    unit = value_to_histogram_axis(value, dmin, dmax, axis)
+    return unit_to_axis(unit, rect.left(), rect.right())
 
 
-def _value_for_x(rect, x, dmin, dmax) -> float:
-    return unit_to_data(data_to_unit(x, rect.left(), rect.right()), dmin, dmax)
+def _x_for_stop_position(rect, position, vmin, vmax, dmin, dmax, axis=HISTOGRAM_VIEW_FULL) -> float:
+    """Pixel X for a unit-interval color stop on the current min/max range."""
+    value = unit_to_data(float(position), vmin, vmax)
+    return _x_for_value(rect, value, dmin, dmax, axis)
+
+
+def _value_for_x(rect, x, dmin, dmax, axis=HISTOGRAM_VIEW_FULL) -> float:
+    unit = axis_to_unit(x, rect.left(), rect.right())
+    return histogram_axis_to_value(unit, dmin, dmax, axis)
 
 
 def _stop_neighbor_limits(index: int, stops) -> Tuple[float, float]:
-    """Unit-interval bounds for stop ``index`` (endpoints may move inward from 0/1)."""
+    """Unit-interval bounds for stop ``index``. End stops stay at 0 and 1."""
     n = len(stops or ())
     if n <= 0:
         return 0.0, 1.0
     index = max(0, min(int(index), n - 1))
-    lo = 0.0 if index <= 0 else float(stops[index - 1].position) + 0.004
-    hi = 1.0 if index >= n - 1 else float(stops[index + 1].position) - 0.004
+    if _is_end_stop(index, n):
+        pinned = 0.0 if index <= 0 else 1.0
+        return pinned, pinned
+    lo = float(stops[index - 1].position) + 0.004
+    hi = float(stops[index + 1].position) - 0.004
     if hi < lo:
         mid = 0.5 * (lo + hi)
         return mid, mid
     return lo, hi
+
+
+def _is_end_stop(index: int, stops_or_n) -> bool:
+    if isinstance(stops_or_n, int):
+        n = stops_or_n
+    else:
+        n = len(stops_or_n or ())
+    if n <= 0:
+        return False
+    index = int(index)
+    return index <= 0 or index >= n - 1
 
 
 def _clamp_stop_position(index: int, stops, position: float) -> float:
@@ -228,11 +272,10 @@ def _clamp_stop_position(index: int, stops, position: float) -> float:
     return max(lo, min(hi, float(position)))
 
 
-def _unit_position_for_histogram_x(hist, x, vmin, vmax, dmin, dmax) -> float:
-    """Map a histogram x pixel to colormap unit position along ``vmin``…``vmax``."""
-    x_lo = _x_for_value(hist, vmin, dmin, dmax)
-    x_hi = _x_for_value(hist, vmax, dmin, dmax)
-    return axis_to_unit(x, x_lo, x_hi)
+def _unit_position_for_histogram_x(hist, x, vmin, vmax, dmin, dmax, axis=HISTOGRAM_VIEW_FULL) -> float:
+    """Invert ``_x_for_stop_position`` so a dragged stop stays under the cursor."""
+    value = _value_for_x(hist, x, dmin, dmax, axis)
+    return data_to_unit(value, vmin, vmax)
 
 
 def _ask_float(parent, title, label, value, lo=-1e8, hi=1e8, decimals=4):
@@ -247,9 +290,9 @@ def _ask_float(parent, title, label, value, lo=-1e8, hi=1e8, decimals=4):
     spin = QtWidgets.QDoubleSpinBox()
     spin.setDecimals(int(decimals))
     spin.setRange(float(lo), float(hi))
-    spin.setSingleStep(0.1)
     apply_ascii_float_locale(spin, QtCore)
     spin.setValue(float(value))
+    apply_magnitude_step(spin, min_decimals=int(decimals))
     form.addRow(str(label or "Value"), spin)
     buttons = QtWidgets.QDialogButtonBox(
         QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
@@ -284,25 +327,27 @@ class _DistributionEditor:
         self._defn = definition_from_preset(DEFAULT_SURFACE_COLORMAP)
         self._selected = 0
         self._drag = None
+        self._drag_offset = (0.0, 0.0)
         self._drag_moved = False
         self._press_was_already_selected = False
         view = QtWidgets.QWidget(parent)
         view.setObjectName("pmvColormapDistribution")
-        view.setMinimumHeight(168)
-        view.setMaximumHeight(220)
+        view.setMinimumHeight(220)
+        view.setMaximumHeight(280)
         expanding = getattr(QtWidgets.QSizePolicy, "Expanding", None)
         fixed = getattr(QtWidgets.QSizePolicy, "Fixed", None)
         if expanding is not None and fixed is not None:
             view.setSizePolicy(expanding, fixed)
         hint = getattr(QtCore, "QSize", None)
         if hint is not None:
-            view.sizeHint = lambda: hint(400, 180)
-            view.minimumSizeHint = lambda: hint(240, 168)
+            view.sizeHint = lambda: hint(400, 220)
+            view.minimumSizeHint = lambda: hint(240, 200)
         view.setMouseTracking(True)
         view.setToolTip(
-            "Drag min/max handles to set the colormap range. Drag color stops "
-            "left/right (value) and up/down (opacity). Left-click empty space to add a "
-            "stop. Left-click a selected stop again to edit it; right-click a range handle "
+            "Drag the blue triangles above the plot to set min/max. Drag interior "
+            "color stops left/right (value) and up/down for opacity. End colors stay "
+            "on min/max and only move up/down. Left-click empty space to add a stop. "
+            "Left-click a selected stop again to edit it; right-click a range handle "
             "to type a value."
         )
         view.paintEvent = lambda _event: self._paint(view, QtCore, QtGui)
@@ -328,17 +373,41 @@ class _DistributionEditor:
         self.widget.update()
 
     def _plot(self, widget):
-        return widget.rect().adjusted(12, 16, -12, -8)
+        # Top pad: range-handle triangles. Bottom pad: value ticks.
+        return widget.rect().adjusted(12, 22, -12, -22)
+
+    def _layout(self, widget):
+        """Split value axis (shared x) into opacity band (top) and histogram (bottom)."""
+        plot = self._plot(widget)
+        QtCore, _, _ = qt_modules()
+        rect_cls = getattr(QtCore, "QRect", None)
+        if rect_cls is None:
+            return {"plot": plot, "bars": plot, "alpha": plot}
+        gap = 6
+        alpha_h = max(34, int(plot.height() * 0.34))
+        bars_h = max(48, plot.height() - alpha_h - gap)
+        top = int(plot.top())
+        left = int(plot.left())
+        width = int(plot.width())
+        alpha = rect_cls(left, top, width, alpha_h)
+        bars = rect_cls(left, top + alpha_h + gap, width, bars_h)
+        return {"plot": plot, "bars": bars, "alpha": alpha}
 
     def _span(self):
         return _data_span(self._hist, self._limits)
 
-    def _stop_xy(self, hist, stop, dmin, dmax):
+    def _axis(self) -> str:
+        return _hist_axis(self._hist)
+
+    def _stop_xy(self, layout, stop, dmin, dmax):
+        plot = layout["plot"]
+        alpha = layout["alpha"]
         vmin, vmax = self._limits
-        value = unit_to_data(stop.position, vmin, vmax)
-        x = _x_for_value(hist, value, dmin, dmax)
-        inset = 10
-        y = alpha_to_screen_y(stop.rgba[3], hist.top() + inset, hist.bottom() - inset)
+        x = _x_for_stop_position(
+            plot, stop.position, vmin, vmax, dmin, dmax, self._axis(),
+        )
+        inset = 6
+        y = alpha_to_screen_y(stop.rgba[3], alpha.top() + inset, alpha.bottom() - inset)
         return x, y
 
     def _paint(self, widget, QtCore, QtGui):
@@ -350,86 +419,142 @@ class _DistributionEditor:
             if aa is not None:
                 painter.setRenderHint(aa, True)
             painter.fillRect(widget.rect(), QtGui.QColor(*ROW))
-            hist = self._plot(widget)
+            layout = self._layout(widget)
+            plot = layout["plot"]
             dmin, dmax = self._span()
             vmin, vmax = self._limits
-            self._paint_histogram(painter, QtCore, QtGui, hist, dmin, dmax, vmin, vmax)
+            self._paint_histogram(painter, QtCore, QtGui, layout, dmin, dmax, vmin, vmax)
             try:
                 painter.setPen(QtGui.QPen(QtGui.QColor(*BORDER), 1))
                 painter.setBrush(QtGui.QColor(0, 0, 0, 0))
-                painter.drawRect(hist.adjusted(0, 0, -1, -1))
+                painter.drawRect(plot.adjusted(0, 0, -1, -1))
+                painter.setPen(QtGui.QPen(QtGui.QColor(*DASH), 1, getattr(QtCore.Qt, "DotLine", 3)))
+                bars = layout["bars"]
+                painter.drawLine(int(bars.left()), int(bars.top()) - 3, int(bars.right()), int(bars.top()) - 3)
             except Exception:
                 pass
-            self._paint_handles(painter, QtCore, QtGui, hist, dmin, dmax, vmin, vmax)
+            self._paint_axis_ticks(painter, QtCore, QtGui, layout, dmin, dmax)
+            self._paint_handles(painter, QtCore, QtGui, layout, dmin, dmax, vmin, vmax)
         finally:
             _end_widget_paint(painter)
 
-    def _paint_histogram(self, painter, QtCore, QtGui, hist, dmin, dmax, vmin, vmax):
+    def _paint_histogram(self, painter, QtCore, QtGui, layout, dmin, dmax, vmin, vmax):
         counts = list((self._hist or {}).get("counts") or ())
         edges = list((self._hist or {}).get("edges") or ())
+        bars = layout["bars"]
+        plot = layout["plot"]
         if not counts:
             try:
                 painter.setPen(QtGui.QColor(*MUTED))
                 painter.drawText(
-                    hist.adjusted(8, 8, -8, -8),
+                    bars.adjusted(8, 8, -8, -8),
                     getattr(QtCore.Qt, "AlignTop", 0x20),
                     "No field values",
                 )
             except Exception:
                 pass
             return
-        try:
-            peak = max(counts) or 1
-            bar_w = max(1.0, hist.width() / float(len(counts)))
-            painter.setPen(getattr(QtCore.Qt, "NoPen", 0))
-            fallback = QtGui.QColor(*PRIMARY)
-            fallback.setAlpha(140)
-            muted = QtGui.QColor(*MUTED)
-            muted.setAlpha(90)
-            for i, count in enumerate(counts):
-                bh = int(round((count / float(peak)) * hist.height()))
-                x = hist.left() + i * bar_w
-                fill = fallback
-                if len(edges) >= i + 2:
-                    mid = 0.5 * (float(edges[i]) + float(edges[i + 1]))
-                    if mid < vmin or mid > vmax:
-                        fill = muted
-                    else:
-                        try:
-                            rgba = sample_unit(self._defn, data_to_unit(mid, vmin, vmax))
-                            fill = _qcolor(QtGui, rgba)
-                            fill.setAlpha(160)
-                        except Exception:
-                            fill = fallback
-                painter.setBrush(fill)
-                painter.drawRect(int(x), hist.bottom() - bh, max(1, int(bar_w) - 1), bh)
-        except Exception:
-            return
+        axis = self._axis()
+        dmin, dmax = self._span()
+        bar_h = max(8, int(bars.height()))
+        peak = math.sqrt(float(max(max(counts), 1)))
+        fallback = QtGui.QColor(*PRIMARY)
+        fallback.setAlpha(180)
+        muted = QtGui.QColor(*MUTED)
+        muted.setAlpha(110)
+        no_pen = getattr(getattr(QtCore, "Qt", None), "NoPen", None)
+        if no_pen is not None:
+            painter.setPen(no_pen)
+        else:
+            painter.setPen(QtGui.QPen(fallback, 0))
+        tops = []
+        for i, count in enumerate(counts):
+            if len(edges) < i + 2:
+                break
+            x0 = _x_for_value(plot, float(edges[i]), dmin, dmax, axis)
+            x1 = _x_for_value(plot, float(edges[i + 1]), dmin, dmax, axis)
+            left = int(round(min(x0, x1)))
+            right = int(round(max(x0, x1)))
+            w = max(2, right - left)
+            bh = int(round((math.sqrt(float(max(count, 0))) / peak) * bar_h))
+            if count > 0:
+                bh = max(3, bh)
+            e0, e1 = float(edges[i]), float(edges[i + 1])
+            if axis == "log" and e0 > 0.0 and e1 > 0.0:
+                mid = math.sqrt(e0 * e1)
+            else:
+                mid = 0.5 * (e0 + e1)
+            fill = fallback
+            if mid < vmin or mid > vmax:
+                fill = muted
+            else:
+                try:
+                    rgba = sample_unit(self._defn, data_to_unit(mid, vmin, vmax))
+                    fill = _qcolor(QtGui, rgba)
+                    fill.setAlpha(200)
+                except Exception:
+                    fill = fallback
+            painter.setBrush(fill)
+            painter.drawRect(left, int(bars.bottom()) - bh, w, bh)
+            if count > 0:
+                tops.append((left + w * 0.5, int(bars.bottom()) - bh))
+        if len(tops) >= 2:
+            painter.setPen(QtGui.QPen(QtGui.QColor(*INK), 1.25))
+            for (x0, y0), (x1, y1) in zip(tops, tops[1:]):
+                painter.drawLine(int(x0), int(y0), int(x1), int(y1))
 
-    def _paint_handles(self, painter, QtCore, QtGui, hist, dmin, dmax, vmin, vmax):
+    def _paint_axis_ticks(self, painter, QtCore, QtGui, layout, dmin, dmax):
+        plot = layout["plot"]
+        axis = self._axis()
+        ticks = _histogram_tick_values(dmin, dmax, axis, 5)
+        if not ticks:
+            return
+        labels = [format_number(v) for v in ticks]
+        painter.setPen(QtGui.QColor(*INK))
+        align_top = getattr(QtCore.Qt, "AlignTop", 0x20)
+        align_left = getattr(QtCore.Qt, "AlignLeft", 0x1) | align_top
+        align_right = getattr(QtCore.Qt, "AlignRight", 0x2) | align_top
+        align_center = getattr(QtCore.Qt, "AlignHCenter", 0x4) | align_top
+        last = max(len(labels) - 1, 1)
+        y0 = int(plot.bottom())
+        for i, (value, text) in enumerate(zip(ticks, labels)):
+            x = int(round(_x_for_value(plot, value, dmin, dmax, axis)))
+            painter.drawLine(x, y0, x, y0 + 4)
+            if i == 0:
+                painter.drawText(x, y0 + 4, 80, 16, align_left, text)
+            elif i == last:
+                painter.drawText(x - 80, y0 + 4, 80, 16, align_right, text)
+            else:
+                painter.drawText(x - 40, y0 + 4, 80, 16, align_center, text)
+
+    def _paint_handles(self, painter, QtCore, QtGui, layout, dmin, dmax, vmin, vmax):
         dash = getattr(QtCore.Qt, "DashLine", 2)
+        axis = self._axis()
+        plot = layout["plot"]
+        bars = layout["bars"]
+        alpha = layout["alpha"]
         try:
             painter.setPen(QtGui.QPen(QtGui.QColor(*INK), 1.5))
             prev = None
             for stop in self._defn.stops:
-                x, y = self._stop_xy(hist, stop, dmin, dmax)
+                x, y = self._stop_xy(layout, stop, dmin, dmax)
                 if prev is not None:
                     painter.drawLine(int(prev[0]), int(prev[1]), int(x), int(y))
                 prev = (x, y)
             for i, stop in enumerate(self._defn.stops):
-                x, y = self._stop_xy(hist, stop, dmin, dmax)
+                x, y = self._stop_xy(layout, stop, dmin, dmax)
                 painter.setPen(QtGui.QPen(QtGui.QColor(*MUTED), 1, dash))
-                painter.drawLine(int(x), hist.top(), int(x), hist.bottom())
+                painter.drawLine(int(x), int(alpha.top()), int(x), int(bars.bottom()))
                 _draw_stop_circle(painter, QtGui, x, y, stop.rgba, i == self._selected, self._STOP_R)
             for which, value in (("vmin", vmin), ("vmax", vmax)):
-                x = _x_for_value(hist, value, dmin, dmax)
+                x = _x_for_value(plot, value, dmin, dmax, axis)
                 painter.setPen(QtGui.QPen(QtGui.QColor(*PRIMARY), 2))
-                painter.drawLine(int(x), hist.top(), int(x), hist.bottom())
-                self._draw_range_handle(painter, QtCore, QtGui, x, hist.top() - 2, which == "vmin")
+                painter.drawLine(int(x), int(plot.top()), int(x), int(plot.bottom()))
+                self._draw_range_handle(painter, QtCore, QtGui, x, plot.top(), which == "vmin")
             if self._center is not None:
                 painter.setPen(QtGui.QPen(QtGui.QColor(*MUTED), 1, dash))
-                cx = _x_for_value(hist, float(self._center), dmin, dmax)
-                painter.drawLine(int(cx), hist.top(), int(cx), hist.bottom())
+                cx = _x_for_value(plot, float(self._center), dmin, dmax, axis)
+                painter.drawLine(int(cx), int(plot.top()), int(cx), int(plot.bottom()))
         except Exception:
             pass
 
@@ -441,45 +566,55 @@ class _DistributionEditor:
         painter.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255), 1))
         if poly_cls is not None and point is not None:
             if left_side:
-                pts = [point(int(x), y), point(int(x - 9), y - 12), point(int(x + 3), y - 12)]
+                pts = [point(int(x), y), point(int(x - 11), y - 16), point(int(x + 5), y - 16)]
             else:
-                pts = [point(int(x), y), point(int(x - 3), y - 12), point(int(x + 9), y - 12)]
+                pts = [point(int(x), y), point(int(x - 5), y - 16), point(int(x + 11), y - 16)]
             painter.drawPolygon(poly_cls(pts))
         else:
-            painter.drawRect(int(x) - 5, y - 12, 10, 12)
+            painter.drawRect(int(x) - 7, y - 16, 14, 16)
 
     def _hit(self, widget, x, y):
-        hist = self._plot(widget)
+        layout = self._layout(widget)
+        plot = layout["plot"]
+        bars = layout["bars"]
+        alpha = layout["alpha"]
         dmin, dmax = self._span()
+        axis = self._axis()
         vmin, vmax = self._limits
+        handle_top = int(plot.top()) - 18
+        handle_bottom = int(plot.top()) + 2
+        if handle_top <= y <= handle_bottom:
+            best = None
+            best_dist = 1e9
+            for which, value in (("vmin", vmin), ("vmax", vmax)):
+                hx = _x_for_value(plot, value, dmin, dmax, axis)
+                dist = abs(x - hx)
+                if dist <= 16 and dist < best_dist:
+                    best_dist = dist
+                    best = ("range", which)
+            if best is not None:
+                return best
         stop_hit = None
         stop_dist = 1e9
         radius = self._STOP_R + 5
         for i, stop in enumerate(self._defn.stops):
-            sx, sy = self._stop_xy(hist, stop, dmin, dmax)
+            sx, sy = self._stop_xy(layout, stop, dmin, dmax)
             dist = ((x - sx) ** 2 + (y - sy) ** 2) ** 0.5
             if dist <= radius and dist < stop_dist:
                 stop_dist = dist
                 stop_hit = ("stop", i)
         if stop_hit is not None:
             return stop_hit
-        # The endpoint stops sit on the vmin/vmax lines. Prefer those over
-        # "add a stop" when the click is on a stop's value line.
         line_hit = None
         line_dist = 1e9
         for i, stop in enumerate(self._defn.stops):
-            sx, _sy = self._stop_xy(hist, stop, dmin, dmax)
+            sx, _sy = self._stop_xy(layout, stop, dmin, dmax)
             dist = abs(x - sx)
-            if dist <= radius and hist.top() <= y <= hist.bottom() and dist < line_dist:
+            if dist <= radius and alpha.top() <= y <= bars.bottom() and dist < line_dist:
                 line_dist = dist
                 line_hit = ("stop", i)
         if line_hit is not None:
             return line_hit
-        # Range triangles live *above* the plot so they do not steal endpoint stops.
-        for which, value in (("vmin", vmin), ("vmax", vmax)):
-            hx = _x_for_value(hist, value, dmin, dmax)
-            if abs(x - hx) <= 12 and (hist.top() - 16) <= y <= hist.top() + 2:
-                return ("range", which)
         return None
 
     def _press(self, widget, event, QtCore):
@@ -500,6 +635,7 @@ class _DistributionEditor:
         else:
             self._press_was_already_selected = False
         self._drag = hit
+        self._drag_offset = (0.0, 0.0)
         grab = getattr(widget, "grabMouse", None)
         if callable(grab):
             try:
@@ -508,6 +644,10 @@ class _DistributionEditor:
                 pass
         if kind == "stop":
             self._selected = int(payload)
+            layout = self._layout(widget)
+            dmin, dmax = self._span()
+            sx, sy = self._stop_xy(layout, self._defn.stops[int(payload)], dmin, dmax)
+            self._drag_offset = (x - sx, y - sy)
             if self._on_select is not None:
                 self._on_select(int(payload))
         widget.update()
@@ -519,6 +659,7 @@ class _DistributionEditor:
         moved = self._drag_moved
         already = self._press_was_already_selected
         self._drag = None
+        self._drag_offset = (0.0, 0.0)
         self._drag_moved = False
         release = getattr(widget, "releaseMouse", None)
         if callable(release):
@@ -540,15 +681,22 @@ class _DistributionEditor:
     def _add_at(self, widget, x, y):
         if self._on_add is None:
             return
-        hist = self._plot(widget)
-        if x < hist.left() or x > hist.right() or y < hist.top() or y > hist.bottom():
+        layout = self._layout(widget)
+        plot = layout["plot"]
+        alpha = layout["alpha"]
+        bars = layout["bars"]
+        if x < plot.left() or x > plot.right() or y < alpha.top() or y > bars.bottom():
             return
         dmin, dmax = self._span()
+        axis = self._axis()
         vmin, vmax = self._limits
-        pos = data_to_unit(_value_for_x(hist, x, dmin, dmax), vmin, vmax)
-        inset = 10
-        alpha = screen_y_to_alpha(y, hist.top() + inset, hist.bottom() - inset)
-        self._on_add(pos, alpha)
+        pos = data_to_unit(_value_for_x(plot, x, dmin, dmax, axis), vmin, vmax)
+        inset = 6
+        if y <= alpha.bottom():
+            alpha_val = screen_y_to_alpha(y, alpha.top() + inset, alpha.bottom() - inset)
+        else:
+            alpha_val = 1.0
+        self._on_add(pos, alpha_val)
 
     def _move(self, widget, event):
         if self._drag is None:
@@ -556,10 +704,13 @@ class _DistributionEditor:
         self._drag_moved = True
         kind, payload = self._drag
         x, y = _event_xy(event)
-        hist = self._plot(widget)
+        layout = self._layout(widget)
+        plot = layout["plot"]
+        alpha = layout["alpha"]
         dmin, dmax = self._span()
+        axis = self._axis()
         if kind == "range":
-            value = _value_for_x(hist, x, dmin, dmax)
+            value = _value_for_x(plot, x, dmin, dmax, axis)
             vmin, vmax = self._limits
             if payload == "vmin":
                 vmin, vmax = clamp_range(value, vmax)
@@ -570,10 +721,17 @@ class _DistributionEditor:
             return
         index = int(payload)
         stops = self._defn.stops
-        pos = _unit_position_for_histogram_x(hist, x, self._limits[0], self._limits[1], dmin, dmax)
-        pos = _clamp_stop_position(index, stops, pos)
-        inset = 10
-        alpha = screen_y_to_alpha(y, hist.top() + inset, hist.bottom() - inset)
+        vmin, vmax = self._limits
+        ox, oy = self._drag_offset
+        x = x - ox
+        y = y - oy
+        if _is_end_stop(index, stops):
+            pos = 0.0 if index <= 0 else 1.0
+        else:
+            pos = _unit_position_for_histogram_x(plot, x, vmin, vmax, dmin, dmax, axis)
+            pos = _clamp_stop_position(index, stops, pos)
+        inset = 6
+        alpha = screen_y_to_alpha(y, alpha.top() + inset, alpha.bottom() - inset)
         if self._on_stop is not None:
             self._on_stop(index, pos, alpha)
 
@@ -623,6 +781,7 @@ class _ColorbarPreview:
         self._settings = ColorbarExportSettings()
         self._selected = 0
         self._drag = None
+        self._drag_offset = (0.0, 0.0)
         self._drag_moved = False
         self._press_was_already_selected = False
         bar = QtWidgets.QWidget(parent)
@@ -645,7 +804,8 @@ class _ColorbarPreview:
             if expanding is not None and preferred is not None:
                 bar.setSizePolicy(expanding, preferred)
         bar.setToolTip(
-            "Colormap preview with tick values. Left-click a selected stop again to edit it."
+            "Colormap preview with tick values. Drag interior stops along the bar; "
+            "end colors stay at min/max. Left-click a selected stop again to edit it."
         )
         bar.paintEvent = lambda _event: self._paint(bar, QtCore, QtGui)
         bar.setMouseTracking(True)
@@ -800,6 +960,11 @@ class _ColorbarPreview:
                 self._drag_moved = False
                 self._press_was_already_selected = was_selected
                 self._drag = ("stop", int(index))
+                bar = self._bar_rect(widget)
+                sx = unit_to_axis(
+                    self._defn.stops[int(index)].position, bar.left(), bar.right(),
+                )
+                self._drag_offset = (x - sx, 0.0)
                 grab = getattr(widget, "grabMouse", None)
                 if callable(grab):
                     try:
@@ -825,6 +990,7 @@ class _ColorbarPreview:
         moved = self._drag_moved
         already = self._press_was_already_selected
         self._drag = None
+        self._drag_offset = (0.0, 0.0)
         self._drag_moved = False
         release = getattr(widget, "releaseMouse", None)
         if callable(release):
@@ -849,11 +1015,14 @@ class _ColorbarPreview:
         kind, payload = self._drag
         if kind != "stop":
             return
-        self._drag_moved = True
         index = int(payload)
-        x, _y = _event_xy(event)
-        bar = self._bar_rect(widget)
         stops = getattr(self._defn, "stops", ()) or ()
+        if _is_end_stop(index, stops):
+            return
+        self._drag_moved = True
+        x, _y = _event_xy(event)
+        x = x - self._drag_offset[0]
+        bar = self._bar_rect(widget)
         pos = axis_to_unit(x, bar.left(), bar.right())
         pos = _clamp_stop_position(index, stops, pos)
         stop = stops[index]

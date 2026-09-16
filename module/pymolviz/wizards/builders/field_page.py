@@ -9,6 +9,7 @@ from ...fields.clip import (
     aabb_to_cardinal_planes,
     cardinal_planes_to_aabb,
     default_cardinal_plane,
+    opposite_cardinal_plane,
     retarget_clip_aabb,
 )
 from ...fields.domain import field_display_aabb
@@ -18,6 +19,7 @@ from .appearance_section import AppearanceSection
 from .base import BuilderPage
 from ..pick import qt_modules, qt_widget_alive
 from ..widgets.ascii_locale import apply_ascii_float_locale
+from ..widgets.spin_step import STEP_TRANSPARENCY, apply_magnitude_step, apply_spin_step, bind_magnitude_step
 from ..widgets.breadcrumb import (
     CRUMB_ISOMESH,
     CRUMB_ISOSURFACE,
@@ -129,6 +131,8 @@ class FieldVisualBuilderPage(BuilderPage):
         self._preview = FieldVisualPreview(self.cmd)
         self._heavy_ok = None
         self._heavy_denied = None
+        self._convert_heavy_ok = None
+        self._convert_heavy_denied = None
 
     def cleanup_preview(self):
         if self._clip_gizmo is not None:
@@ -343,18 +347,45 @@ class FieldVisualBuilderPage(BuilderPage):
         grid = resolve_field_grid(self._selected_field())
         field = self._selected_field()
         geom_id = getattr(field, "id", None) if field is not None else None
-        if self._level is not None and grid is not None and self._editing_id is None:
-            if geom_id != self._level_geom_id:
+        if geom_id != getattr(self, "_level_geom_id", None):
+            if self._level is not None and grid is not None and self._editing_id is None:
                 self._level.setValue(default_iso_level(grid))
+            self._level_field_span = self._grid_value_span(grid)
+            if self._level is not None:
+                apply_magnitude_step(
+                    self._level, min_decimals=4, extras=self._level_step_extras,
+                )
         self._level_geom_id = geom_id
         self._paint_color_button()
         if self._cardinal_clip is not None:
             self._cardinal_clip.sync_widgets()
 
+    def _grid_value_span(self, grid):
+        values = getattr(grid, "values", None) if grid is not None else None
+        if values is None:
+            return ()
+        import numpy as np
+
+        arr = np.asarray(values, dtype=float).reshape(-1)
+        if arr.size == 0:
+            return ()
+        finite = arr[np.isfinite(arr)]
+        if finite.size == 0:
+            return ()
+        return (float(np.min(finite)), float(np.max(finite)))
+
+    def _level_step_extras(self):
+        return getattr(self, "_level_field_span", ()) or ()
+
     def _seed_clip_plane(self, axis: int):
         field = self._selected_field()
         grid = resolve_field_grid(field)
         return default_cardinal_plane(int(axis), self._field_domain_aabb(field, grid))
+
+    def _seed_opposite_clip_plane(self, axis: int, existing: dict):
+        field = self._selected_field()
+        grid = resolve_field_grid(field)
+        return opposite_cardinal_plane(existing, self._field_domain_aabb(field, grid))
 
     def _any_clip_enabled(self) -> bool:
         if self._cardinal_clip is None:
@@ -408,6 +439,12 @@ class FieldVisualBuilderPage(BuilderPage):
             return
         self._clip_gizmo.refresh_gizmos()
 
+    def _clip_axis_gizmo_visible(self, axis: int) -> bool:
+        clip = getattr(self, "_cardinal_clip", None)
+        if clip is None:
+            return True
+        return clip.axis_gizmo_visible(int(axis))
+
     def _paint_color_button(self):
         btn = self._color_btn
         if btn is None:
@@ -455,9 +492,9 @@ class FieldVisualBuilderPage(BuilderPage):
             self._clip_gizmo.clear()
         self._sync_clip_gizmos()
 
-    def _on_clip_axis_focus(self, axis: int) -> None:
+    def _on_clip_axis_focus(self, axis: int, hi=None) -> None:
         if self._clip_gizmo is not None and self._any_clip_enabled():
-            self._clip_gizmo.select_axis(int(axis))
+            self._clip_gizmo.select_axis(int(axis), hi=hi)
 
     def _on_clip_axis_flipped(self, axis: int) -> None:
         if self._clip_gizmo is not None:
@@ -703,6 +740,30 @@ class FieldVisualBuilderPage(BuilderPage):
         visual = make_field_visual(**kwargs)
         export_objects(self._page, visual, name, title="Export field visual")
 
+    def _confirm_heavy_convert(self, visual) -> bool:
+        from ...fields.convert import (
+            estimate_isosurface_convert_job,
+            explicit_convert_job_fingerprint,
+            format_explicit_convert_message,
+        )
+        from .heavy_job import ask_heavy_job
+
+        job = estimate_isosurface_convert_job(visual)
+        allowed, ok_fp, denied_fp = ask_heavy_job(
+            self._page,
+            job,
+            title="Large explicit surface",
+            message=format_explicit_convert_message(job),
+            previous_ok=self._convert_heavy_ok,
+            previous_denied=self._convert_heavy_denied,
+            fingerprint=explicit_convert_job_fingerprint,
+        )
+        if ok_fp is not None:
+            self._convert_heavy_ok = ok_fp
+        if denied_fp is not None:
+            self._convert_heavy_denied = denied_fp
+        return allowed
+
     def _convert(self):
         if self._editing_id is None:
             return
@@ -713,6 +774,8 @@ class FieldVisualBuilderPage(BuilderPage):
         except Exception:
             obj = None
         if obj is None:
+            return
+        if not self._confirm_heavy_convert(obj):
             return
         convert_isosurface_visual(self.cmd, obj, name=self._typed_name() + "_surface")
         if self._on_create is not None:
@@ -744,6 +807,7 @@ class FieldVisualBuilderPage(BuilderPage):
                 self._selected_field(), resolve_field_grid(self._selected_field()),
             ),
             on_changed=self._schedule_preview,
+            gizmos_visible=self._clip_axis_gizmo_visible,
         )
 
         bind = make_section("Geometry", form=True)
@@ -785,9 +849,8 @@ class FieldVisualBuilderPage(BuilderPage):
         rest_form = QtWidgets.QFormLayout(self._iso_rest_widget)
         rest_form.setContentsMargins(0, 0, 0, 0)
         self._transparency = QtWidgets.QDoubleSpinBox()
-        self._transparency.setDecimals(2)
         self._transparency.setRange(0.0, 1.0)
-        self._transparency.setSingleStep(0.05)
+        apply_spin_step(self._transparency, STEP_TRANSPARENCY, decimals=2)
         apply_ascii_float_locale(self._transparency, QtCore)
         self._transparency.valueChanged.connect(lambda *_: self._schedule_preview())
         self._color_btn = QtWidgets.QPushButton("Color")
@@ -803,10 +866,9 @@ class FieldVisualBuilderPage(BuilderPage):
         iso_form = QtWidgets.QFormLayout()
         iso_form.setContentsMargins(0, 0, 0, 0)
         self._level = QtWidgets.QDoubleSpinBox()
-        self._level.setDecimals(4)
         self._level.setRange(-1e6, 1e6)
-        self._level.setSingleStep(0.1)
         apply_ascii_float_locale(self._level, QtCore)
+        bind_magnitude_step(self._level, min_decimals=4, extras=self._level_step_extras)
         self._level.valueChanged.connect(lambda *_: self._schedule_preview())
         self._side = QtWidgets.QComboBox()
         self._side.addItem("Positive", "positive")
@@ -834,10 +896,12 @@ class FieldVisualBuilderPage(BuilderPage):
             page,
             on_changed=self._schedule_preview,
             seed_plane=self._seed_clip_plane,
+            seed_opposite=self._seed_opposite_clip_plane,
             on_axis_enabled=self._on_clip_axis_enabled,
             on_axis_disabled=self._on_clip_axis_disabled,
             on_axis_focus=self._on_clip_axis_focus,
             on_axis_flip=self._on_clip_axis_flipped,
+            on_gizmo_changed=self._sync_clip_gizmos,
         )
         clip.layout.addRow("", self._cardinal_clip.widget)
         if clip.header is not None:

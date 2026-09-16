@@ -59,6 +59,12 @@ def persist_field_visual(cmd, visual) -> None:
             visual.name = name
         except Exception:
             visual._name = name
+    runtime = get_runtime(cmd) if cmd is not None else None
+    if vid and existing is not None and existing is not visual and runtime is not None:
+        try:
+            runtime.remove(existing)
+        except Exception:
+            pass
     with pause_presence_sync():
         if cmd is not None and name:
             try:
@@ -73,5 +79,7 @@ def persist_field_visual(cmd, visual) -> None:
                 visual.is_loaded = False
         session_add(visual)
         if cmd is not None:
-            get_runtime(cmd).materialize(visual)
+            if runtime is None:
+                runtime = get_runtime(cmd)
+            runtime.materialize(visual)
             set_visual_enabled(cmd, visual, True)

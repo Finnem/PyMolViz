@@ -26,7 +26,8 @@ DEFAULT_PREVIEW_MODE = PREVIEW_SIMPLE
 SIMPLE_FIELD_SPACING_SCALE = 2.0
 SIMPLE_GRID_STRIDE = 2
 SIMPLE_MESH_QUALITY = 1
-SIMPLE_ARROW_QUALITY = 0
+# Quality 0 is 2D lines only (no mesh heads); simple preview must still resemble Done.
+SIMPLE_ARROW_QUALITY = 1
 
 
 def normalize_preview_mode(mode, default=DEFAULT_PREVIEW_MODE) -> str:

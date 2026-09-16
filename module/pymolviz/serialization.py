@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import contextvars
 import hashlib
@@ -20,6 +21,8 @@ from .points import (
 
 SCHEMA_VERSION = 1
 ARRAY_REF_KEY = "$npy"
+INLINE_ARRAY_KIND = "inline"
+INLINE_ARRAY_MIN = 4096
 
 _ARRAY_STORE: contextvars.ContextVar[Optional["ArrayStore"]] = contextvars.ContextVar(
     "pmv_array_store", default=None,
@@ -66,17 +69,46 @@ class ArrayStore:
 
 
 def persist_numeric_array(values, *, dtype=None) -> Any:
-    """JSON list, or an array ref when a native ``ArrayStore`` is active."""
+    """JSON list, array-store ref, or compact inline bytes for large bricks."""
     arr = np.asarray(values) if dtype is None else np.asarray(values, dtype=dtype)
     store = _ARRAY_STORE.get()
     if store is not None:
         return store.put(arr)
-    flat = np.asarray(arr, dtype=float).reshape(-1)
+    packed = np.ascontiguousarray(arr)
+    if packed.size >= INLINE_ARRAY_MIN:
+        return _encode_inline_array(packed)
+    flat = np.asarray(packed, dtype=float).reshape(-1)
     return [float(v) for v in flat]
+
+
+def _encode_inline_array(arr: np.ndarray) -> dict:
+    packed = np.ascontiguousarray(arr)
+    if np.issubdtype(packed.dtype, np.floating) and packed.dtype != np.float32:
+        packed = np.ascontiguousarray(packed, dtype=np.float32)
+    return {
+        ARRAY_REF_KEY: INLINE_ARRAY_KIND,
+        "encoding": "b64",
+        "dtype": str(packed.dtype),
+        "shape": [int(n) for n in packed.shape],
+        "data": base64.b64encode(packed.tobytes()).decode("ascii"),
+    }
+
+
+def _decode_inline_array(value: dict) -> np.ndarray:
+    raw = base64.b64decode(value.get("data") or b"")
+    dtype = np.dtype(str(value.get("dtype") or "float64"))
+    arr = np.frombuffer(raw, dtype=dtype)
+    shape = value.get("shape")
+    if shape:
+        arr = arr.reshape([int(n) for n in shape])
+    return np.array(arr, copy=True)
 
 
 def resolve_numeric_array(value, *, dtype=float) -> np.ndarray:
     if isinstance(value, dict) and value.get(ARRAY_REF_KEY):
+        if value.get(ARRAY_REF_KEY) == INLINE_ARRAY_KIND or value.get("encoding") == "b64":
+            arr = _decode_inline_array(value)
+            return np.asarray(arr, dtype=dtype)
         store = _ARRAY_STORE.get()
         if store is None:
             raise SerializationError("Native array ref with no array store")
@@ -105,10 +137,15 @@ def as_plain(value: Any) -> Any:
     if isinstance(value, (float, np.floating)):
         return float(value)
     if isinstance(value, np.ndarray):
-        return as_plain(value.tolist())
+        return persist_numeric_array(value)
     if isinstance(value, dict):
         return {str(k): as_plain(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
+        n = len(value)
+        if n >= INLINE_ARRAY_MIN and n > 0:
+            first = value[0]
+            if isinstance(first, (int, float, bool, np.integer, np.floating, np.bool_)):
+                return persist_numeric_array(value)
         return [as_plain(v) for v in value]
     raise SerializationError("Cannot persist %s (%r)" % (type(value).__name__, value))
 

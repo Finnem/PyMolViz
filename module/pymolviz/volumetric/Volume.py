@@ -6,6 +6,7 @@ from ..ColorMap import ColorMap
 from ..util.colors import _convert_string_color
 
 VOLUME_RAMP_SAMPLES = 33
+_BIN_COUNT_CHUNK = 262144
 
 
 def _expand_range_to_volume_clims(min_val, max_val, samples=VOLUME_RAMP_SAMPLES):
@@ -18,6 +19,31 @@ def _expand_range_to_volume_clims(min_val, max_val, samples=VOLUME_RAMP_SAMPLES)
     edges = np.linspace(lo, hi, max(2, int(samples)))
     paired = np.vstack([edges[:-1], edges[1:]]).T.flatten()
     return np.hstack([paired, paired[-1]])
+
+
+def _pair_bin_counts(values, bins):
+    """Count values in each ``(lo, hi]`` pair without an ``(N, n_bins)`` broadcast."""
+    lo = np.asarray(bins[:, 0], dtype=float)
+    hi = np.asarray(bins[:, 1], dtype=float)
+    n_bins = int(lo.size)
+    counts = np.zeros(n_bins, dtype=np.int64)
+    vals = np.asarray(values, dtype=float).reshape(-1)
+    finite = vals[np.isfinite(vals)]
+    if finite.size == 0 or n_bins == 0:
+        return counts
+    gap = 1e-9 * (1.0 + np.abs(hi[:-1]))
+    contiguous = n_bins == 1 or np.all(np.abs(lo[1:] - hi[:-1]) <= gap)
+    if contiguous:
+        edges = np.concatenate([lo, hi[-1:]])
+        idx = np.searchsorted(edges, finite, side="left") - 1
+        valid = (idx >= 0) & (idx < n_bins)
+        np.add.at(counts, idx[valid], 1)
+        return counts
+    for start in range(0, finite.size, _BIN_COUNT_CHUNK):
+        sl = finite[start:start + _BIN_COUNT_CHUNK]
+        for i in range(n_bins):
+            counts[i] += np.count_nonzero((sl > lo[i]) & (sl <= hi[i]))
+    return counts
 
 
 def _rgb_from_colormap(colormap, value):
@@ -101,7 +127,7 @@ class Volume(Displayable):
         if alphas is None:
             used_length = len(self.clims)-(len(self.clims) % 2) # if length is uneven, we forgo the last value for binning
             bins = np.reshape(self.clims[:used_length], (-1, 2))
-            densities = np.sum((bins[:,0] < self.grid_data.values[:, None]) & (bins[:,1] >= self.grid_data.values[:, None]), axis = 0)
+            densities = _pair_bin_counts(self.grid_data.values, bins).astype(float)
             if np.sum(densities) == 0: densities = np.ones(len(densities))
             densities = densities / np.sum(densities)
             densities = np.clip(densities, None, 0.9)

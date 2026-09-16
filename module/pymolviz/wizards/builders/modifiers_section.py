@@ -5,7 +5,9 @@ from __future__ import annotations
 from typing import Callable, Optional, Sequence, Tuple
 
 from ..pick import qt_modules
+from ..tooltips import SHOW_CLIP_VISUALS_TIP
 from ..widgets.section import make_section
+from ..widgets.switch import make_switch
 from .clip_modifier import ADD_CLIP_TIP, ClipModifierController
 
 
@@ -38,6 +40,7 @@ class ModifiersSection:
         self._header = None
         self._body = None
         self._add_btn = None
+        self._show_gizmos = None
         self._widget = None
         self._section = None
         self._build(parent)
@@ -57,6 +60,7 @@ class ModifiersSection:
     def tooltips(self) -> Sequence[Tuple[object, str]]:
         return (
             (self._add_btn, ADD_CLIP_TIP, "Add clip plane"),
+            (self._show_gizmos, SHOW_CLIP_VISUALS_TIP, "Show clip visuals"),
             (self._header, "Optional operations applied after geometry is built.", "Modifiers"),
         )
 
@@ -86,6 +90,10 @@ class ModifiersSection:
         self._add_btn = QtWidgets.QPushButton("Add clip plane")
         self._add_btn.clicked.connect(self._controller.add_plane)
         section.layout.addWidget(self._add_btn)
+        self._show_gizmos = make_switch("Show clip visuals")
+        self._show_gizmos.setChecked(self._controller.gizmos_shown())
+        self._show_gizmos.toggled.connect(self._controller.set_gizmos_shown)
+        section.layout.addWidget(self._show_gizmos)
         clip_list = QtWidgets.QListWidget()
         clip_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         clip_list.setMinimumHeight(72)

@@ -32,3 +32,23 @@ def test_ask_heavy_job_allows_when_previously_ok():
     assert allowed is True
     assert ok_fp is None
     assert denied_fp is None
+
+
+def test_ask_heavy_job_custom_fingerprint():
+    from pymolviz.fields.convert import explicit_convert_job_fingerprint
+
+    job = {
+        "heavy": True,
+        "algorithm": "EXPLICIT_ISO",
+        "voxels": 1000,
+        "cubes": 50,
+        "triangles": 200,
+        "seconds": 2.0,
+    }
+    fp = explicit_convert_job_fingerprint(job)
+    allowed, ok_fp, denied_fp = ask_heavy_job(
+        None, job, title="Test", previous_denied=fp, fingerprint=explicit_convert_job_fingerprint,
+    )
+    assert allowed is False
+    assert ok_fp is None
+    assert denied_fp is None

@@ -25,7 +25,7 @@ from pymolviz.io import (
 from pymolviz.io.native import NATIVE_FORMAT, load_native, save_native
 from pymolviz.meshes.CGOCollection import CGOCollection
 from pymolviz.meshes.Sphere import Sphere
-from pymolviz.serialization import ARRAY_REF_KEY, SerializationError, session_document
+from pymolviz.serialization import ARRAY_REF_KEY, INLINE_ARRAY_KIND, SerializationError, session_document
 from pymolviz.volumetric.GridData import GridData
 
 
@@ -101,6 +101,39 @@ def test_native_pack_stores_field_brick_as_npy_not_json_list(tmp_path):
     assert np.allclose(np.asarray(got.grid_data.values).reshape(-1), np.arange(8))
 
 
+def test_session_document_inlines_large_imported_brick():
+    from pymolviz.serialization import persist_numeric_array, session_from_document
+
+    n = 5000
+    grid = GridData(
+        np.linspace(0.0, 1.0, n, dtype=np.float64),
+        step_sizes=(1.0, 1.0, 1.0),
+        step_counts=(n - 1, 0, 0),
+        origin=(0.0, 0.0, 0.0),
+        name="big",
+    )
+    field = Field(
+        name="dens",
+        generator={"type": GEN_IMPORTED},
+        grid_data=grid,
+        obj_id="fld-big",
+    )
+    blob = persist_numeric_array(grid.values)
+    assert isinstance(blob, dict)
+    assert blob[ARRAY_REF_KEY] == INLINE_ARRAY_KIND
+    doc = session_document([field])
+    values = doc["objects"][0]["brick"]["values"]
+    assert isinstance(values, dict)
+    assert values[ARRAY_REF_KEY] == INLINE_ARRAY_KIND
+    assert isinstance(values["data"], str)
+    restored = session_from_document(doc)
+    assert np.allclose(
+        np.asarray(restored[0].grid_data.values).reshape(-1),
+        np.linspace(0.0, 1.0, n),
+        atol=1e-5,
+    )
+
+
 def test_native_pack_embeds_generated_brick_but_session_json_does_not():
     from pymolviz.fields.domain import BOUNDS_AROUND_SELECTION, Domain
     from pymolviz.fields.field import ensure_brick
@@ -128,6 +161,35 @@ def test_native_pack_embeds_generated_brick_but_session_json_does_not():
     assert ARRAY_REF_KEY in packed["objects"][0]["brick"]["values"]
     assert store.arrays
     del store_doc
+
+
+def test_session_document_stores_large_imported_brick_inline():
+    from pymolviz.serialization import INLINE_ARRAY_MIN, persist_numeric_array, session_from_document
+
+    n = INLINE_ARRAY_MIN + 8
+    values = np.linspace(0.0, 1.0, n, dtype=np.float32)
+    grid = GridData(
+        values,
+        step_sizes=(1.0, 1.0, 1.0),
+        step_counts=(n - 1, 0, 0),
+        origin=(0.0, 0.0, 0.0),
+        name="huge",
+    )
+    field = Field(
+        name="dens",
+        generator={"type": GEN_IMPORTED},
+        grid_data=grid,
+        obj_id="fld-huge",
+    )
+    blob = persist_numeric_array(values)
+    assert isinstance(blob, dict)
+    assert blob[ARRAY_REF_KEY] == "inline"
+    doc = session_document([field])
+    brick_values = doc["objects"][0]["brick"]["values"]
+    assert isinstance(brick_values, dict)
+    assert isinstance(brick_values.get("data"), str)
+    restored = session_from_document(doc)
+    assert np.allclose(np.asarray(restored[0].grid_data.values).reshape(-1), values)
 
 
 def test_displayable_write_dispatches_by_extension(tmp_path):

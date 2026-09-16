@@ -211,12 +211,18 @@ def box_options(obj) -> dict:
 def arrow_options(obj) -> dict:
     child = _first_child(obj)
     shaft = _arrow_shaft_radius(child)
+    heads = getattr(child, "pair_heads", None) or ()
+    head_length = (
+        float(heads[0])
+        if len(heads) > 0
+        else float(getattr(child, "head_length", None) or default_head_length(shaft))
+    )
     getter = getattr(child, "options", None)
     opts = dict(getter()) if callable(getter) else {"line_style": line_style_from_mesh(child)}
     opts.update({
         "quality": _arrow_quality(child),
         "shaft_radius": shaft,
-        "head_length": float(getattr(child, "head_length", None) or default_head_length(shaft)),
+        "head_length": head_length,
         "head_width": float(getattr(child, "head_width", 1.618) or 1.618),
         "head_radius": getattr(child, "head_radius", None),
         "clip_planes": list(getattr(child, "clip_planes", None) or []),

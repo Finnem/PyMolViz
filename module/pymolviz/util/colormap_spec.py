@@ -53,6 +53,17 @@ HISTOGRAM_BINS = 48
 HISTOGRAM_MAX_SAMPLES = 20000
 PRESET_STOP_COUNT = 5
 
+HISTOGRAM_VIEW_AUTO = "auto"
+HISTOGRAM_VIEW_FULL = "full"
+HISTOGRAM_VIEW_LOG = "log"
+HISTOGRAM_VIEW_PERCENTILE = "percentile"
+HISTOGRAM_VIEW_MODES = (
+    HISTOGRAM_VIEW_AUTO,
+    HISTOGRAM_VIEW_FULL,
+    HISTOGRAM_VIEW_LOG,
+    HISTOGRAM_VIEW_PERCENTILE,
+)
+
 _HISTOGRAM_CACHE: Dict[str, dict] = {}
 
 
@@ -570,11 +581,36 @@ def map_scalars(values, defn: ColormapDefinition, vmin: float, vmax: float) -> n
     return out
 
 
+def _matplotlib_colormap_stops(defn: ColormapDefinition):
+    """``(position, rgba)`` pairs for ``LinearSegmentedColormap.from_list`` (0 and 1 required)."""
+    stops = tuple(defn.stops)
+    if not stops:
+        stops = (
+            ColorStop(0.0, (0.0, 0.0, 1.0, 1.0)),
+            ColorStop(1.0, (1.0, 0.0, 0.0, 1.0)),
+        )
+    items: List[Tuple[float, RGBA]] = []
+    first = stops[0]
+    if float(first.position) > 0.0:
+        items.append((0.0, first.rgba))
+    for stop in stops:
+        pos = float(stop.position)
+        rgba = _as_rgba(stop.rgba)
+        if items and abs(items[-1][0] - pos) < 1e-9:
+            items[-1] = (pos, rgba)
+        elif not items or items[-1][0] < pos:
+            items.append((pos, rgba))
+    last = stops[-1]
+    if items[-1][0] < 1.0:
+        items.append((1.0, _as_rgba(last.rgba)))
+    return items
+
+
 def mpl_colormap(defn: ColormapDefinition, name: str = "pmv_custom"):
     """Matplotlib colormap for ColorMap / ColorRamp constructors."""
     from matplotlib.colors import LinearSegmentedColormap
 
-    colors = [(stop.position, stop.rgba) for stop in defn.stops]
+    colors = _matplotlib_colormap_stops(defn)
     return LinearSegmentedColormap.from_list(name or "pmv_custom", colors)
 
 
@@ -629,15 +665,72 @@ def named_colormap_from_attrs(colormap=None, spec=None) -> Optional[str]:
 def persist_colormap_attrs(colormap, spec=None):
     """``(preset_name, spec_dict_or_None)`` for mesh / visual persistence."""
     defn = ColormapDefinition.from_dict(spec) if spec else coerce_definition(colormap)
+    stored_norm = normalization_from_stored_spec(spec)
     if defn is None and isinstance(colormap, str):
         defn = custom_preset_definition(colormap)
     if defn is None:
         if colormap is None:
             return None, None
+        if stored_norm is not None and stored_norm.mode != RANGE_MODE_AUTO:
+            payload = {"preset": str(colormap), "normalization": stored_norm.to_dict()}
+            return str(colormap), payload
         return str(colormap), None
     name = defn.preset or "custom"
-    store_spec = uses_stop_sampling(defn) or custom_preset_definition(name) is not None
-    return name, (defn.to_dict() if store_spec else None)
+    store_spec = (
+        uses_stop_sampling(defn)
+        or custom_preset_definition(name) is not None
+        or (stored_norm is not None and stored_norm.mode != RANGE_MODE_AUTO)
+    )
+    if not store_spec:
+        return name, None
+    payload = defn.to_dict()
+    if stored_norm is not None:
+        payload["normalization"] = stored_norm.to_dict()
+    return name, payload
+
+
+def stored_colormap_spec(defn, normalization=None) -> Optional[dict]:
+    """Definition dict plus optional range, for visual persistence and live preview."""
+    if defn is None:
+        spec = None
+    elif uses_stop_sampling(defn) or (
+        normalization is not None
+        and normalize_range_mode_full(getattr(normalization, "mode", None)) != RANGE_MODE_AUTO
+    ):
+        spec = defn.to_dict()
+    else:
+        spec = None
+    if normalization is not None and normalize_range_mode_full(normalization.mode) != RANGE_MODE_AUTO:
+        spec = dict(spec or (defn.to_dict() if defn is not None else {}))
+        spec["normalization"] = normalization.to_dict()
+    return spec
+
+
+def normalization_from_stored_spec(spec) -> Optional[Normalization]:
+    if not isinstance(spec, dict):
+        return None
+    data = spec.get("normalization")
+    if not data:
+        return None
+    return Normalization.from_dict(data)
+
+
+def apply_colormap_alpha_to_volume_ramp(clims, alphas, defn):
+    """Multiply a volume density ramp by the colormap's per-value opacity."""
+    if defn is None or not getattr(defn, "stops", None):
+        return alphas
+    clim_arr = np.asarray(clims, dtype=float).reshape(-1)
+    alpha_arr = np.asarray(alphas, dtype=float).reshape(-1)
+    if clim_arr.size == 0 or alpha_arr.size == 0:
+        return alphas
+    n = min(int(clim_arr.size), int(alpha_arr.size))
+    lo = float(clim_arr[0])
+    hi = float(clim_arr[n - 1])
+    out = np.array(alpha_arr, copy=True)
+    for i in range(n):
+        t = data_to_unit(float(clim_arr[i]), lo, hi)
+        out[i] = float(out[i]) * float(sample_unit(defn, t)[3])
+    return out
 
 
 def volume_colormap_arg(colormap=None, spec=None):
@@ -740,6 +833,144 @@ def colorbar_caption(title: str, units: str) -> str:
     return title or units
 
 
+def normalize_histogram_view(mode) -> str:
+    text = str(mode or HISTOGRAM_VIEW_AUTO).strip().lower().replace("-", "_").replace(" ", "_")
+    if text in ("full", "linear", "all", "complete"):
+        return HISTOGRAM_VIEW_FULL
+    if text in ("log", "log10", "log_scale"):
+        return HISTOGRAM_VIEW_LOG
+    if text in ("percentile", "pct", "focus", "robust"):
+        return HISTOGRAM_VIEW_PERCENTILE
+    return HISTOGRAM_VIEW_AUTO
+
+
+def analyze_value_distribution(samples) -> dict:
+    """Summarize skew / tails for histogram preview and range hints."""
+    arr = np.asarray(samples, dtype=float).reshape(-1)
+    finite = arr[np.isfinite(arr)]
+    empty = {
+        "vmin": None,
+        "vmax": None,
+        "p1": None,
+        "p50": None,
+        "p99": None,
+        "mean": None,
+        "std": None,
+        "suggested_axis": HISTOGRAM_VIEW_FULL,
+        "display_lo": 0.0,
+        "display_hi": 1.0,
+        "suggest_percentile_range": False,
+        "n": 0,
+    }
+    if finite.size == 0:
+        return empty
+    vmin = float(np.min(finite))
+    vmax = float(np.max(finite))
+    pct = np.percentile(finite, [0.5, 1.0, 2.0, 50.0, 98.0, 99.0, 99.5])
+    p0_5, p1, p2, p50, p98, p99, p99_5 = [float(v) for v in pct]
+    mean = float(np.mean(finite))
+    std = float(np.std(finite))
+    span = vmax - vmin
+    bulk = max(p99 - p1, 0.0)
+    bulk_share = bulk / span if span > 0.0 else 1.0
+    tail_share = (vmax - p99) / span if span > 0.0 else 0.0
+    suggest_percentile = False
+    axis = HISTOGRAM_VIEW_FULL
+    display_lo, display_hi = vmin, vmax
+    positive = vmin >= 0.0
+    positive_nonzero = finite[finite > 0.0]
+    focused = bulk_share < 0.25 or tail_share > 0.2
+    if focused:
+        suggest_percentile = True
+        display_lo = vmin if vmin <= 0.0 else max(vmin, p1)
+        display_hi = max(p99, display_lo + 1e-15)
+        if tail_share > 0.15:
+            display_hi = min(display_hi, max(p99 * 1.02, display_lo + 1e-12))
+        axis = HISTOGRAM_VIEW_FULL
+        if positive and display_hi > 0.0:
+            lo_pos = p0_5 if p0_5 > 0.0 else (
+                float(np.min(positive_nonzero)) if positive_nonzero.size else 1e-12
+            )
+            lo_pos = max(lo_pos, 1e-30)
+            if display_lo <= 0.0 < display_hi:
+                lo_pos = min(lo_pos, max(display_hi * 0.25, 1e-12))
+            if display_hi / max(lo_pos, 1e-30) > 12.0:
+                axis = HISTOGRAM_VIEW_LOG
+                display_lo = lo_pos if vmin > 0.0 else vmin
+    display_lo, display_hi = clamp_range(display_lo, display_hi)
+    return {
+        "vmin": vmin,
+        "vmax": vmax,
+        "p1": p1,
+        "p50": p50,
+        "p99": p99,
+        "mean": mean,
+        "std": std,
+        "suggested_axis": axis,
+        "display_lo": display_lo,
+        "display_hi": display_hi,
+        "suggest_percentile_range": suggest_percentile,
+        "n": int(finite.size),
+    }
+
+
+def choose_histogram_display(analysis: dict, view: str = HISTOGRAM_VIEW_AUTO) -> Tuple[str, float, float]:
+    """``(axis, display_lo, display_hi)`` for the distribution plot."""
+    view = normalize_histogram_view(view)
+    vmin = float(analysis.get("vmin") or 0.0)
+    vmax = float(analysis.get("vmax") or 1.0)
+    if view == HISTOGRAM_VIEW_FULL:
+        return HISTOGRAM_VIEW_FULL, vmin, vmax
+    if view == HISTOGRAM_VIEW_PERCENTILE:
+        lo = float(analysis.get("p1") if analysis.get("p1") is not None else vmin)
+        hi = float(analysis.get("p99") if analysis.get("p99") is not None else vmax)
+        return HISTOGRAM_VIEW_FULL, *clamp_range(lo, hi)
+    if view == HISTOGRAM_VIEW_LOG:
+        p99 = analysis.get("p99")
+        p1 = analysis.get("p1")
+        if p99 is not None and vmax > float(p99) * 1.5:
+            hi = float(p99)
+            lo = float(p1) if p1 is not None and float(p1) > 0.0 else float(analysis.get("display_lo") or vmin)
+        else:
+            lo = float(analysis.get("display_lo") or vmin)
+            hi = float(analysis.get("display_hi") or vmax)
+        if lo <= 0.0:
+            lo = max(hi * 1e-6, 1e-12)
+        if hi <= lo:
+            hi = lo * 10.0
+        return HISTOGRAM_VIEW_LOG, lo, hi
+    axis = str(analysis.get("suggested_axis") or HISTOGRAM_VIEW_FULL)
+    lo = float(analysis.get("display_lo") or vmin)
+    hi = float(analysis.get("display_hi") or vmax)
+    if axis == HISTOGRAM_VIEW_LOG and lo <= 0.0:
+        lo = max(hi * 1e-6, 1e-12)
+    return axis, *clamp_range(lo, hi)
+
+
+def value_to_histogram_axis(value, dmin, dmax, axis: str = HISTOGRAM_VIEW_FULL) -> float:
+    """Map a field value to ``[0, 1]`` along the histogram x-axis."""
+    mode = normalize_histogram_view(axis)
+    if mode == HISTOGRAM_VIEW_LOG:
+        lo = max(float(dmin), 1e-300)
+        hi = max(float(dmax), lo * (1.0 + 1e-12))
+        v = float(value)
+        if not math.isfinite(v) or v <= 0.0:
+            return 0.0
+        return axis_to_unit(math.log10(v), math.log10(lo), math.log10(hi))
+    return data_to_unit(value, dmin, dmax)
+
+
+def histogram_axis_to_value(unit, dmin, dmax, axis: str = HISTOGRAM_VIEW_FULL) -> float:
+    mode = normalize_histogram_view(axis)
+    u = _clip01(float(unit))
+    if mode == HISTOGRAM_VIEW_LOG:
+        lo = max(float(dmin), 1e-300)
+        hi = max(float(dmax), lo * (1.0 + 1e-12))
+        log_v = unit_to_axis(u, math.log10(lo), math.log10(hi))
+        return float(10.0 ** log_v)
+    return unit_to_data(u, dmin, dmax)
+
+
 def subsample_values(values, max_samples: int = HISTOGRAM_MAX_SAMPLES) -> np.ndarray:
     arr = np.asarray(values, dtype=float).reshape(-1)
     finite = arr[np.isfinite(arr)]
@@ -753,31 +984,107 @@ def subsample_values(values, max_samples: int = HISTOGRAM_MAX_SAMPLES) -> np.nda
     return finite[::step]
 
 
-def histogram_from_values(values, bins: int = HISTOGRAM_BINS, max_samples: int = HISTOGRAM_MAX_SAMPLES) -> dict:
+def histogram_from_values(
+    values,
+    bins: int = HISTOGRAM_BINS,
+    max_samples: int = HISTOGRAM_MAX_SAMPLES,
+    view: str = HISTOGRAM_VIEW_AUTO,
+) -> dict:
     samples = subsample_values(values, max_samples=max_samples)
     empty = {
         "counts": (),
         "edges": (),
         "vmin": None,
         "vmax": None,
+        "display_min": None,
+        "display_max": None,
+        "axis": HISTOGRAM_VIEW_FULL,
+        "view": normalize_histogram_view(view),
         "mean": None,
         "std": None,
         "n": 0,
         "n_total": int(np.asarray(values).size) if values is not None else 0,
+        "underflow": 0,
+        "overflow": 0,
+        "suggest_percentile_range": False,
+        "preview_note": "",
     }
     if samples.size == 0:
         return empty
+    analysis = analyze_value_distribution(samples)
+    axis, dlo, dhi = choose_histogram_display(analysis, view)
+    positive = samples[samples > 0.0]
+    zero_count = int(samples.size - positive.size)
+    zero_fraction = float(zero_count) / float(max(1, samples.size))
+    bin_samples = samples
+    if zero_fraction > 0.2 and positive.size >= 64 and dhi > dlo:
+        if view in (HISTOGRAM_VIEW_AUTO, HISTOGRAM_VIEW_PERCENTILE, HISTOGRAM_VIEW_LOG):
+            p_lo = float(np.percentile(positive, 1.0))
+            p_hi = float(np.percentile(positive, 99.0))
+            if p_hi > p_lo:
+                dlo, dhi = p_lo, p_hi
+                axis = (
+                    HISTOGRAM_VIEW_LOG
+                    if p_hi / max(p_lo, 1e-30) > 12.0
+                    else HISTOGRAM_VIEW_FULL
+                )
+                bin_samples = positive
     n_bins = max(8, min(128, int(bins)))
-    counts, edges = np.histogram(samples, bins=n_bins)
+    if axis == HISTOGRAM_VIEW_LOG and dlo <= 0.0:
+        dlo = float(np.min(positive)) if positive.size else max(dhi * 1e-6, 1e-12)
+        dlo = max(dlo, 1e-12)
+    if axis == HISTOGRAM_VIEW_LOG:
+        edges = np.logspace(math.log10(dlo), math.log10(dhi), n_bins + 1)
+    else:
+        edges = np.linspace(dlo, dhi, n_bins + 1)
+    counts, edges = np.histogram(bin_samples, bins=edges)
+    counts = counts.astype(int)
+    # Do not dump the zero-voxel pile into the first bin — that hides the shape.
+    under = int(np.sum(bin_samples < dlo))
+    over = int(np.sum(bin_samples > dhi))
+    if counts.size:
+        counts[0] += under
+        counts[-1] += over
+    note = ""
+    if axis == HISTOGRAM_VIEW_LOG:
+        note = "Preview: log scale (%.3g–%.3g)" % (dlo, dhi)
+    elif dlo > analysis["vmin"] or dhi < analysis["vmax"]:
+        note = "Preview: %.3g–%.3g (data %.3g–%.3g)" % (
+            dlo,
+            dhi,
+            analysis["vmin"],
+            analysis["vmax"],
+        )
+    if view == HISTOGRAM_VIEW_FULL and analysis["vmax"] > analysis["vmin"]:
+        bulk_share = (float(analysis["p99"]) - float(analysis["p1"])) / (
+            analysis["vmax"] - analysis["vmin"]
+        )
+        if bulk_share < 0.05:
+            note = (
+                "Full range hides detail (use Auto or Percentile view). "
+                + (note or "")
+            ).strip()
     return {
         "counts": tuple(int(v) for v in counts),
         "edges": tuple(float(v) for v in edges),
-        "vmin": float(np.min(samples)),
-        "vmax": float(np.max(samples)),
-        "mean": float(np.mean(samples)),
-        "std": float(np.std(samples)),
+        "vmin": analysis["vmin"],
+        "vmax": analysis["vmax"],
+        "display_min": float(dlo),
+        "display_max": float(dhi),
+        "axis": axis,
+        "view": normalize_histogram_view(view),
+        "mean": analysis["mean"],
+        "std": analysis["std"],
+        "p1": analysis.get("p1"),
+        "p50": analysis.get("p50"),
+        "p99": analysis.get("p99"),
         "n": int(samples.size),
         "n_total": int(np.asarray(values, dtype=float).reshape(-1).size),
+        "underflow": under,
+        "overflow": over,
+        "suggest_percentile_range": bool(analysis.get("suggest_percentile_range")),
+        "zero_fraction": zero_fraction,
+        "preview_note": note,
     }
 
 
@@ -789,20 +1096,51 @@ def field_values_for_stats(field_id):
     grid = resolve_grid_from_session(field_id)
     if grid is None:
         return None
-    return getattr(grid, "values", None)
+    values = getattr(grid, "values", None)
+    if values is None:
+        return None
+    return np.asarray(values, dtype=float).reshape(-1)
 
 
-def field_histogram(field_id, bins: int = HISTOGRAM_BINS, max_samples: int = HISTOGRAM_MAX_SAMPLES) -> Optional[dict]:
+def limits_sane_for_field(limits, values) -> Optional[Tuple[float, float]]:
+    """Drop stored limits that are orders of magnitude wider than the sampled field."""
+    if limits is None or values is None:
+        return limits
+    lo, hi = float(limits[0]), float(limits[1])
+    if hi < lo:
+        lo, hi = hi, lo
+    arr = np.asarray(values, dtype=float).reshape(-1)
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return limits
+    dmin = float(np.min(finite))
+    dmax = float(np.max(finite))
+    span = max(dmax - dmin, 1e-30)
+    if hi - lo < 1e-18:
+        return (dmin, dmax)
+    if hi > dmax + max(span * 5.0, abs(dmax) * 2.0 + 1.0):
+        return (dmin, dmax)
+    if lo < dmin - max(span * 5.0, abs(dmin) * 2.0 + 1.0):
+        lo = dmin
+    return clamp_range(lo, hi)
+
+
+def field_histogram(
+    field_id,
+    bins: int = HISTOGRAM_BINS,
+    max_samples: int = HISTOGRAM_MAX_SAMPLES,
+    view: str = HISTOGRAM_VIEW_AUTO,
+) -> Optional[dict]:
     if not field_id:
         return None
-    key = "%s:%d:%d" % (field_id, int(bins), int(max_samples))
+    key = "%s:%d:%d:%s" % (field_id, int(bins), int(max_samples), normalize_histogram_view(view))
     cached = _HISTOGRAM_CACHE.get(key)
     if cached is not None:
         return cached
     values = field_values_for_stats(field_id)
     if values is None:
         return None
-    payload = histogram_from_values(values, bins=bins, max_samples=max_samples)
+    payload = histogram_from_values(values, bins=bins, max_samples=max_samples, view=view)
     _HISTOGRAM_CACHE[key] = payload
     return payload
 

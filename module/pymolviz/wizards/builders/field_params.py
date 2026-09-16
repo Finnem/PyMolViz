@@ -138,7 +138,7 @@ def iso_spin_range(algorithm):
         return (0.0, 50.0, 0.1, 2)
     if algo == GEN_SIGNED_VDW:
         return (-20.0, 20.0, 0.1, 2)
-    return (-1.0e4, 1.0e4, 0.5, 2)
+    return (-1.0e4, 1.0e4, 0.1, 2)
 
 
 def property_is_categorical(key) -> bool:

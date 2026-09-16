@@ -122,3 +122,46 @@ def test_clear_selection_keeps_planes_and_drops_drag():
     assert preview.gizmo_calls[-1]["n"] == 1
     assert changed == []
     assert ctrl.clip_planes
+
+
+def test_hidden_plane_gizmo_is_omitted_without_remesh():
+    changed = []
+    preview = _DragPreview(None)
+    ctrl = _controller(preview, lambda: changed.append("mesh"))
+    ctrl.clip_planes.append({
+        "origin": [1.0, 0.0, 0.0],
+        "normal": [0.0, 0.0, 1.0],
+        "scale": 5.0,
+        "gizmo": True,
+    })
+
+    ctrl.set_plane_gizmo_visible(0, False)
+    assert changed == []
+    assert ctrl.clip_planes[0]["gizmo"] is False
+    planes, selected = ctrl.preview_gizmos()
+    assert len(planes) == 1
+    assert planes[0]["origin"][0] == pytest.approx(1.0)
+    assert selected is None
+    assert preview.gizmo_calls[-1]["n"] == 1
+    assert preview.gizmo_calls[-1]["selected"] is None
+
+    ctrl.set_gizmos_shown(False)
+    assert ctrl.preview_gizmos() == ([], None)
+    assert preview.gizmo_calls[-1]["n"] == 0
+    assert preview.released >= 1
+    assert ctrl.clip_planes
+
+    ctrl.set_gizmos_shown(True)
+    planes, _selected = ctrl.preview_gizmos()
+    assert len(planes) == 1
+    assert preview.gizmo_calls[-1]["n"] == 1
+
+
+def test_hiding_selected_gizmo_drops_drag_poll_index():
+    preview = _DragPreview(None)
+    ctrl = _controller(preview, lambda: None)
+    ctrl._list = _RowList(row=0)
+    ctrl.set_plane_gizmo_visible(0, False)
+    _planes, selected = ctrl.preview_gizmos()
+    assert selected is None
+    assert preview.released == 1

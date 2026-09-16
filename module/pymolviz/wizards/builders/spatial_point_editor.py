@@ -20,6 +20,7 @@ from ..widgets.theme import (
     swatch_button_css,
 )
 from ..widgets.ascii_locale import apply_ascii_float_locale
+from ..widgets.spin_step import STEP_ANGSTROM, apply_spin_step
 from ..widgets.type_icons import apply_source_icon
 
 XYZ_LABEL = "XYZ coordinates (Å)"
@@ -97,9 +98,8 @@ class SpatialPointEditor:
             col.setSpacing(2)
             col.addWidget(_caption(QtWidgets, axis))
             spin = QtWidgets.QDoubleSpinBox()
-            spin.setDecimals(3)
             spin.setRange(-9999.0, 9999.0)
-            spin.setSingleStep(0.1)
+            apply_spin_step(spin, STEP_ANGSTROM, decimals=3)
             spin.setValue(float(value))
             spin.setEnabled(pt is not None)
             apply_ascii_float_locale(spin, QtCore)

@@ -15,6 +15,7 @@ from ...util.line_style import (
 from ..pick import idle_selection_poll_ok, qt_modules, qt_widget_alive
 from ..widgets.breadcrumb import CRUMB_ARROWS
 from ..widgets.ascii_locale import apply_ascii_float_locale
+from ..widgets.spin_step import STEP_RADIUS, apply_spin_step
 from ..widgets.log_slider import LogSegmentRadiusWidget
 from ..widgets.section import make_section
 from ..widgets.theme import style_info_banner
@@ -204,12 +205,13 @@ class ArrowBuilderPage(BuilderPage):
         self._shaft_widget.connect_changed(self._on_object_shaft_changed)
         self._head_length = QtWidgets.QDoubleSpinBox()
         self._head_length.setRange(0.01, 10.0)
+        apply_spin_step(self._head_length, STEP_RADIUS, decimals=2)
         self._head_length.setValue(default_head_length(DEFAULT_ARROW_WIDTH))
         apply_ascii_float_locale(self._head_length, QtCore)
         self._head_length.valueChanged.connect(lambda *_: self._on_object_head_changed())
         self._head_radius = QtWidgets.QDoubleSpinBox()
         self._head_radius.setRange(0.01, 10.0)
-        self._head_radius.setDecimals(3)
+        apply_spin_step(self._head_radius, STEP_RADIUS, decimals=3)
         self._head_radius.setValue(default_head_radius(DEFAULT_ARROW_WIDTH))
         apply_ascii_float_locale(self._head_radius, QtCore)
         self._head_radius.valueChanged.connect(self._on_object_head_radius_changed)
@@ -356,15 +358,33 @@ class ArrowBuilderPage(BuilderPage):
             self._modifiers.clip.refresh_gizmos()
         self._schedule_preview()
 
+    def _object_head_length(self) -> float:
+        width = float(self._shaft_widget.value()) if self._shaft_widget is not None else DEFAULT_ARROW_WIDTH
+        if self._head_length is None:
+            return default_head_length(width)
+        return float(self._head_length.value())
+
+    def _object_shaft_width(self) -> float:
+        if self._shaft_widget is None:
+            return DEFAULT_ARROW_WIDTH
+        return float(self._shaft_widget.value())
+
+    def _apply_object_geometry_to_pairs(self, pairs):
+        """Object-level shaft/head spinners override per-pair defaults for draw/commit."""
+        width = self._object_shaft_width()
+        head = self._object_head_length()
+        return [pair.with_width(width).with_head(head) for pair in pairs]
+
     def _on_object_shaft_changed(self):
         if self._shaft_widget is None:
             return
         width = float(self._shaft_widget.value())
-        self._pairs = [pair.with_width(width) for pair in self._pairs]
+        head = default_head_length(width)
         if self._head_length is not None:
             self._head_length.blockSignals(True)
-            self._head_length.setValue(default_head_length(width))
+            self._head_length.setValue(head)
             self._head_length.blockSignals(False)
+        self._pairs = [pair.with_width(width).with_head(head) for pair in self._pairs]
         if self._head_follows_shaft and self._head_radius is not None:
             self._head_radius.blockSignals(True)
             self._head_radius.setValue(default_head_radius(width))
@@ -480,7 +500,11 @@ class ArrowBuilderPage(BuilderPage):
 
     def _pairs_for_draw(self):
         style = self._style()
-        return [pair.with_style(style.copy()) for pair in self._pairs if pair.enabled]
+        enabled = [pair for pair in self._pairs if pair.enabled]
+        return [
+            pair.with_style(style.copy())
+            for pair in self._apply_object_geometry_to_pairs(enabled)
+        ]
 
     def _resolve_context(self):
         try:

@@ -1146,7 +1146,8 @@ class FieldVisualsWindow:
         self._goto(_PAGE_VISUAL_TYPES)
 
     def _on_builder_saved(self):
-        self._restore_editing_visual()
+        # Persist already materialized the updated visual; do not re-enable the
+        # stale object handle kept for cancel/back.
         self._editing_obj = None
         self._goto(_PAGE_LIBRARY)
 

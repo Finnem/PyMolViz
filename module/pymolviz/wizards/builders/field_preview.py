@@ -187,7 +187,7 @@ def estimate_grid_iso_job(grid) -> dict:
     """Cheap voxel-count estimate for a native field preview (map + iso/volume)."""
     import numpy as np
 
-    from ...util.solvent_surface import (
+    from ...util.solvent_params import (
         HEAVY_SURFACE_SECONDS,
         HEAVY_SURFACE_VOXELS,
         _ISO_SEC_PER_VOXEL,

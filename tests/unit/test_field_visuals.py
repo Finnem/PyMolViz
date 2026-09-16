@@ -5,7 +5,14 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from pymolviz.util.field_sample import PYMOL_MAP_ID_PREFIX, _NATIVE_GRIDS, grid_from_pymol_map
+from pymolviz.util.colormap_spec import definition_from_preset
+from pymolviz.util.field_sample import (
+    PYMOL_MAP_ID_PREFIX,
+    _NATIVE_GRIDS,
+    discover_fields,
+    field_label,
+    grid_from_pymol_map,
+)
 from pymolviz.volumetric.GridData import GridData
 from pymolviz.wizards.builders.field_visual import (
     clip_map_name,
@@ -148,6 +155,25 @@ def test_volume_range_clims_sample_colormap_interior():
     rgb = np.asarray(volume.colormap.get_color(mid), dtype=float).reshape(-1)[:3]
     two_knot_lerp = np.array([0.0, 0.5, 0.5])
     assert np.linalg.norm(rgb - np.array([1.0, 0.0, 0.0])) < np.linalg.norm(rgb - two_knot_lerp)
+
+
+def test_field_visual_options_restore_custom_colormap_range():
+    from pymolviz.util.colormap_spec import Normalization, stored_colormap_spec
+    from pymolviz.wizards.builders.field_visual import field_visual_options
+
+    spec = stored_colormap_spec(
+        definition_from_preset("viridis"),
+        Normalization(mode="custom", vmin=0.0, vmax=0.005),
+    )
+    grid = _tiny_grid()
+    volume = make_field_visual(
+        "Volume", grid, "density_volume", colormap="viridis", colormap_spec=spec, clims=(0.0, 0.005),
+    )
+    opts = field_visual_options(volume)
+    assert opts["range_mode"] == "custom"
+    assert opts["clims"][0] == pytest.approx(0.0)
+    assert opts["clims"][1] == pytest.approx(0.005)
+    assert opts["colormap_spec"]["normalization"]["vmax"] == pytest.approx(0.005)
 
 
 def test_volume_load_updates_ramp_on_existing_object():
@@ -421,6 +447,54 @@ def test_persist_volume_loads_map_when_native_wrapper_stale():
     vol = make_field_visual("IsoVolume", grid, "ivol")
     assert type(vol).__name__ == "IsoVolume"
     assert vol.grid_data is grid
+
+
+def test_persist_field_visual_replaces_same_id():
+    from tests.fakes.cmd import FakeCmd
+    from pymolviz.runtime import session as session_mod
+    from pymolviz.wizards.builders.field_visual import persist_field_visual
+
+    session_mod.clear()
+    grid = _tiny_grid()
+    grid.is_loaded = True
+    cmd = FakeCmd()
+    first = make_field_visual("Volume", grid, "density_volume", obj_id="vol_edit")
+    persist_field_visual(cmd, first)
+    second = make_field_visual(
+        "Volume", grid, "density_volume", obj_id="vol_edit", clims=(0.0, 7.0),
+    )
+    persist_field_visual(cmd, second)
+    assert session_mod.get("vol_edit") is second
+    assert session_mod.get("vol_edit") is not first
+    volumes = [o for o in session_mod.all_objects() if type(o).__name__ == "Volume"]
+    assert len(volumes) == 1
+    rows = field_library_rows(session_mod.all_objects(), cmd=cmd)
+    visual_rows = [row for row in rows if row["kind"] == KIND_VISUAL]
+    assert len(visual_rows) == 1
+    assert visual_rows[0]["id"] == "vol_edit"
+    session_mod.clear()
+
+
+def test_discover_fields_skips_pymol_volume_owned_by_session_visual():
+    from pymolviz.fields.field import as_field, intern_field
+    from pymolviz.runtime import session as session_mod
+    from tests.fakes.cmd import FakeCmd
+
+    session_mod.clear()
+    grid = _tiny_grid()
+    field = as_field(grid)
+    intern_field(field)
+    cmd = FakeCmd()
+    visual = make_field_visual("Volume", field, "density_volume", obj_id="vol1")
+    session_mod.add(visual)
+    cmd.objects["density_volume"] = np.zeros((2, 2, 2))
+    cmd.object_types["density_volume"] = "object:volume"
+    cmd.volume_fields["density_volume"] = np.zeros((2, 2, 2), dtype=float)
+    cmd.extents["density_volume"] = [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]]
+    names = [field_label(f) for f in discover_fields(session_mod.all_objects(), cmd=cmd)]
+    assert names.count("density") == 1
+    assert "density_volume" not in names
+    session_mod.clear()
 
 
 def test_persist_second_field_visual_gets_numbered_name():

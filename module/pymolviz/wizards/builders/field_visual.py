@@ -58,6 +58,13 @@ def field_visual_options(obj) -> dict:
     pair = None
     if clims is not None and len(clims) >= 2:
         pair = (float(clims[0]), float(clims[-1]))
+    from ...util.colormap_spec import normalization_from_stored_spec
+
+    stored_norm = normalization_from_stored_spec(spec)
+    if stored_norm is not None:
+        range_mode = stored_norm.mode
+        if stored_norm.vmin is not None and stored_norm.vmax is not None:
+            pair = (float(stored_norm.vmin), float(stored_norm.vmax))
     geom = getattr(obj, "geometry_field_id", None)
     color_id = getattr(obj, "color_field_id", None)
     sel = getattr(obj, "selection", None)
@@ -173,7 +180,12 @@ def make_field_visual(
     carve=None,
 ):
     """Build a Volume / IsoVolume / IsoSurface / IsoMesh wrapping ``grid``."""
-    from ...util.colormap_spec import persist_colormap_attrs, volume_colormap_arg
+    from ...util.colormap_spec import (
+        ColormapDefinition,
+        apply_colormap_alpha_to_volume_ramp,
+        persist_colormap_attrs,
+        volume_colormap_arg,
+    )
     from .carve_around import normalize_carve_args
 
     kind = str(kind)
@@ -275,6 +287,14 @@ def make_field_visual(
         visual.colormap_spec = stored
     elif _preset:
         visual.colormap_spec = None
+    defn = None
+    if colormap_spec:
+        defn = ColormapDefinition.from_dict(colormap_spec)
+    if defn is not None and getattr(visual, "alphas", None) is not None and getattr(visual, "clims", None) is not None:
+        visual.alphas = apply_colormap_alpha_to_volume_ramp(visual.clims, visual.alphas, defn)
+        from ...fields.isovalues import stops_from_volume_ramp
+
+        visual.transfer_stops = stops_from_volume_ramp(visual.clims, visual.alphas)
     return visual
 
 

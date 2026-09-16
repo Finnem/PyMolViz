@@ -745,6 +745,9 @@ def pick_rgb(
     dialog.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
     dialog._pmv_allow_field = allow_field
     _configure_color_dialog_window(dialog, anchor=window_anchor)
+    # Avoid setTransientParent + X11 EWMH pinning in bind_tool_window(); that path
+    # segfaults immediately on some Unix sessions when opening Appearance pickers.
+    dialog._pmv_no_transient = True
 
     syncing = {"active": False}
     ready = {"value": False}
@@ -891,7 +894,12 @@ def pick_rgb(
     dialog.installEventFilter(close_filter)
     dialog._pmv_close_filter = close_filter
     dialog.show()
-    bind_tool_window(dialog)
+
+    def _bind_tool_window_when_mapped():
+        if qt_widget_alive(dialog):
+            bind_tool_window(dialog)
+
+    QtCore.QTimer.singleShot(0, _bind_tool_window_when_mapped)
     dialog.raise_()
     dialog.activateWindow()
     _restore_current()

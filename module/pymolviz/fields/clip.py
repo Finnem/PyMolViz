@@ -81,16 +81,23 @@ def normalize_cardinal_plane(plane) -> Optional[dict]:
 
 
 def normalize_cardinal_planes(planes) -> list:
-    """At most one plane per axis, ordered X/Y/Z."""
+    """At most two planes per axis (lo and hi faces), ordered X/Y/Z then lo, hi."""
     if not planes:
         return []
-    by_axis = {}
+    by_axis = {0: {}, 1: {}, 2: {}}
     for item in planes:
         plane = normalize_cardinal_plane(item)
         if plane is None:
             continue
-        by_axis[plane["axis"]] = plane
-    return [by_axis[axis] for axis in range(3) if axis in by_axis]
+        by_axis[plane["axis"]][bool(plane["hi"])] = plane
+    out = []
+    for axis in range(3):
+        faces = by_axis[axis]
+        if False in faces:
+            out.append(faces[False])
+        if True in faces:
+            out.append(faces[True])
+    return out
 
 
 def default_cardinal_plane(axis, domain_aabb) -> dict:
@@ -123,9 +130,88 @@ def clamp_cardinal_plane(plane, domain_aabb, eps=_FACE_EPS):
     return {"axis": axis, "position": float(pos), "hi": bool(plane["hi"])}
 
 
+def clamp_cardinal_planes(planes, domain_aabb, eps=_FACE_EPS, lock=None) -> list:
+    """Clamp each face to the domain, then keep lo behind hi on the same axis.
+
+    ``lock`` is ``(axis, hi)`` of a face that should keep its position when the
+    pair would otherwise collide; the other face is the stop.
+    """
+    gap = float(eps)
+    lock_axis = None
+    lock_hi = None
+    if lock is not None:
+        try:
+            lock_axis = int(lock[0])
+            lock_hi = bool(lock[1])
+        except (TypeError, ValueError, IndexError):
+            lock_axis = None
+    faces = {}
+    for plane in normalize_cardinal_planes(planes):
+        clamped = clamp_cardinal_plane(plane, domain_aabb, eps=eps)
+        if clamped is None:
+            continue
+        faces.setdefault(clamped["axis"], {})[bool(clamped["hi"])] = clamped
+    out = []
+    for axis in range(3):
+        pair = faces.get(axis) or {}
+        lo = pair.get(False)
+        hi = pair.get(True)
+        if lo is not None and hi is not None and lo["position"] > hi["position"] - gap:
+            if lock_axis == axis and lock_hi:
+                hi = dict(hi)
+                hi["position"] = float(lo["position"]) + gap
+                clamped = clamp_cardinal_plane(hi, domain_aabb, eps=eps)
+                if clamped is not None:
+                    hi = clamped
+            else:
+                lo = dict(lo)
+                lo["position"] = float(hi["position"]) - gap
+                clamped = clamp_cardinal_plane(lo, domain_aabb, eps=eps)
+                if clamped is not None:
+                    lo = clamped
+            if lo["position"] > hi["position"] - gap:
+                hi = dict(hi)
+                hi["position"] = float(lo["position"]) + gap
+                clamped = clamp_cardinal_plane(hi, domain_aabb, eps=eps)
+                if clamped is not None:
+                    hi = clamped
+        if lo is not None:
+            out.append(lo)
+        if hi is not None:
+            out.append(hi)
+    return out
+
+
+def opposite_cardinal_plane(existing, domain_aabb, eps=_FACE_EPS) -> dict:
+    """The other face on the same axis, placed between the current plane and the far bound."""
+    existing = normalize_cardinal_plane(existing)
+    if existing is None:
+        return default_cardinal_plane(0, domain_aabb)
+    axis = existing["axis"]
+    other_hi = not bool(existing["hi"])
+    gap = float(eps)
+    pos = float(existing["position"])
+    box = normalize_clip_aabb(domain_aabb)
+    if box is not None:
+        lo = float(box[0][axis])
+        hi = float(box[1][axis])
+        if other_hi:
+            pos = 0.5 * (float(existing["position"]) + hi)
+            pos = max(pos, float(existing["position"]) + gap)
+        else:
+            pos = 0.5 * (lo + float(existing["position"]))
+            pos = min(pos, float(existing["position"]) - gap)
+    plane = {"axis": axis, "position": float(pos), "hi": other_hi}
+    clamped = clamp_cardinal_planes([existing, plane], domain_aabb, eps=eps)
+    for item in clamped:
+        if item["axis"] == axis and bool(item["hi"]) == other_hi:
+            return item
+    return plane
+
+
 def cardinal_planes_to_aabb(planes, domain_aabb, eps=_FACE_EPS) -> Optional[list]:
     """Intersect enabled half-spaces with the field domain. ``None`` if none on."""
-    planes = normalize_cardinal_planes(planes)
+    planes = clamp_cardinal_planes(planes, domain_aabb, eps=eps)
     if not planes:
         return None
     box = normalize_clip_aabb(domain_aabb)
@@ -148,7 +234,7 @@ def cardinal_planes_to_aabb(planes, domain_aabb, eps=_FACE_EPS) -> Optional[list
 
 
 def aabb_to_cardinal_planes(aabb, domain_aabb, *, atol=1e-3) -> list:
-    """Infer one enabled plane per inset axis (the more inset face wins)."""
+    """Infer enabled lo/hi faces for each inset axis (up to two per axis)."""
     clip = normalize_clip_aabb(aabb)
     domain = normalize_clip_aabb(domain_aabb)
     if clip is None or domain is None:
@@ -158,19 +244,17 @@ def aabb_to_cardinal_planes(aabb, domain_aabb, *, atol=1e-3) -> list:
     for axis in range(3):
         lo_inset = float(clip[0][axis]) - float(domain[0][axis])
         hi_inset = float(domain[1][axis]) - float(clip[1][axis])
-        if lo_inset <= tol and hi_inset <= tol:
-            continue
-        if hi_inset > lo_inset:
-            planes.append({
-                "axis": axis,
-                "position": float(clip[1][axis]),
-                "hi": True,
-            })
-        else:
+        if lo_inset > tol:
             planes.append({
                 "axis": axis,
                 "position": float(clip[0][axis]),
                 "hi": False,
+            })
+        if hi_inset > tol:
+            planes.append({
+                "axis": axis,
+                "position": float(clip[1][axis]),
+                "hi": True,
             })
     return normalize_cardinal_planes(planes)
 
@@ -210,8 +294,8 @@ def cardinal_planes_to_gizmos(planes, domain_aabb, scale=5.0) -> list:
     return gizmos
 
 
-def apply_origin_to_cardinal_planes(planes, axis, origin, domain_aabb=None):
-    """Move the enabled plane on ``axis`` to ``origin`` (clamped to the domain)."""
+def apply_origin_to_cardinal_planes(planes, axis, origin, domain_aabb=None, hi=None):
+    """Move the enabled plane on ``axis`` (and optional ``hi`` face) to ``origin``."""
     axis = _as_axis(axis)
     current = normalize_cardinal_planes(planes)
     if axis is None:
@@ -220,18 +304,25 @@ def apply_origin_to_cardinal_planes(planes, axis, origin, domain_aabb=None):
         position = float(np.asarray(origin, dtype=float).reshape(3)[axis])
     except (TypeError, ValueError, IndexError):
         return current
+    faces = [plane for plane in current if plane["axis"] == axis]
+    if hi is None:
+        if len(faces) != 1:
+            return current
+        hi = bool(faces[0]["hi"])
+    hi = bool(hi)
     updated = []
     found = False
     for plane in current:
-        if plane["axis"] != axis:
+        if plane["axis"] != axis or bool(plane["hi"]) != hi:
             updated.append(plane)
             continue
         found = True
         moved = dict(plane)
         moved["position"] = position
-        clamped = clamp_cardinal_plane(moved, domain_aabb)
-        updated.append(clamped if clamped is not None else moved)
-    return updated if found else current
+        updated.append(moved)
+    if not found:
+        return current
+    return clamp_cardinal_planes(updated, domain_aabb, lock=(axis, hi))
 
 
 def aabb_to_axis_planes(aabb, scale=5.0):

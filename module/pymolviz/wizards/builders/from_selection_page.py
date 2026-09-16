@@ -18,6 +18,13 @@ from ..pick import (
     qt_widget_alive,
 )
 from ..widgets.ascii_locale import apply_ascii_float_locale, configure_committed_spin
+from ..widgets.spin_step import (
+    STEP_ANGSTROM,
+    STEP_ANGSTROM_COARSE,
+    STEP_RESOLUTION,
+    STEP_SPACING,
+    apply_spin_step,
+)
 from ..widgets.breadcrumb import CRUMB_FROM_SELECTION, create_field_crumbs, edit_field_crumbs
 from ..widgets.section import make_section
 from .field_params import (
@@ -326,16 +333,14 @@ class FromSelectionFieldPage(PointTableBuilderPage):
             self._bounds_mode.addItem(label, key)
         self._bounds_mode.currentIndexChanged.connect(self._on_domain_changed)
         self._padding = QtWidgets.QDoubleSpinBox()
-        self._padding.setDecimals(2)
         self._padding.setRange(0.0, 50.0)
-        self._padding.setSingleStep(0.5)
+        apply_spin_step(self._padding, STEP_ANGSTROM_COARSE, decimals=2)
         self._padding.setValue(0.0)
         apply_ascii_float_locale(self._padding, QtCore)
         self._padding.valueChanged.connect(lambda *_: self._schedule_preview())
         self._spacing = QtWidgets.QDoubleSpinBox()
-        self._spacing.setDecimals(3)
         self._spacing.setRange(0.05, 8.0)
-        self._spacing.setSingleStep(0.05)
+        apply_spin_step(self._spacing, STEP_SPACING, decimals=3)
         self._spacing.setValue(gauss_spacing(DEFAULT_QUALITY))
         apply_ascii_float_locale(self._spacing, QtCore)
         self._spacing.valueChanged.connect(lambda *_: self._schedule_preview())
@@ -351,9 +356,8 @@ class FromSelectionFieldPage(PointTableBuilderPage):
             lo = QtWidgets.QDoubleSpinBox()
             hi = QtWidgets.QDoubleSpinBox()
             for spin in (lo, hi):
-                spin.setDecimals(2)
                 spin.setRange(-1e4, 1e4)
-                spin.setSingleStep(0.5)
+                apply_spin_step(spin, STEP_ANGSTROM, decimals=2)
                 apply_ascii_float_locale(spin, QtCore)
                 spin.valueChanged.connect(lambda *_: self._schedule_preview())
             box_layout.addWidget(QtWidgets.QLabel(axis), i, 0)
@@ -390,16 +394,14 @@ class FromSelectionFieldPage(PointTableBuilderPage):
         configure_committed_spin(self._quality)
         self._quality.valueChanged.connect(lambda *_: self._on_quality_changed())
         self._resolution = QtWidgets.QDoubleSpinBox()
-        self._resolution.setDecimals(2)
         self._resolution.setRange(1.00, 8.00)
-        self._resolution.setSingleStep(0.25)
+        apply_spin_step(self._resolution, STEP_RESOLUTION, decimals=2)
         self._resolution.setValue(DEFAULT_GAUSSIAN_RESOLUTION)
         apply_ascii_float_locale(self._resolution, QtCore)
         self._resolution.valueChanged.connect(lambda *_: self._schedule_preview())
         self._iso_value = QtWidgets.QDoubleSpinBox()
-        self._iso_value.setDecimals(2)
         self._iso_value.setRange(0.05, 8.00)
-        self._iso_value.setSingleStep(0.05)
+        apply_spin_step(self._iso_value, 0.05, decimals=2)
         self._iso_value.setValue(DEFAULT_GAUSSIAN_ISOLEVEL)
         apply_ascii_float_locale(self._iso_value, QtCore)
         self._iso_value.valueChanged.connect(lambda *_: self._schedule_preview())

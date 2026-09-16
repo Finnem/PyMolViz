@@ -34,9 +34,14 @@ from ...util.colormap_spec import (
     data_to_unit,
     definition_from_preset,
     field_histogram,
+    field_values_for_stats,
+    limits_sane_for_field,
+    HISTOGRAM_VIEW_AUTO,
+    HISTOGRAM_VIEW_FULL,
+    HISTOGRAM_VIEW_LOG,
+    HISTOGRAM_VIEW_PERCENTILE,
     field_title,
     field_units,
-    field_values_for_stats,
     format_number,
     listed_preset_names,
     load_custom_presets,
@@ -62,6 +67,12 @@ from ..pick import (
     qt_widget_alive,
 )
 from ..widgets.ascii_locale import apply_ascii_float_locale
+from ..widgets.spin_step import (
+    STEP_PERCENT,
+    STEP_UNIT_POSITION,
+    apply_spin_step,
+    bind_peer_steps,
+)
 from ..widgets.section import make_section
 from ..widgets.switch import make_switch
 from ..widgets.theme import (
@@ -111,6 +122,11 @@ RANGE_AUTO_LABEL = "Auto"
 RANGE_CUSTOM_LABEL = "Custom"
 RANGE_SYMMETRIC_LABEL = "Symmetric around zero"
 RANGE_PERCENTILE_LABEL = "Percentile"
+
+HIST_VIEW_AUTO_LABEL = "Auto (analyze data)"
+HIST_VIEW_FULL_LABEL = "Full range"
+HIST_VIEW_LOG_LABEL = "Log scale"
+HIST_VIEW_PCT_LABEL = "Percentile (1–99%)"
 
 INTERP_RGB_LABEL = "Linear RGB"
 INTERP_HSV_LABEL = "Linear HSV"
@@ -279,6 +295,20 @@ class ColormapEditorDialog:
         hist_row.addWidget(self._histogram.widget, stretch=1)
         hist_row.addWidget(self._hist_stats)
         hist.layout.addLayout(hist_row)
+        hist_view_row = QtWidgets.QHBoxLayout()
+        self._hist_view = QtWidgets.QComboBox()
+        self._hist_view.addItem(HIST_VIEW_AUTO_LABEL, HISTOGRAM_VIEW_AUTO)
+        self._hist_view.addItem(HIST_VIEW_FULL_LABEL, HISTOGRAM_VIEW_FULL)
+        self._hist_view.addItem(HIST_VIEW_LOG_LABEL, HISTOGRAM_VIEW_LOG)
+        self._hist_view.addItem(HIST_VIEW_PCT_LABEL, HISTOGRAM_VIEW_PERCENTILE)
+        self._hist_view.setToolTip(
+            "How the histogram x-axis is drawn. Auto picks log or a focused range "
+            "for heavy-tailed fields (e.g. electron density)."
+        )
+        self._hist_view.currentIndexChanged.connect(self._on_hist_view_changed)
+        hist_view_row.addWidget(QtWidgets.QLabel("Distribution view"))
+        hist_view_row.addWidget(self._hist_view, stretch=1)
+        hist.layout.addLayout(hist_view_row)
         self._colorbar = _ColorbarPreview(
             body, compact=True, show_stops=True,
             on_select=self._on_handle_selected,
@@ -323,14 +353,20 @@ class ColormapEditorDialog:
         for spin in (self._vmin, self._vmax, self._center):
             spin.setDecimals(4)
             spin.setRange(-1e8, 1e8)
-            spin.setSingleStep(0.1)
             apply_ascii_float_locale(spin, QtCore)
+        bind_peer_steps(self._vmin, self._vmax, self._center, min_decimals=4)
         self._link_zero = make_switch("Link center to 0")
         self._link_zero.setChecked(True)
         self._pct_lo = QtWidgets.QDoubleSpinBox()
         self._pct_hi = QtWidgets.QDoubleSpinBox()
         self._pct_lo.setRange(0.0, 50.0)
         self._pct_hi.setRange(50.0, 100.0)
+        self._pct_lo.setDecimals(1)
+        self._pct_hi.setDecimals(1)
+        apply_spin_step(self._pct_lo, STEP_PERCENT, decimals=1)
+        apply_spin_step(self._pct_hi, STEP_PERCENT, decimals=1)
+        apply_ascii_float_locale(self._pct_lo, QtCore)
+        apply_ascii_float_locale(self._pct_hi, QtCore)
         self._pct_lo.setSuffix(" %")
         self._pct_hi.setSuffix(" %")
         self._pct_lo.setValue(2.0)
@@ -477,7 +513,7 @@ class ColormapEditorDialog:
             ridx = self._range.findData(norm.mode)
             if ridx >= 0:
                 self._range.setCurrentIndex(ridx)
-            limits = resolve_limits(norm, self._values)
+            limits = self._resolve_limits()
             if norm.mode in (RANGE_MODE_CUSTOM, RANGE_MODE_SYMMETRIC):
                 if norm.vmin is not None:
                     self._vmin.setValue(float(norm.vmin))
@@ -584,10 +620,21 @@ class ColormapEditorDialog:
             units=self._mapping.units,
         )
 
-    def _commit_ui(self, live=True, immediate=False):
+    def _commit_ui(self, live=True, immediate=False, reload=False):
         if not qt_widget_alive(self._dialog):
             return
-        self._load_mapping(self._mapping)
+        if reload:
+            self._load_mapping(self._mapping)
+        else:
+            self._syncing = True
+            try:
+                self._fill_stop_editor()
+                self._rebuild_table()
+                self._sync_range_enabled()
+            finally:
+                self._syncing = False
+            self._sync_plot()
+            self._refresh_previews()
         if not live:
             return
         if immediate:
@@ -613,14 +660,14 @@ class ColormapEditorDialog:
                     nan_transparent=defn.nan_transparent, out_of_range=defn.out_of_range,
                     below_rgba=defn.below_rgba, above_rgba=defn.above_rgba, customized=True,
                 )
-                self._commit_ui()
+                self._commit_ui(reload=True)
                 return
         defn = definition_from_preset(name)
         self._replace_colormap(
             preset=defn.preset, stops=defn.stops, customized=False,
             interpolation=INTERP_RGB, map_type=MAP_CONTINUOUS,
         )
-        self._commit_ui()
+        self._commit_ui(reload=True)
 
     def _reset_preset(self):
         name = str(self._preset.currentData() or self._original.colormap.preset or DEFAULT_SURFACE_COLORMAP)
@@ -631,7 +678,7 @@ class ColormapEditorDialog:
             nan_rgba=defn.nan_rgba, nan_transparent=False, out_of_range=OOR_CLAMP,
             below_rgba=None, above_rgba=None, levels=5,
         )
-        self._commit_ui()
+        self._commit_ui(reload=True)
 
     def _reverse_cmap(self):
         self._mapping = FieldColorMapping(
@@ -680,8 +727,16 @@ class ColormapEditorDialog:
         was = self._syncing
         self._syncing = True
         try:
-            self._pos.setRange(lo, hi)
-            self._pos.setValue(_clamp_stop_position(self._selected, stops, stop.position))
+            pinned = hi <= lo + 1e-12
+            self._pos.setEnabled(not pinned)
+            if pinned:
+                self._pos.setRange(0.0, 1.0)
+                self._pos.setValue(0.0 if self._selected <= 0 else 1.0)
+                self._pos.setToolTip("End colors stay at the mapped min and max.")
+            else:
+                self._pos.setRange(lo, hi)
+                self._pos.setValue(_clamp_stop_position(self._selected, stops, stop.position))
+                self._pos.setToolTip("Position along the mapped range (0 = min, 1 = max).")
             if self._opacity is not None and qt_widget_alive(self._opacity):
                 self._opacity.setValue(int(round(stop.rgba[3] * 100)))
             if self._swatch is not None and qt_widget_alive(self._swatch):
@@ -731,9 +786,8 @@ class ColormapEditorDialog:
         apply_wizard_page_style(dialog)
         form = QtWidgets.QFormLayout(dialog)
         self._pos = QtWidgets.QDoubleSpinBox()
-        self._pos.setDecimals(3)
         self._pos.setRange(0.0, 1.0)
-        self._pos.setSingleStep(0.01)
+        apply_spin_step(self._pos, STEP_UNIT_POSITION, decimals=3)
         apply_ascii_float_locale(self._pos, QtCore)
         self._swatch = QtWidgets.QPushButton()
         self._opacity = QtWidgets.QSpinBox()
@@ -801,7 +855,7 @@ class ColormapEditorDialog:
         self._refresh_previews()
 
     def _limits_for_plot(self):
-        limits = resolve_limits(self._mapping.normalization, self._values)
+        limits = self._resolve_limits()
         if limits is None:
             hist = getattr(self._histogram, "_hist", None)
             if hist and hist.get("vmin") is not None:
@@ -861,6 +915,15 @@ class ColormapEditorDialog:
             title=self._mapping.title,
             units=self._mapping.units,
         )
+        self._syncing = True
+        try:
+            ridx = self._range.findData(mode)
+            if ridx >= 0:
+                self._range.setCurrentIndex(ridx)
+            self._vmin.setValue(float(vmin))
+            self._vmax.setValue(float(vmax))
+        finally:
+            self._syncing = False
         self._sync_plot()
 
     def _on_handle_drag_finished(self):
@@ -872,7 +935,7 @@ class ColormapEditorDialog:
             if value is None:
                 return
             vmin, vmax = self._mapping.normalization.vmin, self._mapping.normalization.vmax
-            limits = resolve_limits(self._mapping.normalization, self._values) or (0.0, 1.0)
+            limits = self._resolve_limits() or (0.0, 1.0)
             if vmin is None or vmax is None:
                 vmin, vmax = limits
             if payload == "vmin":
@@ -884,7 +947,7 @@ class ColormapEditorDialog:
         value = _ask_float(self._dialog, "Color stop", "Value", current)
         if value is None:
             return
-        limits = resolve_limits(self._mapping.normalization, self._values) or (0.0, 1.0)
+        limits = self._resolve_limits() or (0.0, 1.0)
         pos = data_to_unit(value, limits[0], limits[1])
         stops = list(self._mapping.colormap.stops)
         index = int(payload)
@@ -1049,16 +1112,56 @@ class ColormapEditorDialog:
         )
         self._commit_ui()
 
-    def _refresh_histogram(self):
-        hist = field_histogram(self._mapping.field_id) if self._mapping.field_id else None
-        if hist is None and self._values is not None:
-            from ...util.colormap_spec import histogram_from_values
-            hist = histogram_from_values(self._values)
-        limits = resolve_limits(self._mapping.normalization, self._values)
-        if limits is None and hist and hist.get("vmin") is not None:
-            limits = (float(hist["vmin"]), float(hist["vmax"]))
+    def _effective_values(self):
+        fid = getattr(self._mapping, "field_id", None)
+        if fid:
+            values = field_values_for_stats(fid)
+            if values is not None:
+                return values
+        return self._values
+
+    def _resolve_limits(self, hist=None):
+        values = self._effective_values()
+        limits = resolve_limits(self._mapping.normalization, values)
+        limits = limits_sane_for_field(limits, values)
+        if hist is None:
+            hist = getattr(getattr(self, "_histogram", None), "_hist", None)
+        if hist and hist.get("vmax") is not None and hist.get("vmin") is not None:
+            hvmin = float(hist["vmin"])
+            hvmax = float(hist["vmax"])
+            if limits is None:
+                limits = (hvmin, hvmax)
+            else:
+                hi = float(limits[1])
+                if hi > max(hvmax * 4.0, hvmax + 1.0):
+                    limits = (hvmin, hvmax)
         if limits is None:
             limits = (0.0, 1.0)
+        return limits
+
+    def _hist_view_mode(self) -> str:
+        combo = getattr(self, "_hist_view", None)
+        if combo is None:
+            return HISTOGRAM_VIEW_AUTO
+        data = combo.currentData()
+        return str(data or HISTOGRAM_VIEW_AUTO)
+
+    def _on_hist_view_changed(self, *_args):
+        if self._syncing:
+            return
+        self._refresh_histogram()
+
+    def _refresh_histogram(self):
+        view = self._hist_view_mode()
+        hist = (
+            field_histogram(self._mapping.field_id, view=view)
+            if self._mapping.field_id
+            else None
+        )
+        if hist is None and self._values is not None:
+            from ...util.colormap_spec import histogram_from_values
+            hist = histogram_from_values(self._values, view=view)
+        limits = self._resolve_limits(hist)
         center = None
         if self._mapping.normalization.mode == RANGE_MODE_SYMMETRIC:
             center = 0.0 if self._mapping.normalization.link_center_zero else self._mapping.normalization.center
@@ -1075,22 +1178,26 @@ class ColormapEditorDialog:
             "Std: %s" % format_number(hist["std"]),
             "Samples: %s" % hist["n"],
         ]
+        if hist.get("p1") is not None and hist.get("p99") is not None:
+            lines.append(
+                "P1–P99: %s – %s"
+                % (format_number(hist["p1"]), format_number(hist["p99"]))
+            )
+        note = str(hist.get("preview_note") or "").strip()
+        if note:
+            lines.append(note)
+        zf = hist.get("zero_fraction")
+        if zf is not None and float(zf) > 0.05:
+            lines.append("Zeros: %.0f%% (histogram uses positive values)" % (float(zf) * 100.0))
+        if hist.get("suggest_percentile_range"):
+            lines.append("Tip: try Range → Percentile for colormap limits.")
         self._hist_stats.setText("\n".join(lines))
 
     def _refresh_previews(self):
         bar = getattr(self, "_colorbar", None)
         if bar is None:
             return
-        limits = resolve_limits(self._mapping.normalization, self._values)
-        if limits is None:
-            hist = field_histogram(self._mapping.field_id) if self._mapping.field_id else None
-            if hist is None and self._values is not None:
-                from ...util.colormap_spec import histogram_from_values
-                hist = histogram_from_values(self._values)
-            if hist and hist.get("vmin") is not None:
-                limits = (float(hist["vmin"]), float(hist["vmax"]))
-        if limits is None:
-            limits = (0.0, 1.0)
+        limits = self._resolve_limits(getattr(getattr(self, "_histogram", None), "_hist", None))
         settings = ColorbarExportSettings(
             title="",
             units="",

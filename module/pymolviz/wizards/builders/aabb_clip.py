@@ -28,6 +28,7 @@ class CardinalClipGizmoController:
         span_points: Callable[[], Optional[Sequence]],
         domain_aabb: Callable[[], Optional[list]],
         on_changed: Callable[[], None],
+        gizmos_visible: Optional[Callable[[int], bool]] = None,
     ):
         self._page = page
         self._preview = preview
@@ -36,7 +37,9 @@ class CardinalClipGizmoController:
         self._span_points = span_points
         self._domain_aabb = domain_aabb
         self._on_changed = on_changed
+        self._gizmos_visible = gizmos_visible
         self.selected_axis = None
+        self.selected_hi = None
         self._drag_timer = None
         self._settle_timer = None
         self._mesh_clip_pending = False
@@ -45,6 +48,20 @@ class CardinalClipGizmoController:
     def planes(self):
         return cardinal_planes_to_gizmos(self._get_planes(), self._domain())
 
+    def _axis_gizmo_visible(self, axis: int) -> bool:
+        if self._gizmos_visible is None:
+            return True
+        try:
+            return bool(self._gizmos_visible(int(axis)))
+        except Exception:
+            return True
+
+    def visible_gizmos(self):
+        return [
+            plane for plane in self.planes()
+            if self._axis_gizmo_visible(int(plane.get("axis", 0)))
+        ]
+
     def _domain(self):
         try:
             return self._domain_aabb()
@@ -52,21 +69,30 @@ class CardinalClipGizmoController:
             return None
 
     def selected_index(self):
-        gizmos = self.planes()
+        gizmos = self.visible_gizmos()
         if not gizmos:
             return None
         axis = self.selected_axis
         if axis is None:
             return None
-        for i, plane in enumerate(gizmos):
-            if int(plane.get("axis", -1)) == int(axis):
-                return i
-        return None
+        matches = [
+            i for i, plane in enumerate(gizmos)
+            if int(plane.get("axis", -1)) == int(axis)
+        ]
+        if not matches:
+            return None
+        hi = self.selected_hi
+        if hi is not None:
+            for i in matches:
+                if bool(gizmos[i].get("hi")) == bool(hi):
+                    return i
+        return matches[0]
 
     def clear(self) -> None:
         self.stop_drag_poll()
         self._cancel_mesh_commit()
         self.selected_axis = None
+        self.selected_hi = None
         if self._preview is not None and hasattr(self._preview, "set_gizmos"):
             self._preview.set_gizmos([], attach_drag=False, axis_lock=True)
         if self._preview is not None and hasattr(self._preview, "release_clip_drag"):
@@ -76,11 +102,16 @@ class CardinalClipGizmoController:
         if self._preview is not None and hasattr(self._preview, "release_clip_drag"):
             self._preview.release_clip_drag()
 
-    def select_axis(self, axis) -> None:
+    def select_axis(self, axis, hi=None) -> None:
         try:
             self.selected_axis = int(axis)
         except (TypeError, ValueError):
             self.selected_axis = None
+        if hi is None:
+            if self.selected_axis is None:
+                self.selected_hi = None
+        else:
+            self.selected_hi = bool(hi)
         self.relatch()
         self.refresh_gizmos()
 
@@ -96,14 +127,24 @@ class CardinalClipGizmoController:
     def refresh_gizmos(self, attach_drag=None) -> None:
         if self._preview is None or not hasattr(self._preview, "set_gizmos"):
             return
-        gizmos = self.planes()
-        if not gizmos:
+        enabled = self.planes()
+        if not enabled:
             self.clear()
             return
-        if self.selected_index() is None:
+        gizmos = self.visible_gizmos()
+        if not gizmos:
+            self._preview.set_gizmos([], attach_drag=False, axis_lock=True)
+            if hasattr(self._preview, "release_clip_drag"):
+                self._preview.release_clip_drag()
+            self.stop_drag_poll()
+            return
+        if self.selected_axis is None:
             self.selected_axis = int(gizmos[0].get("axis", 0))
+            self.selected_hi = bool(gizmos[0].get("hi"))
         if attach_drag is None:
             attach_drag = not self.clip_drag_live()
+        if self.selected_index() is None:
+            attach_drag = False
         span = None
         try:
             span = self._span_points()
@@ -183,7 +224,7 @@ class CardinalClipGizmoController:
     def _on_drag_tick(self):
         if self._suspend:
             return
-        gizmos = self.planes()
+        gizmos = self.visible_gizmos()
         idx = self.selected_index()
         if not gizmos or idx is None or idx >= len(gizmos):
             self.stop_drag_poll()
@@ -196,9 +237,11 @@ class CardinalClipGizmoController:
             return
         origin, _normal = pose
         axis = int(gizmos[idx].get("axis", 0))
+        hi = bool(gizmos[idx].get("hi"))
+        self.selected_hi = hi
         current = normalize_cardinal_planes(self._get_planes())
         updated = apply_origin_to_cardinal_planes(
-            current, axis, origin, self._domain(),
+            current, axis, origin, self._domain(), hi=hi,
         )
         if updated == current:
             return

@@ -1409,6 +1409,7 @@ def test_pick_rgb_reuses_open_dialog_and_commits_on_color_selected():
     assert "_pmv_raise_last" in src
     assert "window_anchor" in src
     assert "window_anchor is None" in src
+    assert "_pmv_no_transient" in src
 
 
 def test_colormap_stop_color_picker_is_solid_only():

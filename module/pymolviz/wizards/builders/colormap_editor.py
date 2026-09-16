@@ -28,11 +28,13 @@ from ...util.colormap_spec import (
     reverse_definition,
     save_custom_preset,
     unused_custom_preset_name,
-    uses_stop_sampling,
+    stored_colormap_spec,
+    normalization_from_stored_spec,
 )
 from ...util.field_sample import DEFAULT_SURFACE_COLORMAP, FIELD_COLORMAPS
 from ..pick import qt_modules, qt_widget_alive
 from ..widgets.ascii_locale import apply_ascii_float_locale
+from ..widgets.spin_step import bind_peer_steps
 from ..widgets.switch import make_switch
 from ..widgets.theme import apply_shrinking_combo, row_icon_css
 
@@ -395,9 +397,7 @@ class ColormapEditor:
         return self._definition
 
     def colormap_spec(self):
-        if uses_stop_sampling(self._definition):
-            return self._definition.to_dict()
-        return None
+        return stored_colormap_spec(self._definition, self.normalization())
 
     def normalization(self) -> Normalization:
         clims = self.custom_clims()
@@ -428,6 +428,7 @@ class ColormapEditor:
         return True
 
     def set_colormap(self, name, *, reverse=None, range_mode=None, clims=None, spec=None) -> None:
+        stored_norm = normalization_from_stored_spec(spec)
         if spec:
             self._definition = ColormapDefinition.from_dict(spec)
             preset, parsed_reverse = parse_colormap_reverse(
@@ -443,6 +444,12 @@ class ColormapEditor:
             self._definition = definition_from_preset(preset, reverse=parsed_reverse)
         if reverse is not None:
             parsed_reverse = bool(reverse)
+        if stored_norm is not None:
+            self._norm_extra = stored_norm
+            if range_mode is None:
+                range_mode = stored_norm.mode
+            if clims is None and stored_norm.vmin is not None and stored_norm.vmax is not None:
+                clims = (float(stored_norm.vmin), float(stored_norm.vmax))
         self._syncing = True
         try:
             if not self._ui_alive():
@@ -489,7 +496,7 @@ class ColormapEditor:
             mapping.colormap.preset or self._default_name,
             range_mode=norm.mode,
             clims=clims,
-            spec=mapping.colormap.to_dict() if uses_stop_sampling(mapping.colormap) else None,
+            spec=stored_colormap_spec(mapping.colormap, mapping.normalization),
         )
 
     def set_range_mode(self, mode: str) -> None:
@@ -720,15 +727,15 @@ class ColormapEditor:
         self._lo = QtWidgets.QDoubleSpinBox()
         self._hi = QtWidgets.QDoubleSpinBox()
         for spin in (self._lo, self._hi):
-            spin.setDecimals(3)
+            spin.setDecimals(4)
             spin.setRange(-1e6, 1e6)
-            spin.setSingleStep(0.1)
             apply_ascii_float_locale(spin, QtCore)
             expanding = getattr(QtWidgets.QSizePolicy, "Expanding", None)
             fixed = getattr(QtWidgets.QSizePolicy, "Fixed", None)
             if expanding is not None and fixed is not None:
                 spin.setSizePolicy(expanding, fixed)
             spin.valueChanged.connect(lambda *_: self._emit())
+        bind_peer_steps(self._lo, self._hi, min_decimals=4)
         clim_row.addWidget(self._lo, stretch=1)
         clim_row.addWidget(self._hi, stretch=1)
         form.addRow("Min / max", clim_wrap)

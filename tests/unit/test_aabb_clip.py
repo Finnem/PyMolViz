@@ -15,6 +15,8 @@ from pymolviz.fields.clip import (
     cardinal_planes_to_gizmos,
     default_cardinal_plane,
     retarget_clip_aabb,
+    normalize_cardinal_planes,
+    opposite_cardinal_plane,
 )
 from pymolviz.fields.domain import field_display_aabb
 from pymolviz.util.clip_drag import apply_axis_drag_matrix, apply_drag_matrix
@@ -127,6 +129,46 @@ def test_aabb_to_cardinal_planes_ignores_domain_faces():
     assert by_axis[2]["position"] == pytest.approx(7.0)
 
 
+def test_two_planes_on_one_axis_make_a_slab():
+    domain = [[0.0, 0.0, 0.0], [10.0, 10.0, 10.0]]
+    first = {"axis": 0, "position": 2.0, "hi": False}
+    second = opposite_cardinal_plane(first, domain)
+    assert second["axis"] == 0
+    assert second["hi"] is True
+    assert second["position"] > 2.0
+    box = cardinal_planes_to_aabb([first, second], domain)
+    assert box[0][0] == pytest.approx(2.0)
+    assert box[1][0] == pytest.approx(second["position"])
+    assert box[0][1] == pytest.approx(0.0)
+    gizmos = cardinal_planes_to_gizmos([first, second], domain)
+    assert len(gizmos) == 2
+    kept = normalize_cardinal_planes([first, second, {"axis": 0, "position": 9.0, "hi": True}])
+    assert len([p for p in kept if p["axis"] == 0]) == 2
+    inferred = aabb_to_cardinal_planes([[2.0, 0.0, 0.0], [8.0, 10.0, 10.0]], domain)
+    by_hi = {(p["axis"], p["hi"]): p for p in inferred}
+    assert (0, False) in by_hi and (0, True) in by_hi
+    assert by_hi[(0, False)]["position"] == pytest.approx(2.0)
+    assert by_hi[(0, True)]["position"] == pytest.approx(8.0)
+
+
+def test_apply_origin_moves_only_the_locked_face():
+    domain = [[0.0, 0.0, 0.0], [10.0, 10.0, 10.0]]
+    planes = [
+        {"axis": 0, "position": 2.0, "hi": False},
+        {"axis": 0, "position": 8.0, "hi": True},
+        {"axis": 2, "position": 5.0, "hi": True},
+    ]
+    moved = apply_origin_to_cardinal_planes(planes, 0, (3.0, 0.0, 0.0), domain, hi=False)
+    by_key = {(p["axis"], p["hi"]): p for p in moved}
+    assert by_key[(0, False)]["position"] == pytest.approx(3.0)
+    assert by_key[(0, True)]["position"] == pytest.approx(8.0)
+    assert by_key[(2, True)]["position"] == pytest.approx(5.0)
+    blocked = apply_origin_to_cardinal_planes(planes, 0, (9.5, 0.0, 0.0), domain, hi=False)
+    by_key = {(p["axis"], p["hi"]): p for p in blocked}
+    assert by_key[(0, False)]["position"] < by_key[(0, True)]["position"]
+    assert by_key[(0, True)]["position"] == pytest.approx(8.0)
+
+
 def test_default_cardinal_plane_is_domain_midpoint():
     plane = default_cardinal_plane(1, [[0.0, -4.0, 0.0], [10.0, 6.0, 2.0]])
     assert plane["axis"] == 1
@@ -204,6 +246,65 @@ def test_cardinal_clip_controller_drag_updates_plane_without_immediate_commit():
     assert ctrl._mesh_clip_pending is True
     ctrl._commit_pending_clip_mesh()
     assert changed == ["preview"]
+
+
+def test_cardinal_clip_drag_moves_only_selected_face():
+    state = [[
+        {"axis": 0, "position": 1.0, "hi": False},
+        {"axis": 0, "position": 3.0, "hi": True},
+    ]]
+    domain = [[0.0, 0.0, 0.0], [4.0, 4.0, 4.0]]
+    preview = _DragPreview(([1.5, 1.0, 1.0], [1.0, 0.0, 0.0]))
+    ctrl = CardinalClipGizmoController(
+        page=None,
+        preview=preview,
+        get_planes=lambda: state[0],
+        set_planes=lambda planes: state.__setitem__(0, planes),
+        span_points=lambda: None,
+        domain_aabb=lambda: domain,
+        on_changed=lambda: None,
+    )
+    ctrl.selected_axis = 0
+    ctrl.selected_hi = True
+    ctrl._on_drag_tick()
+    by_hi = {p["hi"]: p for p in state[0] if p["axis"] == 0}
+    assert by_hi[False]["position"] == pytest.approx(1.0)
+    assert by_hi[True]["position"] == pytest.approx(1.5)
+    assert preview.gizmo_calls[-1]["n"] == 2
+
+
+def test_hidden_cardinal_gizmo_is_omitted_without_commit():
+    state = [[{"axis": 0, "position": 0.0, "hi": False}]]
+    domain = [[0.0, 0.0, 0.0], [4.0, 4.0, 4.0]]
+    visible = {0: True}
+
+    preview = _DragPreview(None)
+    changed = []
+    ctrl = CardinalClipGizmoController(
+        page=None,
+        preview=preview,
+        get_planes=lambda: state[0],
+        set_planes=lambda planes: state.__setitem__(0, planes),
+        span_points=lambda: None,
+        domain_aabb=lambda: domain,
+        on_changed=lambda: changed.append("preview"),
+        gizmos_visible=lambda axis: visible.get(int(axis), True),
+    )
+    ctrl.selected_axis = 0
+    ctrl.refresh_gizmos()
+    assert preview.gizmo_calls[-1]["n"] == 1
+
+    visible[0] = False
+    ctrl.refresh_gizmos()
+    assert changed == []
+    assert preview.gizmo_calls[-1]["n"] == 0
+    assert state[0][0]["position"] == pytest.approx(0.0)
+    assert ctrl.selected_axis == 0
+
+    visible[0] = True
+    ctrl.refresh_gizmos()
+    assert preview.gizmo_calls[-1]["n"] == 1
+    assert preview.gizmo_calls[-1]["selected"] == 0
 
 
 def test_axis_locked_gizmo_has_one_keep_side_arrow():
