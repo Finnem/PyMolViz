@@ -5,6 +5,40 @@ from __future__ import annotations
 from typing import Iterable, List, Optional
 
 
+def field_identity_keys(obj) -> List[str]:
+    """Ids and names used to match a field to its visuals."""
+    from ..util.field_sample import PYMOL_MAP_ID_PREFIX, field_label, resolve_grid
+
+    keys = []
+    seen = set()
+
+    def _add(value):
+        text = str(value or "")
+        if not text or text in seen:
+            return
+        seen.add(text)
+        keys.append(text)
+
+    _add(getattr(obj, "id", None))
+    label = field_label(obj)
+    _add(label)
+    if label:
+        _add(PYMOL_MAP_ID_PREFIX + label)
+    generator = getattr(obj, "generator", None) or {}
+    if str(generator.get("type") or "") == "pymol_map" and generator.get("map_name"):
+        map_name = str(generator["map_name"])
+        _add(map_name)
+        _add(PYMOL_MAP_ID_PREFIX + map_name)
+    grid = resolve_grid(obj)
+    if grid is not None and grid is not obj:
+        _add(getattr(grid, "id", None))
+        nested = field_label(grid)
+        _add(nested)
+        if nested:
+            _add(PYMOL_MAP_ID_PREFIX + nested)
+    return keys
+
+
 def _obj_id(obj) -> str:
     return str(getattr(obj, "id", "") or "")
 
@@ -17,9 +51,9 @@ def _display_name(obj) -> str:
 
 
 def _mesh_children(obj) -> list:
-    if type(obj).__name__ == "CGOCollection":
-        return list(obj)
-    return [obj]
+    from ..meshes.CGOCollection import cgo_children
+
+    return cgo_children(obj)
 
 
 def referenced_field_ids(obj) -> List[str]:
@@ -39,7 +73,8 @@ def referenced_field_ids(obj) -> List[str]:
     _add(getattr(obj, "field_id", None))
     grid = getattr(obj, "grid_data", None)
     if grid is not None:
-        _add(getattr(grid, "id", None))
+        for key in field_identity_keys(grid):
+            _add(key)
     for child in _mesh_children(obj):
         if child is obj:
             continue

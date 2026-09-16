@@ -121,6 +121,13 @@ class AppearanceSection:
         on_changed: Optional[Callable[[], None]] = None,
         on_preview: Optional[Callable[[], None]] = None,
         on_look_changed: Optional[Callable[[], None]] = None,
+        show_color_actions: bool = True,
+        colormap_in_uniform: bool = False,
+        field_picker_label: str = "Field",
+        field_empty_label: str = "Select a field",
+        field_id_provider: Optional[Callable[[], Optional[str]]] = None,
+        uniform_tooltip: str = "",
+        field_tooltip: str = "",
     ):
         self._parent = parent
         self.cmd = cmd
@@ -134,6 +141,19 @@ class AppearanceSection:
         self._live_preview_tooltip = str(live_preview_tooltip or DEFAULT_LIVE_PREVIEW_TIP)
         self._quality_range = quality_range
         self._quality_tooltip = quality_tooltip
+        self._show_color_actions = bool(show_color_actions)
+        self._colormap_in_uniform = bool(colormap_in_uniform)
+        self._field_picker_label = str(field_picker_label or "Field")
+        self._field_empty_label = str(field_empty_label or "Select a field")
+        self._field_id_provider = field_id_provider
+        self._uniform_tooltip = str(
+            uniform_tooltip or "One solid color for the whole object."
+        )
+        self._field_tooltip = str(
+            field_tooltip
+            or "Sample a Field at this object's points. The object stores a field id, not a voxel copy."
+        )
+        self._colormap_visible_override = None
         self._points: List[VisualPoint] = []
         self._selected_rows_provider: Optional[Callable[[], Sequence[int]]] = None
         self._widget = None
@@ -268,6 +288,31 @@ class AppearanceSection:
     def custom_clims(self):
         return self._custom_clims()
 
+    def set_color_mode(self, mode: str) -> None:
+        self._set_mode_ui(mode)
+        self._sync_mode_widgets()
+
+    def set_colormap(self, name, *, reverse=None, range_mode=None, clims=None, spec=None) -> None:
+        if self._cmap_editor is None:
+            return
+        self._cmap_editor.set_colormap(
+            name, reverse=reverse, range_mode=range_mode, clims=clims, spec=spec,
+        )
+
+    def refresh_color_field(self, field_id) -> None:
+        if self._field_picker is not None:
+            self._field_picker.refresh(field_id)
+
+    def resolved_clims(self, values=None):
+        if self._cmap_editor is None:
+            return None
+        return self._cmap_editor.resolved_clims(values)
+
+    def set_colormap_visible(self, visible: bool) -> None:
+        self._colormap_visible_override = bool(visible)
+        if self._cmap_editor is not None:
+            self._cmap_editor.widget.setVisible(bool(visible))
+
     def stamp_new_points(self, new_pts: List[VisualPoint]) -> List[VisualPoint]:
         if self.color_mode() == COLOR_MODE_FIELD:
             fid = self._selected_field_id()
@@ -320,11 +365,11 @@ class AppearanceSection:
             (self._reset_colors_btn, "Reassign distinct palette colors to enabled points."),
         ]
         if self._mode_uniform is not None:
-            tips.append((self._mode_uniform, "One solid color for the whole object."))
+            tips.append((self._mode_uniform, self._uniform_tooltip))
         if self._mode_per_point is not None:
             tips.append((self._mode_per_point, "Each point keeps its own color."))
         if self._mode_field is not None:
-            tips.append((self._mode_field, "Sample a Field at this object's points. The object stores a field id, not a voxel copy."))
+            tips.append((self._mode_field, self._field_tooltip))
         if self._field_picker is not None:
             tips.append((self._field_picker.widget, "Field used to color this object."))
         if self._cmap_editor is not None:
@@ -338,6 +383,13 @@ class AppearanceSection:
         return tips
 
     def _selected_field_id(self):
+        if self._field_id_provider is not None:
+            try:
+                fid = self._field_id_provider()
+                if fid:
+                    return fid
+            except Exception:
+                pass
         if self._field_picker is None:
             return None
         return self._field_picker.field_id()
@@ -394,8 +446,11 @@ class AppearanceSection:
     def _sync_mode_widgets(self) -> None:
         mode = self.color_mode()
         field_on = color_mode_shows(mode, "field")
+        show_field_row = field_on or self._colormap_in_uniform
         if self._field_row is not None:
-            self._field_row.setVisible(field_on)
+            self._field_row.setVisible(show_field_row)
+        if self._field_picker is not None:
+            self._field_picker.widget.setEnabled(field_on)
         if self._color_all_btn is not None:
             self._color_all_btn.setEnabled(not field_on)
         if self._reset_colors_btn is not None:
@@ -404,7 +459,11 @@ class AppearanceSection:
             selected = bool(self._selected_rows()) if mode == COLOR_MODE_PER_POINT else False
             self._color_sel_btn.setEnabled(selected)
         if self._cmap_editor is not None:
-            self._cmap_editor.widget.setEnabled(field_on)
+            cmap_enabled = field_on or self._colormap_in_uniform
+            self._cmap_editor.widget.setEnabled(cmap_enabled)
+            if self._colormap_visible_override is None:
+                show_cmap = field_on or self._colormap_in_uniform
+                self._cmap_editor.widget.setVisible(show_cmap)
 
     def _apply_current_mode(self) -> None:
         if self._syncing or not self._points:
@@ -425,14 +484,19 @@ class AppearanceSection:
         if self._syncing:
             return
         self._sync_mode_widgets()
-        self._apply_current_mode()
+        if self._points:
+            self._apply_current_mode()
+        else:
+            self._on_changed()
 
     def _on_field_settings_changed(self) -> None:
         if self._syncing:
             return
         self._sync_mode_widgets()
-        if self.color_mode() == COLOR_MODE_FIELD:
+        if self.color_mode() == COLOR_MODE_FIELD and self._points:
             self._apply_current_mode()
+        elif not self._points:
+            self._on_changed()
 
     def _build(self):
         QtCore, _, QtWidgets = qt_modules()
@@ -468,15 +532,16 @@ class AppearanceSection:
             self.cmd,
             self._context,
             on_changed=self._on_field_settings_changed,
-            empty_label="Select a field",
+            empty_label=self._field_empty_label,
         )
+        provider = self._field_id_provider or self._selected_field_id
         self._cmap_editor = ColormapEditor(
             self._field_row,
             on_changed=self._on_field_settings_changed,
             cmd=self.cmd,
-            field_id_provider=self._selected_field_id,
+            field_id_provider=provider,
         )
-        field_form.addRow("Field", self._field_picker.widget)
+        field_form.addRow(self._field_picker_label, self._field_picker.widget)
         field_form.addRow(self._cmap_editor.widget)
         layout.addWidget(self._field_row)
 
@@ -496,7 +561,12 @@ class AppearanceSection:
         action_row.addWidget(self._color_sel_btn)
         action_row.addWidget(self._reset_colors_btn)
         action_row.addStretch(1)
-        layout.addLayout(action_row)
+        if self._show_color_actions:
+            layout.addLayout(action_row)
+        else:
+            self._color_all_btn.setVisible(False)
+            self._color_sel_btn.setVisible(False)
+            self._reset_colors_btn.setVisible(False)
         if not self._show_per_point:
             self._color_sel_btn.setVisible(False)
             self._reset_colors_btn.setVisible(False)

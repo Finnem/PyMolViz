@@ -2,6 +2,8 @@ import logging
 import uuid
 from collections import defaultdict
 
+from .util.sanitize import sanitize_pymol_string
+
 _pmv_default_name_counter = defaultdict(int)
 
 
@@ -46,9 +48,6 @@ class Displayable():
             except Exception:
                 pass
 
-    def render(self, backend) -> None:
-        backend.visit(self)
-
     @property
     def name(self):
         global _pmv_default_name_counter
@@ -71,24 +70,14 @@ class Displayable():
         if value is None:
             self._name = None
             return
-        new_name = str(value).replace(" ", "_")
-        new_name = str(new_name).replace(".", "_")
-        new_name = str(new_name).replace(":", "_")
-        new_name = str(new_name).replace("|", "_")
-        new_name = str(new_name).replace("&", "_")
-        new_name = str(new_name).replace("?", "_")
-        new_name = str(new_name).replace("!", "_")
-        new_name = str(new_name).replace("+", "_")
-        new_name = str(new_name).replace("-", "_")
-        if new_name[0].isdigit():
-            new_name = "_" + new_name
-        if any(s in new_name for s in ["(", ")", "[", "]"]):
+        raw = str(value)
+        if any(ch in raw for ch in "()[]"):
             logging.warning(
                 "Name %s contains parentheses. This may cause issues with PyMol. "
                 "Consider changing the name.",
-                new_name,
+                raw,
             )
-        self._name = new_name.replace("(", "_").replace(")", "_").replace("[", "_").replace("]", "_")
+        self._name = sanitize_pymol_string(raw)
 
     def to_script(self):
         from .Script import Script

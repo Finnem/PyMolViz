@@ -189,7 +189,7 @@ cmd.set("volume_mode", 0)
                         flat_list.append(float(list_item))
                 else:
                     flat_list.append(float(item))
-        from ..wizards.builders.field_visual import load_geometry_map, sync_visual_grid_from_field
+        from .map_load import load_geometry_map, sync_visual_grid_from_field
 
         sync_visual_grid_from_field(self, cmd)
         map_name, rebuilt = load_geometry_map(cmd, self.grid_data, self.clip_aabb)

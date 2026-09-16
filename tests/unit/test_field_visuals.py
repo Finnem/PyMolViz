@@ -188,6 +188,41 @@ def test_volume_load_updates_ramp_on_existing_object():
     assert cmd.objects["vol"]["ramp"] == "vol_volume_color_ramp"
 
 
+def test_isosurface_load_passes_side_isomesh_omits():
+    from tests.fakes.cmd import FakeCmd
+    from pymolviz.volumetric.IsoMesh import IsoMesh
+    from pymolviz.volumetric.IsoSurface import IsoSurface
+
+    grid = _tiny_grid()
+    cmd = FakeCmd()
+    cmd.load_brick(grid, grid.name)
+    iso_kwargs = []
+    mesh_kwargs = []
+    orig_iso = cmd.isosurface
+    orig_mesh = cmd.isomesh
+
+    def capture_iso(*args, **kwargs):
+        iso_kwargs.append(dict(kwargs))
+        return orig_iso(*args, **kwargs)
+
+    def capture_mesh(*args, **kwargs):
+        mesh_kwargs.append(dict(kwargs))
+        return orig_mesh(*args, **kwargs)
+
+    cmd.isosurface = capture_iso
+    cmd.isomesh = capture_mesh
+
+    surf = make_field_visual("IsoSurface", grid, "iso", level=1.0, side=-1)
+    surf.load(cmd)
+    wire = make_field_visual("IsoMesh", grid, "mesh", level=0.5, side=-1)
+    wire.load(cmd)
+
+    assert iso_kwargs[-1].get("side") == -1
+    assert "side" not in mesh_kwargs[-1]
+    assert "side = -1" in IsoSurface(grid, 1.0, name="s", side=-1)._script_string()
+    assert "side" not in IsoMesh(grid, 1.0, name="m", side=-1)._script_string()
+
+
 def test_volume_clip_reloads_cropped_map_not_the_field():
     from tests.fakes.cmd import FakeCmd
 

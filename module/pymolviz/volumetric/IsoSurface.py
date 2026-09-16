@@ -8,6 +8,8 @@ from ..util.colors import _convert_string_color
 
 class IsoSurface(Displayable):
     renders_cgo = False
+    _native_iso_cmd = "isosurface"
+    _native_iso_passes_side = True
 
     def __init__(self, grid_data : GridData, level: float, name = None, color = None, transparency = 0, selection = '', carve = None, side = 1, geometry_field_id=None, color_field_id=None, isovalues=None, clip_aabb=None):
         """ 
@@ -56,54 +58,68 @@ class IsoSurface(Displayable):
             dependencies = [self.grid_data]
         super().__init__(name = name, dependencies = dependencies)
 
-    def _script_string(self):
-        """ Creates a pymol script to create an isomesh representation of the given regular data.
-        
-        Returns:
-            str: The script.
-        """
-
+    def _iso_optional_script_args(self):
         optional_arguments = []
-        if not(self.selection is None):
-            optional_arguments.append(f"selection = \"{self.selection}\"")
+        if not (self.selection is None):
+            optional_arguments.append('selection = "%s"' % self.selection)
         if self.carve is not None:
-            optional_arguments.append(f"carve = {self.carve}")
+            optional_arguments.append("carve = %s" % self.carve)
+        return optional_arguments
 
+    def _iso_color_script(self):
         if issubclass(type(self.color), ColorRamp):
-            color_string = f'cmd.color("{self.color.name}", "{self.name}")'
-        else:
-            color_string = f'''cmd.set_color("{self.name}_color", {self.color})
-cmd.color("{self.name}_color", "{self.name}")
-'''
+            return 'cmd.color("%s", "%s")' % (self.color.name, self.name)
+        return '''cmd.set_color("%s_color", %s)
+cmd.color("%s_color", "%s")
+''' % (self.name, self.color, self.name, self.name)
 
-        
-        result = f"""
-cmd.isosurface("{self.name}", "{self.grid_data.name}", {self.level}, {" , ".join(optional_arguments)}{"," if len(optional_arguments) > 0 else ""} side = {self.side})
-{color_string}
-cmd.set("transparency", {self.transparency}, "{self.name}")
-        """
-        
+    def _script_string(self):
+        optional_arguments = self._iso_optional_script_args()
+        color_string = self._iso_color_script()
+        cmd_name = getattr(self, "_native_iso_cmd", "isosurface")
+        opt_join = (" , ".join(optional_arguments) + ", ") if optional_arguments else ""
+        if getattr(self, "_native_iso_passes_side", True):
+            opt_join += "side = %s" % self.side
+        elif optional_arguments:
+            opt_join = " , ".join(optional_arguments)
+        else:
+            opt_join = ""
+        result = """
+cmd.%s("%s", "%s", %s, %s)
+%s
+cmd.set("transparency", %s, "%s")
+        """ % (
+            cmd_name,
+            self.name,
+            self.grid_data.name,
+            self.level,
+            opt_join,
+            color_string,
+            self.transparency,
+            self.name,
+        )
         return result
-    
+
     def load(self, cmd=None):
         if cmd is None:
             from pymol import cmd
         from ..Displayable import call_load
-        from ..wizards.builders.field_visual import bind_iso_color_ramp
+        from .map_load import bind_iso_color_ramp, load_geometry_map, sync_visual_grid_from_field
 
         bind_iso_color_ramp(self)
-        from ..wizards.builders.field_visual import load_geometry_map, sync_visual_grid_from_field
-
         sync_visual_grid_from_field(self, cmd)
         map_name, _rebuilt = load_geometry_map(cmd, self.grid_data, getattr(self, "clip_aabb", None))
         if not map_name:
             return
-        iso_kwargs = {"level": self.level, "side": self.side}
+        iso_kwargs = {"level": self.level}
+        if getattr(self, "_native_iso_passes_side", True):
+            iso_kwargs["side"] = self.side
         if self.selection:
             iso_kwargs["selection"] = self.selection
         if self.carve is not None:
             iso_kwargs["carve"] = self.carve
-        cmd.isosurface(self.name, map_name, **iso_kwargs)
+        cmd_name = getattr(self, "_native_iso_cmd", "isosurface")
+        getattr(cmd, cmd_name)(self.name, map_name, **iso_kwargs)
         if issubclass(type(self.color), ColorRamp):
             call_load(self.color, cmd)
             cmd.color(self.color.name, self.name)

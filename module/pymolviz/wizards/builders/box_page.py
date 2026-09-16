@@ -87,18 +87,10 @@ class BoxBuilderPage(PointTableBuilderPage):
         )
 
     def _refresh_preview(self):
-        if not qt_widget_alive(self._page):
+        mode = self._preview_if_on()
+        if mode is None:
             return
         try:
-            if not enabled_points(self._points):
-                self._preview.cleanup()
-                return
-            mode = self._current_preview_mode()
-            if not preview_is_on(mode):
-                self._preview.clear_meshes()
-                if self._modifiers is not None:
-                    self._modifiers.clip.refresh_gizmos()
-                return
             wire = preview_wireframe(
                 self._appearance.wireframe() if self._appearance else False, mode,
             )

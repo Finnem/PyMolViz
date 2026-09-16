@@ -545,3 +545,145 @@ class ClipModifierController:
         bind_tool_window(dialog)
         dialog.raise_()
         dialog.activateWindow()
+
+
+DEFAULT_CLIP_PREVIEW_NAME = "_pmv_prev_surface_clip"
+
+
+class ClipGizmoPreview:
+    """Clip-plane rectangles + native Drag widget, shared by every mesh preview."""
+
+    def __init__(self, cmd_, name: str = DEFAULT_CLIP_PREVIEW_NAME):
+        from .preview import RuntimeCollectionPreview
+
+        self.cmd = cmd_
+        self._name = name
+        self._clip_preview = RuntimeCollectionPreview(cmd_, name)
+        self._clip_drag_rest = None
+        self._clip_drag_matrix = None
+        self._clip_drag_button_mode = None
+        self._axis_lock = False
+
+    def set_gizmos(self, planes, selected_index=None, span_points=None, attach_drag=True, axis_lock=None):
+        from ...meshes.CGOCollection import CGOCollection
+        from ...meshes.ClipGizmo import ClipGizmo
+
+        if axis_lock is not None:
+            self._axis_lock = bool(axis_lock)
+        planes = list(planes or [])
+        if not planes:
+            self._clip_preview.cleanup()
+            self._stop_clip_drag()
+            return
+        children = []
+        for i, plane in enumerate(planes):
+            origin = plane.get("origin", (0.0, 0.0, 0.0))
+            normal = plane.get("normal", (0.0, 0.0, 1.0))
+            scale = float(plane.get("scale", 5.0) or 5.0)
+            children.append(
+                ClipGizmo(
+                    origin, normal, scale,
+                    points=span_points,
+                    selected=(selected_index is not None and i == int(selected_index)),
+                    draft=False,
+                    axis_arrow=self._axis_lock,
+                    bypass_colormap=True,
+                )
+            )
+        collection = CGOCollection(children, name=self._name)
+        self._clip_preview.update_collection(collection)
+        if attach_drag:
+            self._sync_clip_drag(planes, selected_index, span_points)
+
+    def _clip_visual_center(self, plane, span_points):
+        from ...util.clip_gizmo import fit_plane_rectangle
+
+        origin = plane.get("origin", (0.0, 0.0, 0.0))
+        normal = plane.get("normal", (0.0, 0.0, 1.0))
+        scale = float(plane.get("scale", 5.0) or 5.0)
+        center, _n, _u, _v = fit_plane_rectangle(
+            origin, normal, points=span_points, scale=scale,
+        )
+        return (
+            [float(origin[0]), float(origin[1]), float(origin[2])],
+            [float(normal[0]), float(normal[1]), float(normal[2])],
+            [float(center[0]), float(center[1]), float(center[2])],
+        )
+
+    def drag_is_live(self) -> bool:
+        from ...util.clip_drag import CLIP_DRAG_NAME
+
+        if self._clip_drag_rest is None:
+            return False
+        try:
+            active = str(self.cmd.get_drag_object_name() or "")
+        except Exception:
+            active = ""
+        return active == CLIP_DRAG_NAME
+
+    def _sync_clip_drag(self, planes, selected_index, span_points):
+        from ...util.clip_drag import CLIP_DRAG_NAME, read_object_matrix, start_clip_drag
+
+        if selected_index is None or int(selected_index) < 0 or int(selected_index) >= len(planes):
+            self._stop_clip_drag()
+            return
+        idx = int(selected_index)
+        origin, normal, center = self._clip_visual_center(planes[idx], span_points)
+        rest = self._clip_drag_rest
+        if rest is not None:
+            try:
+                active = str(self.cmd.get_drag_object_name() or "")
+            except Exception:
+                active = ""
+            if active == CLIP_DRAG_NAME and int(rest.get("index", idx)) == idx:
+                return
+        saved_mode = self._clip_drag_button_mode
+        attached_mode = start_clip_drag(
+            self.cmd, center, native_widget=not self._axis_lock,
+        )
+        self._clip_drag_button_mode = saved_mode if saved_mode is not None else attached_mode
+        self._clip_drag_rest = {
+            "origin": origin, "normal": normal, "center": center, "index": idx,
+        }
+        self._clip_drag_matrix = read_object_matrix(self.cmd, CLIP_DRAG_NAME)
+
+    def poll_clip_drag(self):
+        from ...util.clip_drag import (
+            CLIP_DRAG_NAME,
+            apply_axis_drag_matrix,
+            apply_drag_matrix,
+            matrix_changed,
+            read_object_matrix,
+        )
+
+        rest = self._clip_drag_rest
+        if rest is None:
+            return None
+        matrix = read_object_matrix(self.cmd, CLIP_DRAG_NAME)
+        if not matrix_changed(self._clip_drag_matrix, matrix):
+            return None
+        self._clip_drag_matrix = matrix
+        apply = apply_axis_drag_matrix if self._axis_lock else apply_drag_matrix
+        origin, normal, _center = apply(
+            rest["origin"], rest["normal"], rest["center"], matrix,
+        )
+        return origin, normal
+
+    def release_clip_drag(self):
+        self._stop_clip_drag()
+
+    def _stop_clip_drag(self):
+        from ...util.clip_drag import stop_clip_drag
+
+        stop_clip_drag(self.cmd, button_mode=self._clip_drag_button_mode)
+        self._clip_drag_rest = None
+        self._clip_drag_matrix = None
+        self._clip_drag_button_mode = None
+
+    def cleanup(self):
+        from ...util.clip_drag import CLIP_DRAG_NAME
+        from ...util.pymol_helpers import purge_objects
+
+        self._stop_clip_drag()
+        self._clip_preview.cleanup()
+        purge_objects(self.cmd, prefixes=(self._name, CLIP_DRAG_NAME))

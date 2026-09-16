@@ -1147,6 +1147,18 @@ def test_color_mode_hides_field_controls_except_from_field():
     assert color_mode_shows(COLOR_MODE_FIELD, "clim") is True
 
 
+def test_appearance_section_field_visual_flags_in_sync():
+    import inspect
+
+    from pymolviz.wizards.builders.appearance_section import AppearanceSection
+
+    src = inspect.getsource(AppearanceSection._sync_mode_widgets)
+    assert "_colormap_in_uniform" in src
+    src_build = inspect.getsource(AppearanceSection._build)
+    assert "_show_color_actions" in src_build
+    assert "layout.addLayout(action_row)" in src_build or "_show_color_actions" in src_build
+
+
 class _FakeWidget:
     def isWidgetType(self):
         return True

@@ -374,31 +374,28 @@ class SurfaceBuilderPage(PointTableBuilderPage):
         self._sync_table()
 
     def _refresh_preview(self):
-        if not qt_widget_alive(self._page):
+        mode = self._preview_if_on()
+        if self._modifiers is not None:
+            self._modifiers.clip._sync_drag_poll()
+        if mode is None:
             return
         try:
-            if not enabled_points(self._points):
-                self._preview.cleanup()
-            elif not preview_is_on(self._current_preview_mode()):
-                self._preview.clear_meshes()
-            elif not preview_is_simple(self._current_preview_mode()) and not self._confirm_heavy_surface():
-                pass
-            else:
-                radius, probe, algorithm, quality, wireframe, _use_vdw, vdw_scale = self._params()
-                mode = self._current_preview_mode()
-                self._preview.update(
-                    self._points, radius, probe, algorithm,
-                    preview_mesh_quality(quality, mode),
-                    preview_wireframe(wireframe, mode),
-                    radius_mode=self._radius_mode(), vdw_scale=vdw_scale,
-                    clip_planes=self._clip_planes(),
-                    gizmo_planes=self._modifiers.clip.planes if self._modifiers else [],
-                    gizmo_selected=self._modifiers.clip._selected_index() if self._modifiers else None,
-                )
+            if not preview_is_simple(mode) and not self._confirm_heavy_surface():
+                return
+            radius, probe, algorithm, quality, wireframe, _use_vdw, vdw_scale = self._params()
+            self._preview.update(
+                self._points, radius, probe, algorithm,
+                preview_mesh_quality(quality, mode),
+                preview_wireframe(wireframe, mode),
+                radius_mode=self._radius_mode(), vdw_scale=vdw_scale,
+                clip_planes=self._clip_planes(),
+                gizmo_planes=self._modifiers.clip.planes if self._modifiers else [],
+                gizmo_selected=self._modifiers.clip._selected_index() if self._modifiers else None,
+            )
         except Exception as exc:
             self._warn_surface_failed(exc)
         if self._modifiers is not None:
-            self._modifiers.clip._sync_drag_poll()
+            self._modifiers.clip.refresh_gizmos()
 
     def _current_job(self):
         active = enabled_points(self._points)

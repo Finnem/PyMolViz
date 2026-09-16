@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-FIELD_VISUAL_TYPES = frozenset({"Volume", "IsoVolume", "IsoSurface", "IsoMesh"})
+from ..volumetric.kinds import FIELD_VISUAL_TYPES
+
 _NON_CGO_TYPES = frozenset({"Field", "GridData"}) | FIELD_VISUAL_TYPES
 
 
@@ -10,8 +11,8 @@ def renders_cgo(obj) -> bool:
     """True when ``obj`` should be loaded into PyMOL as CGO.
 
     Fields (and other non-visual session data) are Displayables for identity
-    and recipes, but they do not produce CGO. Prefer the ``renders_cgo``
-    flag over catching a missing ``_create_CGO_list``.
+    and recipes, but they do not produce CGO. Prefer the ``renders_cgo`` flag
+    over catching a missing ``_create_CGO_list``.
     """
     if getattr(obj, "renders_cgo", None) is False:
         return False
@@ -29,12 +30,6 @@ def cgo_tokens(obj, context=None):
     if callable(merged):
         return merged()
     return obj._create_CGO_list()
-
-
-def _cgo_children(obj):
-    if type(obj).__name__ == "CGOCollection":
-        return list(obj)
-    return None
 
 
 def _resolved_one(obj, resolve_cgo_tokens):
@@ -62,9 +57,11 @@ def resolved_cgo_tokens(obj, context=None):
     prepare = getattr(obj, "prepare_child_look", None)
     if callable(prepare):
         prepare()
-    children = _cgo_children(obj)
-    if children is None:
+    if type(obj).__name__ != "CGOCollection":
         return _resolved_one(obj, resolve_cgo_tokens)
+    from ..meshes.CGOCollection import cgo_children
+
+    children = cgo_children(obj)
     serials = _child_serials(children)
     cached = getattr(obj, "_cached_merged_resolved", None)
     spans = getattr(obj, "_child_spans", None)

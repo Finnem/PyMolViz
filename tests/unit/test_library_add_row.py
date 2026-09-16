@@ -262,7 +262,7 @@ def test_field_visuals_library_copy_and_types():
         FIELD_ADD_VISUAL_SPAN,
         FIELD_COLUMNS,
         FIELD_SOURCES,
-        FIELD_VISUAL_TYPES,
+        FIELD_VISUAL_CARDS,
         LIBRARY_ROW_MIN_HEIGHT,
         library_shows_empty_state,
     )
@@ -305,9 +305,9 @@ def test_field_visuals_library_copy_and_types():
     assert sources == ["from_selection", "map", "pmv", "xyz", "orca", "mtz", "derived"]
     from pymolviz.wizards.field_visuals import DISABLED_FIELD_SOURCES
     assert "derived" in DISABLED_FIELD_SOURCES
-    kinds = [entry[1] for entry in FIELD_VISUAL_TYPES]
+    kinds = [entry[1] for entry in FIELD_VISUAL_CARDS]
     assert kinds == ["Volume", "IsoVolume", "IsoSurface", "IsoMesh"]
-    icons = [entry[3] for entry in FIELD_VISUAL_TYPES]
+    icons = [entry[3] for entry in FIELD_VISUAL_CARDS]
     assert "volume" in icons
     assert "isomesh" in icons
 

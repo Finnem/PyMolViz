@@ -235,12 +235,11 @@ def test_field_visual_volume_has_no_isosurface_section_and_has_colormap_editor()
     from pymolviz.wizards.pick import qt_modules
 
     src = inspect.getsource(FieldVisualBuilderPage._build)
-    assert 'make_section("Appearance")' in src
-    assert "ColormapEditor" in src
+    assert "AppearanceSection(" in src
+    assert "colormap_in_uniform=True" in src
     appear_chunk = src.split('iso = make_section("Options")')[0]
     iso_chunk = src.split('iso = make_section("Options")')[1].split("clip = make_section")[0]
-    assert "PreviewModeRadios" in appear_chunk
-    assert "Color mode" in appear_chunk
+    assert "PreviewModeRadios" not in appear_chunk or "AppearanceSection" in appear_chunk
     assert "self._live_preview" not in iso_chunk
     assert "self._level" in iso_chunk
     assert 'make_section("Geometry"' in src
@@ -286,7 +285,7 @@ def test_volume_builder_shows_colormap_plus():
     except Exception:
         pytest.skip("QApplication / QWidget not usable")
     page.reset_for_create("Volume", None)
-    editor = page._cmap_editor
+    editor = getattr(page._appearance, "_cmap_editor", None)
     assert editor is not None
     assert not editor.widget.isHidden()
     plus = editor._picker.plus_button

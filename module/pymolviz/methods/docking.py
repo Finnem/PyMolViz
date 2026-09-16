@@ -2,7 +2,7 @@
 from ..meshes import CGOMolecule
 from ..PyMOLobjects import Expressions
 import numpy as np
-from ..util.sanitize import sanitize_pymol_string
+from ..util.sanitize import quote_pymol_name
 
 def ranked_highlighting(poses, scores, name = "", by_rank = False, top_percentile = 0.1, as_molecules=False, *args, **kwargs):
     """
@@ -56,7 +56,10 @@ def ranked_highlighting(poses, scores, name = "", by_rank = False, top_percentil
     if as_molecules:
         from xbpy import rdutil
         rdutil.write_molecules(molecule_visualizations, f"{name}.sdf")
-        molecule_visualizations = Expressions([f"{sanitize_pymol_string(name)} and state {i + 1}" for i in range(len(molecule_visualizations))], transparencies = transparencies)
+        molecule_visualizations = Expressions([
+            f"{quote_pymol_name(name)} and state {i + 1}"
+            for i in range(len(molecule_visualizations))
+        ], transparencies=transparencies)
     else:
         for mol, transparency in zip(molecule_visualizations, transparencies):
             mol.transparency = transparency

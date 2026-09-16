@@ -56,6 +56,11 @@ from .widgets.theme import (
     type_card_title_css,
 )
 from .widgets.switch import make_switch
+from .widgets.catalog_window import (
+    build_empty_library_page,
+    build_type_picker_page,
+    open_catalog_dialog,
+)
 from .widgets.type_icons import type_icon_pixmap
 
 
@@ -131,12 +136,6 @@ def _swatch_icon(QtGui, rgb):
     return QtGui.QIcon(pix)
 
 
-def _ignore_mouse(QtCore, widget):
-    flag = getattr(QtCore.Qt, "WA_TransparentForMouseEvents", None)
-    if flag is not None:
-        widget.setAttribute(flag, True)
-
-
 class AddVisualWindow:
     """Owns a Qt window popped out from the wizard panel."""
 
@@ -195,26 +194,21 @@ class AddVisualWindow:
             pass
 
     def _open_window(self, QtCore, QtWidgets):
-        window = QtWidgets.QDialog()
-        window.setWindowTitle("PyMOLViz Visuals")
-        window.setModal(False)
-        configure_tool_window(window)
-        window.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
-        window.resize(WINDOW_DEFAULT_WIDTH, WINDOW_DEFAULT_HEIGHT)
-        configure_resizable_window(window)
+        def _pages(stack):
+            stack.addWidget(self._build_library_page(QtCore, QtWidgets))
+            stack.addWidget(self._build_type_page(QtCore, QtWidgets))
+            stack.setCurrentIndex(_PAGE_LIBRARY)
 
-        root = QtWidgets.QVBoxLayout(window)
-        apply_page_layout(root)
-        apply_wizard_page_style(window)
-        stack = QtWidgets.QStackedWidget()
+        window, stack = open_catalog_dialog(
+            QtCore,
+            QtWidgets,
+            window_title="PyMOLViz Visuals",
+            width=WINDOW_DEFAULT_WIDTH,
+            height=WINDOW_DEFAULT_HEIGHT,
+            build_root_pages=_pages,
+            on_destroyed=self._on_destroyed,
+        )
         self._stack = stack
-
-        stack.addWidget(self._build_library_page(QtCore, QtWidgets))
-        stack.addWidget(self._build_type_page(QtCore, QtWidgets))
-        stack.setCurrentIndex(_PAGE_LIBRARY)
-
-        root.addWidget(stack, stretch=1)
-        window.destroyed.connect(self._on_destroyed)
         self._window = window
         self._refresh_objects_table()
         window.show()
@@ -364,7 +358,19 @@ class AddVisualWindow:
         )
         self._add_object_overlay.attach()
 
-        body.addWidget(self._build_empty_state(QtCore, QtWidgets))
+        body.addWidget(
+            build_empty_library_page(
+                QtCore,
+                QtWidgets,
+                empty_title=EMPTY_LIBRARY_TITLE,
+                empty_hint=EMPTY_LIBRARY_HINT,
+                add_button_text=ADD_VISUAL_BUTTON,
+                add_tip=ADD_VISUAL_TIP,
+                on_add=lambda: self._goto(_PAGE_TYPES),
+                tooltip_context="AddVisualWindow",
+                style_add_button=mark_primary_button,
+            )
+        )
         body.addWidget(table_page)
         body.setCurrentIndex(_LIBRARY_EMPTY)
         group_layout.addWidget(body, stretch=1)
@@ -376,134 +382,19 @@ class AddVisualWindow:
         layout.addWidget(scroll, stretch=1)
         return page
 
-    def _build_empty_state(self, QtCore, QtWidgets):
-        page = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(page)
-        layout.addStretch(1)
-
-        title = QtWidgets.QLabel(EMPTY_LIBRARY_TITLE)
-        title.setAlignment(QtCore.Qt.AlignCenter)
-        title.setStyleSheet(empty_title_css())
-        hint = QtWidgets.QLabel(EMPTY_LIBRARY_HINT)
-        hint.setAlignment(QtCore.Qt.AlignCenter)
-        hint.setWordWrap(True)
-        hint.setStyleSheet(muted_label_css())
-
-        btn = QtWidgets.QPushButton(ADD_VISUAL_BUTTON)
-        btn.setAutoDefault(False)
-        btn.setDefault(False)
-        btn.setMinimumWidth(180)
-        mark_primary_button(btn)
-        hand = getattr(QtCore.Qt, "PointingHandCursor", None)
-        if hand is not None:
-            btn.setCursor(hand)
-        btn.clicked.connect(lambda: self._goto(_PAGE_TYPES))
-        apply_required_tooltips(
-            [(btn, ADD_VISUAL_TIP, ADD_VISUAL_BUTTON)],
-            context="AddVisualWindow",
-        )
-        btn_row = QtWidgets.QHBoxLayout()
-        btn_row.addStretch(1)
-        btn_row.addWidget(btn)
-        btn_row.addStretch(1)
-
-        layout.addWidget(title)
-        layout.addWidget(hint)
-        layout.addSpacing(12)
-        layout.addLayout(btn_row)
-        layout.addStretch(1)
-        return page
-
     def _build_type_page(self, QtCore, QtWidgets):
-        page = QtWidgets.QWidget()
-        apply_wizard_page_style(page)
-        layout = QtWidgets.QVBoxLayout(page)
-        apply_page_layout(layout)
-
-        header, back, _title = make_page_header(
-            QtWidgets,
-            lambda: self._goto(_PAGE_LIBRARY),
-            (CRUMB_VISUALS, CRUMB_ADD_OBJECT),
-            "Return to the visual list.",
-        )
-
-        subtitle = QtWidgets.QLabel("Choose a visual type.")
-        subtitle.setWordWrap(True)
-        subtitle.setStyleSheet(muted_label_css())
-
-        layout.addLayout(header)
-        layout.addWidget(subtitle)
-
-        scroll, body = make_scrolling_body(page)
-        for name, kind, hint, icon_key in MESH_TYPES:
-            body.addWidget(
-                self._build_type_card(QtCore, QtWidgets, name, kind, hint, icon_key)
-            )
-        body.addStretch(1)
-        layout.addWidget(scroll, stretch=1)
-        apply_required_tooltips(
-            [(back, "Return to the visual list.", "Back")],
-            context="AddVisualWindow",
-        )
-        return page
-
-    def _build_type_card(self, QtCore, QtWidgets, name, kind, hint, icon_key):
-        _, QtGui, _ = qt_modules()
-        btn = QtWidgets.QPushButton()
-        apply_type_card_style(btn)
-        btn.setAutoDefault(False)
-        btn.setDefault(False)
-        expanding = getattr(QtWidgets.QSizePolicy, "Expanding", None)
-        preferred = getattr(QtWidgets.QSizePolicy, "Preferred", None)
-        if expanding is not None and preferred is not None:
-            btn.setSizePolicy(expanding, preferred)
-        hand = getattr(QtCore.Qt, "PointingHandCursor", None)
-        if hand is not None:
-            btn.setCursor(hand)
-        btn.setMinimumHeight(56)
-
-        inner = QtWidgets.QHBoxLayout(btn)
-        inner.setContentsMargins(12, 10, 12, 10)
-        inner.setSpacing(12)
-
-        glyph = QtWidgets.QLabel()
-        pix = type_icon_pixmap(
-            icon_key,
-            QtGui,
+        return build_type_picker_page(
             QtCore,
             QtWidgets,
-            color=type_card_icon_rgb(icon_key),
+            title_parts=(CRUMB_VISUALS, CRUMB_ADD_OBJECT),
+            back_tip="Return to the visual list.",
+            subtitle="Choose a visual type.",
+            entries=MESH_TYPES,
+            on_pick=self._on_mesh_type,
+            on_back=lambda: self._goto(_PAGE_LIBRARY),
+            tooltip_context="AddVisualWindow",
+            icon_rgb_fn=type_card_icon_rgb,
         )
-        if pix is not None:
-            glyph.setPixmap(pix)
-        glyph.setFixedSize(32, 32)
-        _ignore_mouse(QtCore, glyph)
-
-        text = QtWidgets.QVBoxLayout()
-        text.setSpacing(2)
-        title = QtWidgets.QLabel(name)
-        title.setStyleSheet(type_card_title_css())
-        subtitle = QtWidgets.QLabel(hint)
-        subtitle.setWordWrap(True)
-        subtitle.setStyleSheet(type_card_subtitle_css())
-        _ignore_mouse(QtCore, title)
-        _ignore_mouse(QtCore, subtitle)
-        text.addWidget(title)
-        text.addWidget(subtitle)
-
-        align = getattr(QtCore.Qt, "AlignVCenter", None)
-        if align is not None:
-            inner.addWidget(glyph, 0, align)
-        else:
-            inner.addWidget(glyph)
-        inner.addLayout(text, 1)
-
-        btn.clicked.connect(lambda _checked=False, n=name, k=kind: self._on_mesh_type(n, k))
-        apply_required_tooltips(
-            [(btn, hint, name)],
-            context="AddVisualWindow",
-        )
-        return btn
 
     def _refresh_objects_table(self):
         table = self._objects_table

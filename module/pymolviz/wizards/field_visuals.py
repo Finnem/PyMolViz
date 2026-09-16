@@ -63,6 +63,12 @@ from .widgets.catalog_chrome import (
     make_row_icon_button,
     rgb_css,
 )
+from .widgets.catalog_window import (
+    build_empty_library_page,
+    build_type_picker_page,
+    open_catalog_dialog,
+    transparent_for_mouse,
+)
 from .widgets.nest import make_nest_branch
 from .widgets.switch import make_switch
 from .widgets.sticky_add import (
@@ -134,7 +140,7 @@ FIELD_SOURCES = (
 )
 DISABLED_FIELD_SOURCES = frozenset({"derived"})
 
-FIELD_VISUAL_TYPES = (
+FIELD_VISUAL_CARDS = (
     ("Volume", "Volume", "Translucent density cloud colored by value.", "volume"),
     ("IsoVolume", "IsoVolume", "Stacked transparent shells through the field.", "volume"),
     ("IsoSurface", "IsoSurface", "Solid surface at one field level.", "surface"),
@@ -187,9 +193,7 @@ def library_shows_empty_state(n_fields):
 
 
 def _ignore_mouse(QtCore, widget):
-    flag = getattr(QtCore.Qt, "WA_TransparentForMouseEvents", None)
-    if flag is not None:
-        widget.setAttribute(flag, True)
+    transparent_for_mouse(QtCore, widget)
 
 
 def _row_kind_role(QtCore):
@@ -264,27 +268,22 @@ class FieldVisualsWindow:
             pass
 
     def _open_window(self, QtCore, QtWidgets):
-        window = QtWidgets.QDialog()
-        window.setWindowTitle("PyMOLViz Fields")
-        window.setModal(False)
-        configure_tool_window(window)
-        window.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
-        window.resize(640, 720)
-        configure_resizable_window(window)
+        def _pages(stack):
+            stack.addWidget(self._build_library_page(QtCore, QtWidgets))
+            stack.addWidget(self._build_field_type_page(QtCore, QtWidgets))
+            stack.addWidget(self._build_visual_type_page(QtCore, QtWidgets))
+            stack.setCurrentIndex(_PAGE_LIBRARY)
 
-        root = QtWidgets.QVBoxLayout(window)
-        apply_page_layout(root)
-        apply_wizard_page_style(window)
-        stack = QtWidgets.QStackedWidget()
+        window, stack = open_catalog_dialog(
+            QtCore,
+            QtWidgets,
+            window_title="PyMOLViz Fields",
+            width=640,
+            height=720,
+            build_root_pages=_pages,
+            on_destroyed=self._on_destroyed,
+        )
         self._stack = stack
-
-        stack.addWidget(self._build_library_page(QtCore, QtWidgets))
-        stack.addWidget(self._build_field_type_page(QtCore, QtWidgets))
-        stack.addWidget(self._build_visual_type_page(QtCore, QtWidgets))
-        stack.setCurrentIndex(_PAGE_LIBRARY)
-
-        root.addWidget(stack, stretch=1)
-        window.destroyed.connect(self._on_destroyed)
         self._window = window
         self._refresh_fields_table()
         window.show()
@@ -458,7 +457,19 @@ class FieldVisualsWindow:
         apply_expanding_list_policy(table_page, QtWidgets)
         self._fields_table = table
 
-        body.addWidget(self._build_empty_state(QtCore, QtWidgets))
+        body.addWidget(
+            build_empty_library_page(
+                QtCore,
+                QtWidgets,
+                empty_title=EMPTY_LIBRARY_TITLE,
+                empty_hint=EMPTY_LIBRARY_HINT,
+                add_button_text=ADD_FIELD_BUTTON,
+                add_tip=ADD_FIELD_TIP,
+                on_add=lambda: self._goto(_PAGE_FIELD_TYPES),
+                tooltip_context="FieldVisualsWindow",
+                style_add_button=apply_add_field_button_style,
+            )
+        )
         body.addWidget(table_page)
         body.setCurrentIndex(_LIBRARY_EMPTY)
         group_layout.addWidget(body, stretch=1)
@@ -492,158 +503,34 @@ class FieldVisualsWindow:
         self._add_field_footer = footer
         return footer
 
-    def _build_empty_state(self, QtCore, QtWidgets):
-        page = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(page)
-        layout.addStretch(1)
-
-        title = QtWidgets.QLabel(EMPTY_LIBRARY_TITLE)
-        title.setAlignment(QtCore.Qt.AlignCenter)
-        title.setStyleSheet(empty_title_css())
-        hint = QtWidgets.QLabel(EMPTY_LIBRARY_HINT)
-        hint.setAlignment(QtCore.Qt.AlignCenter)
-        hint.setWordWrap(True)
-        hint.setStyleSheet(muted_label_css())
-
-        btn = QtWidgets.QPushButton(ADD_FIELD_BUTTON)
-        btn.setAutoDefault(False)
-        btn.setDefault(False)
-        btn.setMinimumWidth(180)
-        apply_add_field_button_style(btn)
-        hand = getattr(QtCore.Qt, "PointingHandCursor", None)
-        if hand is not None:
-            btn.setCursor(hand)
-        btn.clicked.connect(lambda: self._goto(_PAGE_FIELD_TYPES))
-        apply_required_tooltips(
-            [(btn, ADD_FIELD_TIP, ADD_FIELD_BUTTON)],
-            context="FieldVisualsWindow",
-        )
-        btn_row = QtWidgets.QHBoxLayout()
-        btn_row.addStretch(1)
-        btn_row.addWidget(btn)
-        btn_row.addStretch(1)
-
-        layout.addWidget(title)
-        layout.addWidget(hint)
-        layout.addSpacing(12)
-        layout.addLayout(btn_row)
-        layout.addStretch(1)
-        return page
-
     def _build_field_type_page(self, QtCore, QtWidgets):
-        return self._build_type_page(
+        return build_type_picker_page(
             QtCore,
             QtWidgets,
             title_parts=(CRUMB_FIELDS, CRUMB_ADD_FIELD),
+            back_tip="Return to the field list.",
             subtitle="Choose how to load a field.",
             entries=FIELD_SOURCES,
             on_pick=self._on_field_source,
-            back_index=_PAGE_LIBRARY,
+            on_back=lambda: self._goto(_PAGE_LIBRARY),
+            tooltip_context="FieldVisualsWindow",
+            icon_rgb_fn=type_card_icon_rgb,
+            disabled_kinds=DISABLED_FIELD_SOURCES,
         )
 
     def _build_visual_type_page(self, QtCore, QtWidgets):
-        return self._build_type_page(
+        return build_type_picker_page(
             QtCore,
             QtWidgets,
             title_parts=(CRUMB_FIELDS, CRUMB_ADD_OBJECT),
+            back_tip="Return to the field list.",
             subtitle="Choose a visual for this field.",
-            entries=FIELD_VISUAL_TYPES,
+            entries=FIELD_VISUAL_CARDS,
             on_pick=self._on_visual_type,
-            back_index=_PAGE_LIBRARY,
+            on_back=lambda: self._goto(_PAGE_LIBRARY),
+            tooltip_context="FieldVisualsWindow",
+            icon_rgb_fn=type_card_icon_rgb,
         )
-
-    def _build_type_page(self, QtCore, QtWidgets, title_parts, subtitle, entries, on_pick, back_index):
-        page = QtWidgets.QWidget()
-        apply_wizard_page_style(page)
-        layout = QtWidgets.QVBoxLayout(page)
-        apply_page_layout(layout)
-
-        header, back, _title = make_page_header(
-            QtWidgets,
-            lambda: self._goto(back_index),
-            title_parts,
-            "Return to the field list.",
-        )
-        hint = QtWidgets.QLabel(subtitle)
-        hint.setWordWrap(True)
-        hint.setStyleSheet(muted_label_css())
-        layout.addLayout(header)
-        layout.addWidget(hint)
-
-        scroll, body = make_scrolling_body(page)
-        for name, kind, text, icon_key in entries:
-            body.addWidget(
-                self._build_type_card(
-                    QtCore, QtWidgets, name, kind, text, icon_key, on_pick,
-                )
-            )
-        body.addStretch(1)
-        layout.addWidget(scroll, stretch=1)
-        apply_required_tooltips(
-            [(back, "Return to the field list.", "Back")],
-            context="FieldVisualsWindow",
-        )
-        return page
-
-    def _build_type_card(self, QtCore, QtWidgets, name, kind, hint, icon_key, on_pick):
-        _, QtGui, _ = qt_modules()
-        btn = QtWidgets.QPushButton()
-        btn.setAutoDefault(False)
-        btn.setDefault(False)
-        apply_type_card_style(btn)
-        expanding = getattr(QtWidgets.QSizePolicy, "Expanding", None)
-        preferred = getattr(QtWidgets.QSizePolicy, "Preferred", None)
-        if expanding is not None and preferred is not None:
-            btn.setSizePolicy(expanding, preferred)
-        hand = getattr(QtCore.Qt, "PointingHandCursor", None)
-        if hand is not None:
-            btn.setCursor(hand)
-        btn.setMinimumHeight(56)
-        if kind in DISABLED_FIELD_SOURCES:
-            btn.setEnabled(False)
-
-        inner = QtWidgets.QHBoxLayout(btn)
-        inner.setContentsMargins(12, 10, 12, 10)
-        inner.setSpacing(12)
-
-        glyph = QtWidgets.QLabel()
-        pix = type_icon_pixmap(
-            icon_key,
-            QtGui,
-            QtCore,
-            QtWidgets,
-            color=type_card_icon_rgb(icon_key),
-        )
-        if pix is not None:
-            glyph.setPixmap(pix)
-        glyph.setFixedSize(32, 32)
-        _ignore_mouse(QtCore, glyph)
-
-        text = QtWidgets.QVBoxLayout()
-        text.setSpacing(2)
-        title = QtWidgets.QLabel(name)
-        title.setStyleSheet(type_card_title_css())
-        subtitle = QtWidgets.QLabel(hint)
-        subtitle.setWordWrap(True)
-        subtitle.setStyleSheet(type_card_subtitle_css())
-        _ignore_mouse(QtCore, title)
-        _ignore_mouse(QtCore, subtitle)
-        text.addWidget(title)
-        text.addWidget(subtitle)
-
-        align = getattr(QtCore.Qt, "AlignVCenter", None)
-        if align is not None:
-            inner.addWidget(glyph, 0, align)
-        else:
-            inner.addWidget(glyph)
-        inner.addLayout(text, 1)
-
-        btn.clicked.connect(lambda _checked=False, k=kind, n=name: on_pick(n, k))
-        apply_required_tooltips(
-            [(btn, hint, name)],
-            context="FieldVisualsWindow",
-        )
-        return btn
 
     def _refresh_fields_table(self):
         table = self._fields_table

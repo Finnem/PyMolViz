@@ -24,8 +24,8 @@ from ...fields.identity import (
 )
 from ...meshes.CGOCollection import CGOCollection
 from .field_params import DEFAULT_DISTANCE_ISOLEVEL, default_preset_iso_level, normalize_field_model
+from ...volumetric.kinds import VOLUME_KINDS
 from .field_visual import (
-    VOLUME_KINDS,
     load_grid_as_map,
     make_field_visual,
     named_grid_copy,

@@ -7,13 +7,9 @@ from typing import Iterable, List, Optional, Sequence, Tuple
 from ..points import iter_point_sources
 from .widgets.theme import PRIMARY, TREE_LINE
 
+from ..volumetric.kinds import FIELD_VISUAL_TYPES, is_field_visual as _is_field_visual_kind
+
 FIELD_SOURCE_TYPES = frozenset({"GridData", "Field"})
-FIELD_VISUAL_TYPES = frozenset({
-    "Volume",
-    "IsoVolume",
-    "IsoSurface",
-    "IsoMesh",
-})
 FIELD_TYPES = FIELD_SOURCE_TYPES | FIELD_VISUAL_TYPES
 
 KIND_FIELD = "field"
@@ -128,7 +124,7 @@ def is_field_source(obj) -> bool:
 
 
 def is_field_visual(obj) -> bool:
-    return type(obj).__name__ in FIELD_VISUAL_TYPES
+    return _is_field_visual_kind(obj)
 
 
 def is_native_field(obj) -> bool:
@@ -241,9 +237,9 @@ def type_label(obj) -> str:
 
 
 def mesh_children(obj) -> list:
-    if type(obj).__name__ == "CGOCollection":
-        return list(obj)
-    return [obj]
+    from ..meshes.CGOCollection import cgo_children
+
+    return cgo_children(obj)
 
 
 def editor_kind(obj) -> Optional[str]:
@@ -376,58 +372,15 @@ def field_source_editor_kind(obj) -> Optional[str]:
 
 
 def field_identity_keys(obj) -> List[str]:
-    """Ids and names used to match a field to its visuals."""
-    from ..util.field_sample import PYMOL_MAP_ID_PREFIX, field_label, resolve_grid
+    from ..fields.dependents import field_identity_keys as _field_identity_keys
 
-    keys = []
-    seen = set()
-
-    def _add(value):
-        text = str(value or "")
-        if not text or text in seen:
-            return
-        seen.add(text)
-        keys.append(text)
-
-    _add(getattr(obj, "id", None))
-    label = field_label(obj)
-    _add(label)
-    if label:
-        _add(PYMOL_MAP_ID_PREFIX + label)
-    generator = getattr(obj, "generator", None) or {}
-    if str(generator.get("type") or "") == "pymol_map" and generator.get("map_name"):
-        map_name = str(generator["map_name"])
-        _add(map_name)
-        _add(PYMOL_MAP_ID_PREFIX + map_name)
-    grid = resolve_grid(obj)
-    if grid is not None and grid is not obj:
-        _add(getattr(grid, "id", None))
-        nested = field_label(grid)
-        _add(nested)
-        if nested:
-            _add(PYMOL_MAP_ID_PREFIX + nested)
-    return keys
+    return _field_identity_keys(obj)
 
 
 def visual_field_keys(obj) -> List[str]:
-    keys = []
-    seen = set()
+    from ..fields.dependents import referenced_field_ids
 
-    def _add(value):
-        text = str(value or "")
-        if not text or text in seen:
-            return
-        seen.add(text)
-        keys.append(text)
-
-    _add(getattr(obj, "geometry_field_id", None))
-    _add(getattr(obj, "color_field_id", None))
-    _add(getattr(obj, "field_id", None))
-    grid = getattr(obj, "grid_data", None)
-    if grid is not None:
-        for key in field_identity_keys(grid):
-            _add(key)
-    return keys
+    return referenced_field_ids(obj)
 
 
 def field_row(obj, used_by=None) -> dict:

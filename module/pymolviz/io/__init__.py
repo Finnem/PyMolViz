@@ -95,8 +95,8 @@ def intern_loaded(cmd, objects) -> list:
     from ..fields.field import intern_field
     from ..meshes.CGOCollection import CGOCollection
     from ..runtime.session import add as session_add
-    from ..wizards.builders.field_visual import is_field_visual, persist_field_visual
-    from ..wizards.builders.preview import persist_collection
+    from ..runtime.persist import persist_collection, persist_field_visual
+    from ..volumetric.kinds import is_field_visual
 
     interned = []
     for obj in list(objects or []):

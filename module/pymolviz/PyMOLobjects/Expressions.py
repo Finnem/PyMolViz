@@ -1,7 +1,6 @@
 import numpy as np
 from ..Displayable import Displayable
 from ..ColorMap import ColorMap
-from ..util.sanitize import sanitize_pymol_string
 
 class Expressions(Displayable):
     def __init__(self, expressions, color = None, colormap ="RdYlBu_r", transparencies = None, *args, **kwargs):

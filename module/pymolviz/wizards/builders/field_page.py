@@ -15,7 +15,7 @@ from ...fields.clip import (
 from ...fields.domain import field_display_aabb
 from ...fields.isovalues import isovalues_for_side
 from ...util.field_sample import field_label
-from .colormap_editor import ColormapEditor
+from .appearance_section import AppearanceSection
 from ..pick import (
     DeferredCallback,
     overlay_question,
@@ -69,12 +69,12 @@ from .preview_mode import (
     DEFAULT_PREVIEW_MODE,
     read_preview_mode,
     stamp_preview_mode,
-    PreviewModeRadios,
     preview_grid,
     preview_iso_kind,
     preview_is_on,
     preview_is_simple,
 )
+from .surface_params import COLOR_MODE_FIELD, COLOR_MODE_UNIFORM
 from .aabb_clip import CardinalClipGizmoController
 from .carve_around import CarveAroundWidget
 from .export import export_objects
@@ -152,19 +152,16 @@ class FieldVisualBuilderPage:
         self._name_section = None
         self._outer_layout = None
         self._volume_section = None
-        self._appearance_section = None
+        self._appearance = None
         self._iso_section = None
         self._clip_section = None
-        self._cmap_editor = None
         self._level = None
         self._side = None
         self._transparency = None
         self._color = (1.0, 1.0, 1.0)
         self._color_btn = None
-        self._color_mode_uniform = None
-        self._color_mode_field = None
+        self._iso_rest_widget = None
         self._geometry_picker = None
-        self._color_picker = None
         self._clip_axis_on = [None, None, None]
         self._clip_axis_pos = [None, None, None]
         self._clip_axis_flip = [None, None, None]
@@ -180,7 +177,6 @@ class FieldVisualBuilderPage:
         self._level_geom_id = None
         self._deferred = DeferredCallback()
         self._preview = None
-        self._preview_mode = None
         self._suspend_preview = False
         self._heavy_ok = None
         self._heavy_denied = None
@@ -233,21 +229,21 @@ class FieldVisualBuilderPage:
 
             color_id = default_color_field_id(field)
             cmap = default_color_colormap(field)
-            if cmap and self._cmap_editor is not None:
-                self._cmap_editor.set_colormap(str(cmap))
+            if cmap and self._appearance is not None:
+                self._appearance.set_colormap(str(cmap))
         except Exception:
             color_id = getattr(field, "default_color_field_id", None) if field is not None else None
-        if self._color_picker is not None:
-            self._color_picker.refresh(color_id)
-        if color_id and self._color_mode_field is not None:
-            self._color_mode_field.setChecked(True)
-        elif self._color_mode_uniform is not None:
-            self._color_mode_uniform.setChecked(True)
+        if self._appearance is not None:
+            self._appearance.refresh_color_field(color_id)
+            if color_id:
+                self._appearance.set_color_mode(COLOR_MODE_FIELD)
+            else:
+                self._appearance.set_color_mode(COLOR_MODE_UNIFORM)
         self._reset_clip_axes()
         if self._carve is not None:
             self._carve.reset()
-        if self._preview_mode is not None:
-            self._preview_mode.set_mode(DEFAULT_PREVIEW_MODE)
+        if self._appearance is not None:
+            self._appearance.set_preview_mode(DEFAULT_PREVIEW_MODE)
         self._heavy_ok = None
         self._heavy_denied = None
         self._level_geom_id = None
@@ -288,9 +284,9 @@ class FieldVisualBuilderPage:
         opts = field_visual_options(obj)
         cmap = opts.get("colormap")
         spec = opts.get("colormap_spec")
-        if self._cmap_editor is not None and (isinstance(cmap, str) or spec):
+        if self._appearance is not None and (isinstance(cmap, str) or spec):
             name = cmap if isinstance(cmap, str) else ((spec or {}).get("preset") or "RdYlBu_r")
-            self._cmap_editor.set_colormap(
+            self._appearance.set_colormap(
                 name,
                 range_mode=opts.get("range_mode"),
                 clims=opts.get("clims"),
@@ -307,12 +303,12 @@ class FieldVisualBuilderPage:
         if self._geometry_picker is not None:
             self._geometry_picker.refresh(opts.get("geometry_field_id") or getattr(self._field, "id", None))
         color_id = opts.get("color_field_id")
-        if self._color_picker is not None:
-            self._color_picker.refresh(color_id)
-        if color_id and self._color_mode_field is not None:
-            self._color_mode_field.setChecked(True)
-        elif self._color_mode_uniform is not None:
-            self._color_mode_uniform.setChecked(True)
+        if self._appearance is not None:
+            self._appearance.refresh_color_field(color_id)
+            if color_id:
+                self._appearance.set_color_mode(COLOR_MODE_FIELD)
+            else:
+                self._appearance.set_color_mode(COLOR_MODE_UNIFORM)
         aabb = opts.get("clip_aabb")
         domain = self._field_domain_aabb(self._field, resolve_field_grid(self._field))
         self._set_cardinal_planes(aabb_to_cardinal_planes(aabb, domain))
@@ -322,8 +318,8 @@ class FieldVisualBuilderPage:
         field_name = field_label(self._field) if self._field is not None else ""
         crumbs = (field_name, self._crumb_leaf()) if field_name else (self._crumb_leaf(),)
         set_breadcrumb(self._title, edit_field_crumbs(*crumbs))
-        if self._preview_mode is not None:
-            self._preview_mode.set_mode(read_preview_mode(obj))
+        if self._appearance is not None:
+            self._appearance.set_preview_mode(read_preview_mode(obj))
         self._heavy_ok = None
         self._heavy_denied = None
         self._sync_form()
@@ -364,13 +360,13 @@ class FieldVisualBuilderPage:
             self._action_bar.set_commit_enabled(self._can_commit())
 
     def _color_from_field(self) -> bool:
-        if self._color_mode_field is None:
+        if self._appearance is None:
             return False
-        return bool(self._color_mode_field.isChecked())
+        return self._appearance.color_mode() == COLOR_MODE_FIELD
 
     def _histogram_field_id(self):
-        if self._color_from_field() and self._color_picker is not None:
-            fid = self._color_picker.field_id()
+        if self._color_from_field() and self._appearance is not None:
+            fid = self._appearance.color_field_id()
             if fid:
                 return fid
         field = self._selected_field()
@@ -379,21 +375,21 @@ class FieldVisualBuilderPage:
     def _sync_form(self):
         volume = self._kind in VOLUME_KINDS
         iso = self._kind in ISO_KINDS
-        if self._appearance_section is not None:
-            self._appearance_section.widget.setVisible(True)
+        if self._appearance is not None:
+            self._appearance.widget.setVisible(True)
         if self._volume_section is not None:
             self._volume_section.widget.setVisible(False)
         if self._iso_section is not None:
             self._iso_section.widget.setVisible(iso)
         show_cmap = volume or self._color_from_field()
-        if self._cmap_editor is not None:
-            self._cmap_editor.widget.setVisible(show_cmap)
+        if self._appearance is not None:
+            self._appearance.set_colormap_visible(show_cmap)
+        if self._iso_rest_widget is not None:
+            self._iso_rest_widget.setVisible(iso)
         if self._color_btn is not None:
             self._color_btn.setVisible(iso and not self._color_from_field())
         if self._transparency is not None:
             self._transparency.setVisible(iso)
-        if self._color_picker is not None:
-            self._color_picker.widget.setEnabled(self._color_from_field())
         if self._convert_btn is not None:
             self._convert_btn.setVisible(iso and self._editing_id is not None)
         grid = resolve_field_grid(self._selected_field())
@@ -516,9 +512,9 @@ class FieldVisualBuilderPage:
     def _live_preview_enabled(self) -> bool:
         if self._any_clip_enabled():
             return True
-        if self._preview_mode is None:
+        if self._appearance is None:
             return False
-        return preview_is_on(self._preview_mode.mode())
+        return preview_is_on(self._appearance.preview_mode())
 
     def _schedule_preview(self):
         if self._suspend_preview:
@@ -681,8 +677,8 @@ class FieldVisualBuilderPage:
                 self._sync_clip_gizmos()
                 return
             mode = (
-                self._preview_mode.mode()
-                if self._preview_mode is not None
+                self._appearance.preview_mode()
+                if self._appearance is not None
                 else DEFAULT_PREVIEW_MODE
             )
             display_grid = preview_grid(grid, mode)
@@ -697,9 +693,9 @@ class FieldVisualBuilderPage:
             if (
                 not preview_is_simple(mode)
                 and self._color_from_field()
-                and self._color_picker is not None
+                and self._appearance is not None
             ):
-                color_field_id = self._color_picker.field_id()
+                color_field_id = self._appearance.color_field_id()
             carve_sel, carve_radius = self._carve_args()
             iso_key = field_visual_preview_key(
                 kind=preview_kind,
@@ -750,27 +746,29 @@ class FieldVisualBuilderPage:
         return field_display_aabb(field, grid)
 
     def _colormap_name(self) -> str:
-        if self._cmap_editor is None:
+        if self._appearance is None:
             return "RdYlBu_r"
-        return self._cmap_editor.colormap_name()
+        return self._appearance.colormap_name()
 
     def _colormap_arg(self):
-        if self._cmap_editor is None:
+        if self._appearance is None:
             return "RdYlBu_r"
         from ...util.colormap_spec import volume_colormap_arg
 
-        return volume_colormap_arg(self._cmap_editor.colormap_name(), self._cmap_editor.colormap_spec())
+        return volume_colormap_arg(
+            self._appearance.colormap_name(), self._appearance.colormap_spec(),
+        )
 
     def _colormap_spec(self):
-        if self._cmap_editor is None:
+        if self._appearance is None:
             return None
-        return self._cmap_editor.colormap_spec()
+        return self._appearance.colormap_spec()
 
     def _editor_clims(self, grid=None):
-        if self._cmap_editor is None:
+        if self._appearance is None:
             return None
         values = getattr(grid, "values", None) if grid is not None else None
-        return self._cmap_editor.resolved_clims(values)
+        return self._appearance.resolved_clims(values)
 
     def _commit_kwargs(self):
         field = self._selected_field()
@@ -780,8 +778,8 @@ class FieldVisualBuilderPage:
         level = float(self._level.value()) if self._level is not None else None
         transparency = float(self._transparency.value()) if self._transparency is not None else 0.0
         color_field_id = None
-        if self._color_from_field() and self._color_picker is not None:
-            color_field_id = self._color_picker.field_id()
+        if self._color_from_field() and self._appearance is not None:
+            color_field_id = self._appearance.color_field_id()
         isovalues = None
         if self._kind in ISO_KINDS and level is not None:
             isovalues = isovalues_for_side(level, self._side_code())
@@ -810,7 +808,11 @@ class FieldVisualBuilderPage:
             return
         self.cleanup_preview()
         visual = make_field_visual(**self._commit_kwargs())
-        mode = self._preview_mode.mode() if self._preview_mode is not None else DEFAULT_PREVIEW_MODE
+        mode = (
+            self._appearance.preview_mode()
+            if self._appearance is not None
+            else DEFAULT_PREVIEW_MODE
+        )
         stamp_preview_mode(visual, mode)
         persist_field_visual(self.cmd, visual)
         if self._on_create is not None:
@@ -901,36 +903,28 @@ class FieldVisualBuilderPage:
         body.addWidget(bind.widget)
 
         volume = make_section("Appearance")
-        appear_form = QtWidgets.QFormLayout()
-        appear_form.setContentsMargins(0, 0, 0, 0)
-        self._preview_mode = PreviewModeRadios(on_changed=lambda *_: self._schedule_preview())
-        appear_form.addRow("", self._preview_mode.widget)
-        mode_row = QtWidgets.QWidget()
-        mode_layout = QtWidgets.QHBoxLayout(mode_row)
-        mode_layout.setContentsMargins(0, 0, 0, 0)
-        self._color_mode_uniform = QtWidgets.QRadioButton("Uniform")
-        self._color_mode_field = QtWidgets.QRadioButton("From field")
-        self._color_mode_uniform.setChecked(True)
-        self._color_mode_uniform.toggled.connect(lambda *_: self._on_preview_setting())
-        self._color_mode_field.toggled.connect(lambda *_: self._on_preview_setting())
-        mode_layout.addWidget(self._color_mode_uniform)
-        mode_layout.addWidget(self._color_mode_field)
-        mode_layout.addStretch(1)
-        appear_form.addRow("Color mode", mode_row)
-        self._color_picker = FieldPickerWidget(
-            page, self.cmd, self.CONTEXT, empty_label="Optional color field",
-            on_changed=self._schedule_preview,
-        )
-        appear_form.addRow("Color field", self._color_picker.widget)
-        volume.layout.addLayout(appear_form)
-        self._cmap_editor = ColormapEditor(
-            volume.widget,
-            on_changed=self._schedule_preview,
-            cmd=self.cmd,
+        self._appearance = AppearanceSection(
+            page,
+            self.cmd,
+            self.CONTEXT,
+            show_wireframe=False,
+            show_quality=False,
+            show_per_point=False,
+            show_live_preview=True,
+            live_preview_tooltip=_LIVE_PREVIEW_TIP,
+            show_color_actions=False,
+            colormap_in_uniform=True,
+            field_picker_label="Color field",
+            field_empty_label="Optional color field",
             field_id_provider=self._histogram_field_id,
+            uniform_tooltip="Solid color or volume colormap, not sampled from another field.",
+            field_tooltip="Color this visual by sampling another field.",
+            on_changed=self._on_preview_setting,
+            on_preview=self._schedule_preview,
         )
-        volume.layout.addWidget(self._cmap_editor.widget)
-        rest_form = QtWidgets.QFormLayout()
+        volume.layout.addWidget(self._appearance.widget)
+        self._iso_rest_widget = QtWidgets.QWidget()
+        rest_form = QtWidgets.QFormLayout(self._iso_rest_widget)
         rest_form.setContentsMargins(0, 0, 0, 0)
         self._transparency = QtWidgets.QDoubleSpinBox()
         self._transparency.setDecimals(2)
@@ -944,9 +938,7 @@ class FieldVisualBuilderPage:
         self._color_btn.clicked.connect(self._pick_color)
         rest_form.addRow("Transparency", self._transparency)
         rest_form.addRow("Color", self._color_btn)
-        volume.layout.addLayout(rest_form)
-        self._appearance_section = volume
-        self._volume_section = None
+        volume.layout.addWidget(self._iso_rest_widget)
         body.addWidget(volume.widget)
 
         iso = make_section("Options")
@@ -1030,11 +1022,7 @@ class FieldVisualBuilderPage:
             [
                 (back, BACK_TIP, "Back"),
                 (self._geometry_picker.widget, "Field that defines the volume geometry.", "Geometry field"),
-                (self._color_mode_uniform, "Solid color or volume colormap, not sampled from another field.", "Uniform"),
-                (self._color_mode_field, "Color this visual by sampling another field.", "From field"),
-                (self._color_picker.widget, "Optional second field used as a color ramp.", "Color field"),
-                *self._cmap_editor.tooltips(),
-                *self._preview_mode.tooltips(),
+                *self._appearance.tooltips(),
                 (self._level, _LEVEL_TIP, "Level"),
                 (self._side, "Which side of the isosurface to keep.", "Side"),
                 (self._transparency, "0 is opaque, 1 is invisible.", "Transparency"),

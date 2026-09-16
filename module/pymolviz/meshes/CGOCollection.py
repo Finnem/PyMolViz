@@ -125,3 +125,10 @@ cmd.set("cgo_transparency", {self.transparency}, "{self.name}"){look}
     def from_dict(cls, data: dict):
         from ..serialization import displayable_from_dict
         return displayable_from_dict(data)
+
+
+def cgo_children(obj):
+    """Member meshes for a CGO collection, or a one-element list for a single mesh."""
+    if type(obj).__name__ == "CGOCollection":
+        return list(obj)
+    return [obj]

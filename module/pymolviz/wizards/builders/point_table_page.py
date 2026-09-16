@@ -153,6 +153,26 @@ class PointTableBuilderPage(BuilderPage):
         if self._appearance is not None:
             self._appearance.set_preview_mode(read_preview_mode(obj))
 
+    def _preview_if_on(self):
+        """Empty list, preview off, or dead widget → cleanup/clear; else return active mode."""
+        from .preview_mode import preview_is_on
+
+        if not qt_widget_alive(self._page):
+            return None
+        try:
+            if not enabled_points(self._points):
+                self._preview.cleanup()
+                return None
+            mode = self._current_preview_mode()
+            if not preview_is_on(mode):
+                self._preview.clear_meshes()
+                if self._modifiers is not None:
+                    self._modifiers.clip.refresh_gizmos()
+                return None
+            return mode
+        except RuntimeError:
+            return None
+
     def _load_options(self, obj):
         """Copy mesh-specific options from a persisted object."""
 
