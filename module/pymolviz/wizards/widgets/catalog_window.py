@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Callable, Collection, Optional, Sequence, Tuple
 
-from ..pick import configure_tool_window, qt_modules
+from ..pick import _qt_platform_name, bind_tool_window, configure_tool_window, qt_modules
 from ..tooltips import apply_required_tooltips
 from .breadcrumb import make_page_header
 from .scrolling import configure_resizable_window, make_scrolling_body
@@ -233,3 +233,51 @@ def open_catalog_dialog(
     root.addWidget(stack, stretch=1)
     window.destroyed.connect(on_destroyed)
     return window, stack
+
+
+def show_catalog_library_window(
+    QtCore,
+    QtWidgets,
+    *,
+    window_title: str,
+    width: int,
+    height: int,
+    build_root_pages,
+    on_destroyed,
+    after_open,
+    visibility_label: str,
+):
+    """Open catalog dialog, run ``after_open(window, stack)``, then show and verify visibility."""
+    window, stack = open_catalog_dialog(
+        QtCore,
+        QtWidgets,
+        window_title=window_title,
+        width=width,
+        height=height,
+        build_root_pages=build_root_pages,
+        on_destroyed=on_destroyed,
+    )
+    after_open(window, stack)
+    window.show()
+    bind_tool_window(window)
+    window.raise_()
+    window.activateWindow()
+    app = QtWidgets.QApplication.instance()
+    if app is not None:
+        app.processEvents()
+    if not window.isVisible():
+        raise RuntimeError(
+            "%s window did not become visible (Qt platform=%r)"
+            % (visibility_label, _qt_platform_name())
+        )
+    return window, stack
+
+
+def close_catalog_window(window) -> None:
+    if window is None:
+        return
+    try:
+        window.close()
+        window.deleteLater()
+    except RuntimeError:
+        pass

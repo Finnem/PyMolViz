@@ -15,13 +15,12 @@ from ...util.solvent_surface import (
     DEFAULT_VDW_SCALE,
     SURFACE_ALGORITHM_LABELS,
     SURFACE_ALGORITHM_UI_ORDER,
-    confirm_heavy_surface_job,
     estimate_surface_job,
-    format_heavy_surface_message,
     lookup_source_vdw,
     normalize_algorithm,
 )
-from ..pick import overlay_question, overlay_warning, qt_modules, qt_widget_alive
+from ..pick import overlay_warning, qt_modules, qt_widget_alive
+from .heavy_job import ask_heavy_job
 from ..widgets.ascii_locale import apply_ascii_float_locale
 from ..widgets.breadcrumb import CRUMB_SURFACE
 from ..widgets.log_slider import LogSegmentRadiusWidget
@@ -409,29 +408,20 @@ class SurfaceBuilderPage(PointTableBuilderPage):
 
     def _confirm_heavy_surface(self) -> bool:
         job = self._current_job()
-        action, fingerprint = confirm_heavy_surface_job(
-            job, previous_ok=self._heavy_ok, previous_denied=self._heavy_denied,
-        )
-        if action == "allow":
-            return True
-        if action == "deny":
-            return False
-        _, _, QtWidgets = qt_modules()
-        if QtWidgets is None or self._page is None:
-            return False
-        result = overlay_question(
+        allowed, ok_fp, denied_fp = ask_heavy_job(
             self._page,
-            "Large surface",
-            format_heavy_surface_message(job),
-            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-            QtWidgets.QMessageBox.No,
+            job,
+            title="Large surface",
+            previous_ok=self._heavy_ok,
+            previous_denied=self._heavy_denied,
+            no_qt_default=False,
         )
-        if result == QtWidgets.QMessageBox.Yes:
-            self._heavy_ok = fingerprint
+        if ok_fp is not None:
+            self._heavy_ok = ok_fp
             self._heavy_denied = None
-            return True
-        self._heavy_denied = fingerprint
-        return False
+        if denied_fp is not None:
+            self._heavy_denied = denied_fp
+        return allowed
 
     def _warn_surface_failed(self, exc):
         _, _, QtWidgets = qt_modules()

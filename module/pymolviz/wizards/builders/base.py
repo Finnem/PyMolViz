@@ -270,3 +270,39 @@ class BuilderPage:
 
     def _build(self, parent):
         raise NotImplementedError
+
+
+def install_builder_key_filter(
+    target,
+    *,
+    on_escape,
+    on_delete,
+    skip_when_typing=False,
+    QtCore=None,
+    QtWidgets=None,
+):
+    """Escape / Delete / Backspace on a builder page or focused list widget."""
+    if QtCore is None or QtWidgets is None:
+        QtCore, _, QtWidgets = qt_modules()
+    if QtCore is None or QtWidgets is None or target is None:
+        return None
+
+    class _BuilderKeyFilter(QtCore.QObject):
+        def eventFilter(self, obj, event):
+            if event.type() != QtCore.QEvent.KeyPress:
+                return False
+            if event.key() == QtCore.Qt.Key_Escape:
+                on_escape()
+                return True
+            if event.key() not in (QtCore.Qt.Key_Delete, QtCore.Qt.Key_Backspace):
+                return False
+            if skip_when_typing:
+                focus = QtWidgets.QApplication.focusWidget()
+                if isinstance(focus, (QtWidgets.QLineEdit, QtWidgets.QAbstractSpinBox)):
+                    return False
+            on_delete()
+            return True
+
+    filt = _BuilderKeyFilter()
+    target.installEventFilter(filt)
+    return filt

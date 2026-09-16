@@ -7,10 +7,10 @@ from ...fields.identity import GEN_GAUSSIAN, GEN_NEAREST_PROP
 from ...util.gaussian_map import DEFAULT_GAUSSIAN_ISOLEVEL, DEFAULT_GAUSSIAN_RESOLUTION
 from ...util.solvent_surface import (
     DEFAULT_QUALITY,
-    confirm_heavy_surface_job,
     estimate_surface_job,
     gauss_spacing,
 )
+from .heavy_job import ask_heavy_job
 from ..pick import (
     overlay_question,
     overlay_warning,
@@ -674,18 +674,6 @@ class FromSelectionFieldPage(PointTableBuilderPage):
             quality=self._quality_value(),
             elements=elements,
         )
-        decision, fingerprint = confirm_heavy_surface_job(
-            job, previous_ok=self._heavy_ok, previous_denied=self._heavy_denied,
-        )
-        if decision == "allow":
-            self._heavy_ok = fingerprint
-            return True
-        if decision == "deny":
-            return False
-        _, _, QtWidgets = qt_modules()
-        if QtWidgets is None:
-            self._heavy_ok = fingerprint
-            return True
         seconds = max(2, int(round(float(job.get("seconds") or 0.0))))
         n = int(job.get("n_atoms") or 0)
         q = int(job.get("quality") or 0)
@@ -696,18 +684,19 @@ class FromSelectionFieldPage(PointTableBuilderPage):
             "may take about %s seconds%s. PyMOL will not respond until it finishes. "
             "Build it anyway?" % (q, n, seconds, extra)
         )
-        result = overlay_question(
+        allowed, ok_fp, denied_fp = ask_heavy_job(
             self._page,
-            "Heavy field",
-            message,
-            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-            QtWidgets.QMessageBox.No,
+            job,
+            title="Heavy field",
+            message=message,
+            previous_ok=self._heavy_ok,
+            previous_denied=self._heavy_denied,
         )
-        if result == QtWidgets.QMessageBox.Yes:
-            self._heavy_ok = fingerprint
-            return True
-        self._heavy_denied = fingerprint
-        return False
+        if ok_fp is not None:
+            self._heavy_ok = ok_fp
+        if denied_fp is not None:
+            self._heavy_denied = denied_fp
+        return allowed
 
     def _builder_color_mode(self) -> str:
         if self._appearance is None:

@@ -605,7 +605,10 @@ def test_confirm_delete_uses_overlay_question():
     from pymolviz.wizards.builders.from_selection_page import FromSelectionFieldPage
     from pymolviz.wizards.builders.surface_page import SurfaceBuilderPage
 
-    assert "overlay_question" in inspect.getsource(FieldVisualBuilderPage._confirm_heavy_iso)
-    assert "overlay_question" in inspect.getsource(FromSelectionFieldPage._confirm_heavy_map)
-    assert "overlay_question" in inspect.getsource(SurfaceBuilderPage._confirm_heavy_surface)
+    from pymolviz.wizards.builders.heavy_job import ask_heavy_job
+
+    assert "ask_heavy_job" in inspect.getsource(FieldVisualBuilderPage._confirm_heavy_iso)
+    assert "ask_heavy_job" in inspect.getsource(FromSelectionFieldPage._confirm_heavy_map)
+    assert "ask_heavy_job" in inspect.getsource(SurfaceBuilderPage._confirm_heavy_surface)
+    assert "overlay_question" in inspect.getsource(ask_heavy_job)
 

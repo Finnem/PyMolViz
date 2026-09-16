@@ -25,14 +25,11 @@ from .catalog import (
     visual_icon_rgb,
 )
 from .pick import (
-    bind_tool_window,
-    configure_tool_window,
     overlay_get_open_file_name,
     overlay_question,
     overlay_warning,
     qt_modules,
 )
-from .pick import _qt_platform_name
 from .tooltips import apply_required_tooltips
 from .widgets.breadcrumb import (
     CRUMB_ADD_FIELD,
@@ -66,7 +63,8 @@ from .widgets.catalog_chrome import (
 from .widgets.catalog_window import (
     build_empty_library_page,
     build_type_picker_page,
-    open_catalog_dialog,
+    close_catalog_window,
+    show_catalog_library_window,
     transparent_for_mouse,
 )
 from .widgets.nest import make_nest_branch
@@ -261,11 +259,7 @@ class FieldVisualsWindow:
         self._reset_window()
         if window is None:
             return
-        try:
-            window.close()
-            window.deleteLater()
-        except RuntimeError:
-            pass
+        close_catalog_window(window)
 
     def _open_window(self, QtCore, QtWidgets):
         def _pages(stack):
@@ -274,7 +268,12 @@ class FieldVisualsWindow:
             stack.addWidget(self._build_visual_type_page(QtCore, QtWidgets))
             stack.setCurrentIndex(_PAGE_LIBRARY)
 
-        window, stack = open_catalog_dialog(
+        def _after_open(_window, stack):
+            self._stack = stack
+            self._refresh_fields_table()
+            self._sync_add_field_row()
+
+        window, stack = show_catalog_library_window(
             QtCore,
             QtWidgets,
             window_title="PyMOLViz Fields",
@@ -282,23 +281,11 @@ class FieldVisualsWindow:
             height=720,
             build_root_pages=_pages,
             on_destroyed=self._on_destroyed,
+            after_open=_after_open,
+            visibility_label="Field Visuals",
         )
         self._stack = stack
         self._window = window
-        self._refresh_fields_table()
-        window.show()
-        bind_tool_window(window)
-        window.raise_()
-        window.activateWindow()
-        app = QtWidgets.QApplication.instance()
-        if app is not None:
-            app.processEvents()
-        self._sync_add_field_row()
-        if not window.isVisible():
-            raise RuntimeError(
-                "Field Visuals window did not become visible "
-                "(Qt platform=%r)" % (_qt_platform_name(),)
-            )
 
     def _reset_window(self):
         self._window = None

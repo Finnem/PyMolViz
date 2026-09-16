@@ -21,7 +21,7 @@ from ..widgets.theme import style_info_banner
 from .appearance_section import AppearanceSection
 from .arrow_list import ArrowPairEditor
 from .arrow_type import ArrowTypeControl
-from .base import BuilderPage
+from .base import BuilderPage, install_builder_key_filter
 from .colors import bind_color_pick_result, colors_for_new_points, pick_rgb
 from .pairs import (
     DEFAULT_ARROW_WIDTH,
@@ -302,30 +302,14 @@ class ArrowBuilderPage(BuilderPage):
         self._add_bar_timer.start()
         self._sync_add_bar()
 
-        class _KeyFilter(QtCore.QObject):
-            def __init__(self, owner):
-                QtCore.QObject.__init__(self)
-                self._owner = owner
-
-            def eventFilter(self, obj, event):
-                if event.type() != QtCore.QEvent.KeyPress:
-                    return False
-                focus = QtWidgets.QApplication.focusWidget()
-                typing = isinstance(
-                    focus, (QtWidgets.QLineEdit, QtWidgets.QAbstractSpinBox)
-                )
-                if event.key() == QtCore.Qt.Key_Escape:
-                    self._owner._abort_pick()
-                    return True
-                if event.key() in (QtCore.Qt.Key_Delete, QtCore.Qt.Key_Backspace):
-                    if typing:
-                        return False
-                    self._owner._delete_selected()
-                    return True
-                return False
-
-        self._key_filter = _KeyFilter(self)
-        page.installEventFilter(self._key_filter)
+        self._key_filter = install_builder_key_filter(
+            page,
+            on_escape=self._abort_pick,
+            on_delete=self._delete_selected,
+            skip_when_typing=True,
+            QtCore=QtCore,
+            QtWidgets=QtWidgets,
+        )
         self._finish_build(
             page,
             back,

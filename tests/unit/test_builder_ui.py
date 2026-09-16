@@ -318,11 +318,13 @@ def test_builder_pages_share_shell_and_point_table_bases():
     from pymolviz.wizards.builders.arrow_page import ArrowBuilderPage
     from pymolviz.wizards.builders.base import BuilderPage
     from pymolviz.wizards.builders.box_page import BoxBuilderPage
+    from pymolviz.wizards.builders.field_page import FieldVisualBuilderPage
     from pymolviz.wizards.builders.point_table_page import PointTableBuilderPage
     from pymolviz.wizards.builders.sphere_page import SphereBuilderPage
     from pymolviz.wizards.builders.surface_page import SurfaceBuilderPage
 
     assert issubclass(PointTableBuilderPage, BuilderPage)
+    assert issubclass(FieldVisualBuilderPage, BuilderPage)
     assert issubclass(SphereBuilderPage, PointTableBuilderPage)
     assert issubclass(BoxBuilderPage, PointTableBuilderPage)
     assert issubclass(SurfaceBuilderPage, PointTableBuilderPage)
@@ -1420,6 +1422,16 @@ def test_colormap_stop_color_picker_is_solid_only():
     assert "allow_field=False" in special
 
 
+def test_catalog_library_windows_use_shared_show_helper():
+    import inspect
+
+    from pymolviz.wizards import add_visual, field_visuals
+
+    assert "show_catalog_library_window" in inspect.getsource(add_visual.AddVisualWindow._open_window)
+    assert "show_catalog_library_window" in inspect.getsource(field_visuals.FieldVisualsWindow._open_window)
+    assert "close_catalog_window" in inspect.getsource(add_visual.AddVisualWindow._discard_window)
+
+
 def test_colormap_preview_pixmap_builtin():
     from pymolviz.wizards.builders.colormap_editor import (
         colormap_preview_pixmap,
@@ -1534,7 +1546,11 @@ def test_object_visual_editors_put_selection_left_of_options():
     assert points_src.index("_mount_appearance") < points_src.index("_mount_modifiers")
     assert "right.addStretch" in points_src
 
+    mount_pts = inspect.getsource(PointTableBuilderPage._mount_points_section)
+    assert "install_builder_key_filter" in mount_pts
+
     arrow_src = inspect.getsource(ArrowBuilderPage._build)
+    assert "install_builder_key_filter" in arrow_src
     assert "_mount_editor_columns" in arrow_src
     assert "left.addWidget(arrows.widget" in arrow_src
     assert "right.addWidget(geom.widget)" in arrow_src

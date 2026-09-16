@@ -12,7 +12,7 @@ from .appearance_section import (
     RESET_COLORS_LABEL,
     AppearanceSection,
 )
-from .base import BuilderPage
+from .base import BuilderPage, install_builder_key_filter
 from .colors import bind_color_pick_result, pick_rgb
 from .modifiers_section import ModifiersSection
 from .point_insertion import PointInsertionWidget
@@ -29,26 +29,6 @@ from .points import (
     update_points_from_selection,
 )
 from .zoom_selection import zoom_to_visual_points
-
-
-def _list_delete_filter_type(QtCore):
-    class _ListDeleteKeyFilter(QtCore.QObject):
-        def __init__(self, owner):
-            QtCore.QObject.__init__(self)
-            self._owner = owner
-
-        def eventFilter(self, obj, event):
-            if event.type() != QtCore.QEvent.KeyPress:
-                return False
-            if event.key() == QtCore.Qt.Key_Escape:
-                self._owner._abort_atom_pick()
-                return True
-            if event.key() not in (QtCore.Qt.Key_Delete, QtCore.Qt.Key_Backspace):
-                return False
-            self._owner._delete_selected()
-            return True
-
-    return _ListDeleteKeyFilter
 
 
 class PointTableBuilderPage(BuilderPage):
@@ -320,9 +300,13 @@ class PointTableBuilderPage(BuilderPage):
         self._list.attach_add_to_section(pts)
         root.addWidget(pts.widget, stretch=1)
 
-        filter_type = _list_delete_filter_type(QtCore)
-        self._table_filter = filter_type(self)
-        self._list.widget.installEventFilter(self._table_filter)
+        self._table_filter = install_builder_key_filter(
+            self._list.widget,
+            on_escape=self._abort_atom_pick,
+            on_delete=self._delete_selected,
+            QtCore=QtCore,
+            QtWidgets=QtWidgets,
+        )
         self._insertion.start_preview_timer(self._page)
         return list(self._insertion.tooltips())
 
