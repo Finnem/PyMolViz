@@ -483,9 +483,7 @@ def reconcile_wizard_after_session_load(cmd_=None):
 
 def start_wizard():
     """Open the PyMOLViz wizard panel."""
-    from .util.array_backend import announce_cuda
-
-    announce_cuda(cmd)
+    register_wizard_commands()
     view = cmd.get_view()
     try:
         exit_wizard(cmd)
@@ -514,11 +512,25 @@ def reload_wizard():
     reload_pymolviz(restart_wizard=True)
 
 
-extend_cmd(cmd, "pymolviz_wizard", start_wizard)
-extend_cmd(cmd, "pmvw", start_wizard)
-extend_cmd(cmd, "pymolviz_reload_wizard", reload_wizard)
-extend_cmd(cmd, "pymolviz_exit_wizard", exit_wizard)
+_WIZARD_COMMANDS_REGISTERED = False
 
-from .util.array_backend import announce_cuda as _announce_cuda
 
-_announce_cuda(cmd)
+def register_wizard_commands():
+    """Register ``pmvw`` / related CLI hooks when running inside PyMOL."""
+    global _WIZARD_COMMANDS_REGISTERED
+    if _WIZARD_COMMANDS_REGISTERED:
+        return
+    extend_cmd(cmd, "pymolviz_wizard", start_wizard)
+    extend_cmd(cmd, "pmvw", start_wizard)
+    extend_cmd(cmd, "pymolviz_reload_wizard", reload_wizard)
+    extend_cmd(cmd, "pymolviz_exit_wizard", exit_wizard)
+    from .util.array_backend import announce_cuda
+
+    announce_cuda(cmd)
+    _WIZARD_COMMANDS_REGISTERED = True
+
+
+try:
+    register_wizard_commands()
+except Exception:
+    pass

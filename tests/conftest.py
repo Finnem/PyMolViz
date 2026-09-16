@@ -32,7 +32,14 @@ def _install_pymol_stubs() -> None:
     for index, name in enumerate(_CGO_TOKEN_NAMES):
         setattr(cgo, name, 1000 + index)
 
-    cmd_mod = types.ModuleType("pymol.cmd")
+    from tests.fakes.cmd import FakeCmd
+
+    cmd_mod = FakeCmd()
+
+    def _cmd_extend(name, func):
+        setattr(cmd_mod, name, func)
+
+    cmd_mod.extend = _cmd_extend
 
     pymol = types.ModuleType("pymol")
     pymol.cgo = cgo
@@ -45,11 +52,24 @@ def _install_pymol_stubs() -> None:
         event_mask_pick = 1
         event_mask_select = 2
 
+        def __init__(self):
+            self.cmd = sys.modules["pymol.cmd"]
+
     wizard_mod.Wizard = Wizard
 
     qt_core = types.ModuleType("pymol.Qt.QtCore")
     qt_gui = types.ModuleType("pymol.Qt.QtGui")
     qt_widgets = types.ModuleType("pymol.Qt.QtWidgets")
+
+    class _StubQApplication:
+        @staticmethod
+        def instance():
+            return _StubQApplication()
+
+        def allWidgets(self):
+            return []
+
+    qt_widgets.QApplication = _StubQApplication
     qt_pkg = types.ModuleType("pymol.Qt")
     qt_pkg.QtCore = qt_core
     qt_pkg.QtGui = qt_gui

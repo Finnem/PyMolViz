@@ -1,21 +1,14 @@
-"""CGO construction helpers (requires pymol.cgo)."""
+"""CGO construction helpers (string tokens; resolves with or without PyMOL installed)."""
 
 import math
 
-from pymol.cgo import CYLINDER
-
+from .cgo_opcodes import _CGO_TOKEN_NAMES, get_pymol_cgo
 from .geometries import icosphere, point_on_sphere
-
-_CGO_TOKEN_NAMES = (
-    "POINTS", "SPHERE", "COLOR", "VERTEX", "NORMAL", "CYLINDER", "CONE",
-    "BEGIN", "END", "LINEWIDTH", "LINES", "TRIANGLES", "ALPHA",
-    "ENABLE", "DISABLE", "LIGHTING",
-)
 
 
 def resolve_cgo_tokens(content: list) -> list:
     """Convert string CGO opcodes to pymol.cgo integer constants."""
-    from pymol import cgo
+    cgo = get_pymol_cgo()
 
     map_cgo_keys = {name: getattr(cgo, name) for name in _CGO_TOKEN_NAMES if hasattr(cgo, name)}
     out = []
@@ -106,7 +99,7 @@ def offset_cgo_vertices(content, delta):
     PyMOL that mode value aliases VERTEX (both 4.0), so it must not be shifted.
     Payloads are skipped so a coordinate of 4.0 is not treated as VERTEX.
     """
-    from pymol import cgo
+    cgo = get_pymol_cgo()
 
     dx, dy, dz = (float(delta[0]), float(delta[1]), float(delta[2]))
     opcode_ints = {
@@ -231,7 +224,7 @@ def wireframe_box_cgo(center, extent, color, line_r=0.012, alpha=1.0):
         p0 = corners[i0]
         p1 = corners[i1]
         obj.extend([
-            CYLINDER,
+            "CYLINDER",
             p0[0], p0[1], p0[2],
             p1[0], p1[1], p1[2],
             line_r, red, green, blue, red, green, blue,
@@ -299,7 +292,7 @@ def wireframe_sphere_mesh_cgo(center, radius, color, subdivisions=2, line_r=0.01
     for i0, i1 in edges:
         p0 = point(i0)
         p1 = point(i1)
-        obj.extend([CYLINDER, *p0, *p1, line_r, red, green, blue, red, green, blue])
+        obj.extend(["CYLINDER", *p0, *p1, line_r, red, green, blue, red, green, blue])
     return obj
 
 
@@ -312,7 +305,7 @@ def wireframe_sphere_cgo(center, radius, color, n_lon=6, n_lat=4, n_seg=10, line
         obj.extend(["ALPHA", a])
 
     def add_edge(p0, p1):
-        obj.extend([CYLINDER, *p0, *p1, line_r, red, green, blue, red, green, blue])
+        obj.extend(["CYLINDER", *p0, *p1, line_r, red, green, blue, red, green, blue])
 
     for i in range(n_lon):
         phi = 2.0 * math.pi * i / n_lon

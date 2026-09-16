@@ -5,8 +5,10 @@ Despite its age, PyMOL is still a popular tool to display (and manipulate) molec
 * `numpy`
 * `scipy`
 * `matplotlib`
-* `pandas`
-* `gemmi` if you want to load .mtz files
+* `cmap` (extra named colormaps for `get_colormap`)
+* **PyMOL** is not required to build meshes/fields and export `.pml` scripts (`Script.write`); use PyMOL (or `pip install pymolviz` inside PyMOL’s Python) for the interactive wizard and `Displayable.load()`.
+* Optional: `pip install pymolviz[mtz]` for `.mtz` maps (`gemmi`)
+* Optional: `pip install pymolviz[gpu]` for CuPy-accelerated field sampling
 
 Surprisingly PyMOL is not necessarily required to run PyMOLViz, only to display the generated files. 
 

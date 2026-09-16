@@ -5,7 +5,6 @@ import logging
 import uuid
 
 import numpy as np
-import seaborn as sns
 
 from ..ColorMap import ColorMap
 from ..Displayable import Displayable
@@ -303,26 +302,15 @@ cmd.set("cgo_transparency", {transparency}, "{cgo_name}")
         
         return "\n".join(cgo_string_builder)
     
-    def load(self):
+    def load(self, cmd=None):
         self._try_rebuild()
-        from pymol import cgo
-        from pymol import cmd
+        if cmd is None:
+            from pymol import cmd
+
+        from ..util.cgo import resolve_cgo_tokens
+
         cgo_name = sanitize_pymol_string(self.name)
-        content = [e for e in self._create_CGO_list()]
-        map_cgo_keys = {"POINTS": cgo.POINTS, "SPHERE":cgo.SPHERE, "COLOR":cgo.COLOR, "VERTEX": cgo.VERTEX, "NORMAL":cgo.NORMAL, "CYLINDER": cgo.CYLINDER, 
-                        "CONE": cgo.CONE, "BEGIN": cgo.BEGIN, "END": cgo.END, "LINEWIDTH": cgo.LINEWIDTH, "LINES": cgo.LINES, "TRIANGLES": cgo.TRIANGLES, "ALPHA": cgo.ALPHA}
-        for idx, entry in enumerate(content):
-            try:
-                content[idx] = float(entry)
-            except ValueError:
-                if entry not in map_cgo_keys and hasattr(cgo, entry):
-                    map_cgo_keys[entry] = getattr(cgo, entry)
-                if entry not in map_cgo_keys:
-                    raise KeyError(
-                        f"Unknown CGO token {entry!r} in {type(self).__name__}._create_CGO_list(); "
-                        "add it to map_cgo_keys in Points.load or use a pymol.cgo name."
-                    ) from None
-                content[idx] = map_cgo_keys[entry]
+        content = resolve_cgo_tokens([e for e in self._create_CGO_list()])
         state = str(self.state)
         cmd.load_cgo(content, cgo_name, state)
         try:

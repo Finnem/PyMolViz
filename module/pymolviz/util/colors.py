@@ -1,7 +1,13 @@
 import numpy as np
-import seaborn as sns
 import cmap
 import colorsys
+
+
+def _hls_palette(n_colors: int):
+    """Evenly spaced hues (replaces seaborn ``hls_palette`` for distinct CGO colors)."""
+    n = max(int(n_colors), 1)
+    return [colorsys.hls_to_rgb(i / float(n), 0.5, 0.65) for i in range(n)]
+
 
 def get_distinct_colors(n_colors = 20, repeats = None):
 	"""
@@ -20,7 +26,7 @@ def get_distinct_colors(n_colors = 20, repeats = None):
 			repeats = n_colors
 		else:
 			repeats = 10
-	colors = sns.hls_palette(n_colors)
+	colors = _hls_palette(n_colors)
 	reordered_colors = []
 	indices = []
 	for i in range(n_colors):

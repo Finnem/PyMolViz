@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pymolviz"
-version = "1.3.2"
+version = "2.0.0"
 description = "Library to facilitate creation of PyMOL Vizualizations."
 readme = { text = "See https://github.com/Finnem/PyMolViz for a detailed documentation.", content-type = "text/plain" }
 license = { text = "MIT" }
@@ -14,10 +14,7 @@ dependencies = [
     "numpy",
     "matplotlib",
     "scipy",
-    "pandas",
     "cmap",
-    "tqdm",
-    "seaborn",
 ]
 
 [project.urls]
@@ -26,6 +23,14 @@ Homepage = "https://github.com/Finnem/PyMolViz"
 [project.optional-dependencies]
 test = [
     "pytest>=7.0",
+]
+# MTZ maps and some crystal helpers (grid_from_mtz, space groups).
+mtz = [
+    "gemmi",
+]
+# Faster volumetric sampling when a CUDA GPU is available.
+gpu = [
+    "cupy",
 ]
 
 [tool.setuptools.packages.find]

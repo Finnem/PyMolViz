@@ -1,6 +1,6 @@
 from setuptools import find_packages, setup
 setup(name='pymolviz',
-        version='1.3.2',
+        version='2.0.0',
         description='Library to facilitate creation of PyMOL Vizualizations.',
         url='https://github.com/Finnem/PyMolViz',
         author='Finn Mier',
@@ -10,11 +10,13 @@ setup(name='pymolviz',
                 'numpy',
                 'matplotlib',
                 'scipy',
-                'pandas',
                 'cmap',
-                'tqdm',
-                'seaborn'
         ],
+        extras_require={
+                'test': ['pytest>=7.0'],
+                'mtz': ['gemmi'],
+                'gpu': ['cupy'],
+        },
         long_description='See https://github.com/Finnem/PyMolViz for a detailed documentation.',
         zip_safe=False)
 

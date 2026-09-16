@@ -2,7 +2,6 @@ import numpy as np
 import logging
 from .GridData import GridData
 from .Volume import Volume
-import pandas as pd
 
 
 class IsoVolume(Volume):
