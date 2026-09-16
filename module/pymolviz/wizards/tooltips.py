@@ -26,7 +26,7 @@ ANCHOR_TIP = (
 SNAP_TO_ATOM_TIP = (
     "When adding from camera center, if a visible atom is within 2 Å of the "
     "camera-center marker, snap the point onto that atom. Does not apply to "
-    "selection placement."
+    "selection placement or to Update position → Use camera center in the expanded row."
 )
 UPDATE_TO_CAMERA_TIP = (
     "Move the selected table row(s) to the current camera/screen center "

@@ -800,16 +800,17 @@ class ArrowBuilderPage(BuilderPage):
         if pt is not None:
             focus_visual_point(self.cmd, pt)
 
-    def camera_endpoint(self, pair_id, role):
+    def camera_endpoint(self, pair_id, role, snap=None):
         idx = pair_index(self._pairs, pair_id)
         if idx < 0:
             return
         pair = self._pairs[idx]
         current = pair.start if role == "start" else pair.end
         keep = current.color_choice() if current is not None else pair.start.color_choice()
+        snap_to = self._snap() if snap is None else bool(snap)
         pt = camera_center_point(
             self.cmd,
-            self._snap(),
+            snap_to,
             self._existing_points(),
             hook_to_selection=self._hook(),
         ).with_color_choice(keep)

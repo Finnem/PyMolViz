@@ -195,7 +195,7 @@ class ArrowPairEditor:
             picking=picking,
             on_xyz=lambda xyz, i=pid, r=role: host.set_endpoint_xyz(i, r, xyz),
             on_pick_atom=lambda i=pid, r=role: host.pick_endpoint(i, r),
-            on_camera=lambda i=pid, r=role: host.camera_endpoint(i, r),
+            on_camera=lambda i=pid, r=role: host.camera_endpoint(i, r, snap=False),
             on_attach=lambda checked, i=pid, r=role: host.set_endpoint_anchor(i, r, checked),
             on_color=lambda i=pid, r=role: host.edit_endpoint_color(i, r),
         )

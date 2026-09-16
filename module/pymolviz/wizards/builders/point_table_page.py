@@ -520,14 +520,15 @@ class PointTableBuilderPage(BuilderPage):
         self._clear_atom_pick()
         self._sync_table()
 
-    def camera_point(self, index: int):
+    def camera_point(self, index: int, snap=None):
         self._selected_index = index
         if self._pick_index == index:
             self._clear_atom_pick()
-        snap = self._insertion.snap_checkbox.isChecked() if self._insertion else False
+        if snap is None:
+            snap = self._insertion.snap_checkbox.isChecked() if self._insertion else False
         hook = self._insertion.hook_checkbox.isChecked() if self._insertion else True
         self._points = update_points_from_camera(
-            self.cmd, self._points, [index], snap, hook_to_selection=hook,
+            self.cmd, self._points, [index], bool(snap), hook_to_selection=hook,
         )
         self._sync_table()
 

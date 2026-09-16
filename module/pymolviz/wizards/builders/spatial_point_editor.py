@@ -36,7 +36,8 @@ PICK_ATOM_TIP = (
     "is ignored; the clicked atom replaces this point or endpoint."
 )
 CAMERA_CENTER_TIP = (
-    "Use camera center places the endpoint at the current view center."
+    "Use camera center: place at the current view center without snapping to a "
+    "nearby atom (unlike Add point with Snap new points to atoms)."
 )
 ATTACH_TIP = (
     "Keep this point anchored to its atom so it follows if the atom moves."
@@ -44,7 +45,7 @@ ATTACH_TIP = (
 COLOR_TIP = "Choose the color (and opacity) of this point."
 ENDPOINT_HELP = (
     "Pick atom waits for a new click in PyMOL and uses that atom. "
-    "Use camera center places the endpoint at the current view center."
+    "Use camera center places the point at the view center without atom snap."
 )
 
 

@@ -106,7 +106,7 @@ class PointListEditor:
                 picking=pick_index == index,
                 on_xyz=lambda xyz, i=index: host.set_point_xyz(i, xyz),
                 on_pick_atom=lambda i=index: host.pick_point_atom(i),
-                on_camera=lambda i=index: host.camera_point(i),
+                on_camera=lambda i=index: host.camera_point(i, snap=False),
                 on_attach=lambda checked, i=index: host.set_point_anchor(i, checked),
                 on_color=lambda i=index: host.edit_point_color(i),
                 extras=extras,
