@@ -17,8 +17,8 @@ from .colors import bind_color_pick_result, pick_rgb
 from .modifiers_section import ModifiersSection
 from .point_insertion import PointInsertionWidget
 from .point_list import PointListEditor
-from .pairs import MULTI_CLICKED, take_single_selection_point
-from ..pick import qt_widget_alive
+from .pairs import MULTI_CLICKED, POLL_SELECTION_MAX_ATOMS, take_single_selection_point
+from ..pick import idle_selection_poll_ok, qt_widget_alive
 from .points import (
     VisualPoint,
     apply_location,
@@ -312,13 +312,11 @@ class PointTableBuilderPage(BuilderPage):
             on_add=self._add_resolved_points,
             on_show_coords=self._on_show_coords,
             on_export=self._export_selection,
-            hide_add=True,
             hide_coords=True,
-            on_can_add_changed=self._list.set_add_enabled,
-            on_wait_changed=self._list.set_add_waiting,
         )
         pts_layout.addWidget(self._insertion.widget)
         pts_layout.addWidget(self._list.widget, stretch=1)
+        self._insertion.attach_add_to_section(pts)
         self._list.attach_add_to_section(pts)
         root.addWidget(pts.widget, stretch=1)
 
@@ -501,6 +499,8 @@ class PointTableBuilderPage(BuilderPage):
         if not qt_widget_alive(self._page):
             self._stop_atom_pick_timer()
             return
+        if not idle_selection_poll_ok(self._page):
+            return
         hook = self._insertion.hook_checkbox.isChecked() if self._insertion else True
         point, status = take_single_selection_point(
             self.cmd,
@@ -508,6 +508,7 @@ class PointTableBuilderPage(BuilderPage):
             interactive_only=True,
             hook_to_selection=hook,
             multi_atom=MULTI_CLICKED,
+            max_expand=POLL_SELECTION_MAX_ATOMS,
         )
         if status != "one" or point is None or self._same_as_ignored(point):
             return

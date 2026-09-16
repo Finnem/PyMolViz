@@ -30,6 +30,7 @@ from .preview_mode import (
     preview_is_on,
 )
 from .surface_params import COLOR_MODE_FIELD, COLOR_MODE_PER_POINT, COLOR_MODE_UNIFORM, color_mode_shows
+from ..widgets.type_icons import apply_choice_icon
 
 COLOR_ALL_LABEL = "Color All"
 COLOR_SELECTION_LABEL = "Color Selection"
@@ -57,6 +58,26 @@ def appearance_color_mode_labels(*, show_per_point: bool = True):
 
 def appearance_clim_mode_labels() -> Tuple[str, str, str, str]:
     return colormap_range_mode_labels()
+
+
+def appearance_color_mode_icon_kind(mode: str) -> str:
+    """Action-icon key for a color mode (no Qt)."""
+    key = str(mode or COLOR_MODE_UNIFORM)
+    return {
+        COLOR_MODE_UNIFORM: "color_uniform",
+        COLOR_MODE_PER_POINT: "color_per_point",
+        COLOR_MODE_FIELD: "color_field",
+    }.get(key, "color_uniform")
+
+
+def appearance_color_action_icon_kind(which: str) -> str:
+    """Icon keys for Appearance color action buttons (no Qt)."""
+    key = str(which or "").strip().lower()
+    return {
+        "all": "color_uniform",
+        "selection": "color_per_point",
+        "reset": "color_reset",
+    }.get(key, "color_uniform")
 
 
 def apply_color_mode_to_points(
@@ -128,6 +149,8 @@ class AppearanceSection:
         field_id_provider: Optional[Callable[[], Optional[str]]] = None,
         uniform_tooltip: str = "",
         field_tooltip: str = "",
+        section_title: Optional[str] = "Appearance",
+        preview_as_sibling: bool = False,
     ):
         self._parent = parent
         self.cmd = cmd
@@ -154,6 +177,10 @@ class AppearanceSection:
             or "Sample a Field at this object's points. The object stores a field id, not a voxel copy."
         )
         self._colormap_visible_override = None
+        self._section_title = section_title
+        self._preview_as_sibling = bool(preview_as_sibling)
+        self._preview_section_widget = None
+        self._field_picker_label_widget = None
         self._points: List[VisualPoint] = []
         self._selected_rows_provider: Optional[Callable[[], Sequence[int]]] = None
         self._widget = None
@@ -162,9 +189,7 @@ class AppearanceSection:
         self._color_all_btn = None
         self._color_sel_btn = None
         self._reset_colors_btn = None
-        self._mode_uniform = None
-        self._mode_per_point = None
-        self._mode_field = None
+        self._color_mode = COLOR_MODE_UNIFORM
         self._field_picker = None
         self._cmap_editor = None
         self._live_preview = None
@@ -176,6 +201,10 @@ class AppearanceSection:
     @property
     def widget(self):
         return self._widget
+
+    @property
+    def preview_section_widget(self):
+        return self._preview_section_widget
 
     @property
     def wireframe_checkbox(self):
@@ -237,20 +266,13 @@ class AppearanceSection:
         self._selected_rows_provider = handler
 
     def set_color_selection_enabled(self, enabled: bool) -> None:
-        if self._color_sel_btn is not None:
-            per_point = self.color_mode() == COLOR_MODE_PER_POINT
-            self._color_sel_btn.setEnabled(bool(enabled) and per_point)
+        if self._color_sel_btn is None:
+            return
+        field_on = color_mode_shows(self.color_mode(), "field")
+        self._color_sel_btn.setEnabled(self._show_per_point and not field_on and bool(enabled))
 
     def color_mode(self) -> str:
-        if getattr(self, "_mode_field", None) is not None and self._mode_field.isChecked():
-            return COLOR_MODE_FIELD
-        if getattr(self, "_mode_per_point", None) is not None and self._mode_per_point.isChecked():
-            return COLOR_MODE_PER_POINT
-        if getattr(self, "_mode_uniform", None) is not None and self._mode_uniform.isChecked():
-            return COLOR_MODE_UNIFORM
-        if self._points:
-            return infer_color_mode(self._points)
-        return COLOR_MODE_UNIFORM
+        return str(getattr(self, "_color_mode", None) or COLOR_MODE_UNIFORM)
 
     def color_field_id(self):
         return self._selected_field_id()
@@ -313,6 +335,13 @@ class AppearanceSection:
         if self._cmap_editor is not None:
             self._cmap_editor.widget.setVisible(bool(visible))
 
+    def set_field_picker_visible(self, visible: bool) -> None:
+        show = bool(visible)
+        if self._field_picker is not None:
+            self._field_picker.widget.setVisible(show)
+        if self._field_picker_label_widget is not None:
+            self._field_picker_label_widget.setVisible(show)
+
     def stamp_new_points(self, new_pts: List[VisualPoint]) -> List[VisualPoint]:
         if self.color_mode() == COLOR_MODE_FIELD:
             fid = self._selected_field_id()
@@ -360,18 +389,16 @@ class AppearanceSection:
 
     def tooltips(self) -> Sequence[Tuple[object, str]]:
         tips = [
-            (self._color_all_btn, "Open the color picker and apply the choice to every point."),
-            (self._color_sel_btn, "Open the color picker and apply the choice to selected table rows."),
+            (self._color_all_btn, self._uniform_tooltip),
+            (
+                self._color_sel_btn,
+                "Open the color picker and apply the choice to selected table rows. "
+                "Each point keeps its own color.",
+            ),
             (self._reset_colors_btn, "Reassign distinct palette colors to enabled points."),
         ]
-        if self._mode_uniform is not None:
-            tips.append((self._mode_uniform, self._uniform_tooltip))
-        if self._mode_per_point is not None:
-            tips.append((self._mode_per_point, "Each point keeps its own color."))
-        if self._mode_field is not None:
-            tips.append((self._mode_field, self._field_tooltip))
         if self._field_picker is not None:
-            tips.append((self._field_picker.widget, "Field used to color this object."))
+            tips.append((self._field_picker.widget, self._field_tooltip))
         if self._cmap_editor is not None:
             tips.extend((w, t) for w, t, *_rest in self._cmap_editor.tooltips())
         if self._preview_mode is not None:
@@ -428,36 +455,32 @@ class AppearanceSection:
         return self._cmap_editor.resolved_clims(values)
 
     def _set_mode_ui(self, mode: str) -> None:
-        radios = {
-            COLOR_MODE_UNIFORM: self._mode_uniform,
-            COLOR_MODE_FIELD: self._mode_field,
-        }
-        if self._mode_per_point is not None:
-            radios[COLOR_MODE_PER_POINT] = self._mode_per_point
-        target = radios.get(str(mode)) or self._mode_uniform
-        if target is None:
-            return
+        key = str(mode or COLOR_MODE_UNIFORM)
+        if not self._show_per_point and key == COLOR_MODE_PER_POINT:
+            key = COLOR_MODE_UNIFORM
         self._syncing = True
         try:
-            target.setChecked(True)
+            self._color_mode = key
         finally:
             self._syncing = False
 
     def _sync_mode_widgets(self) -> None:
         mode = self.color_mode()
         field_on = color_mode_shows(mode, "field")
-        show_field_row = field_on or self._colormap_in_uniform
+        show_field_row = field_on or self._colormap_in_uniform or (
+            self._show_per_point and self._field_picker is not None
+        )
         if self._field_row is not None:
             self._field_row.setVisible(show_field_row)
         if self._field_picker is not None:
-            self._field_picker.widget.setEnabled(field_on)
+            self._field_picker.widget.setEnabled(show_field_row)
         if self._color_all_btn is not None:
             self._color_all_btn.setEnabled(not field_on)
         if self._reset_colors_btn is not None:
-            self._reset_colors_btn.setEnabled(mode == COLOR_MODE_PER_POINT)
+            self._reset_colors_btn.setEnabled(self._show_per_point and not field_on)
         if self._color_sel_btn is not None:
-            selected = bool(self._selected_rows()) if mode == COLOR_MODE_PER_POINT else False
-            self._color_sel_btn.setEnabled(selected)
+            selected = bool(self._selected_rows())
+            self._color_sel_btn.setEnabled(self._show_per_point and not field_on and selected)
         if self._cmap_editor is not None:
             cmap_enabled = field_on or self._colormap_in_uniform
             self._cmap_editor.widget.setEnabled(cmap_enabled)
@@ -480,18 +503,14 @@ class AppearanceSection:
         self._sync_mode_widgets()
         self._on_changed()
 
-    def _on_mode_toggled(self) -> None:
-        if self._syncing:
-            return
-        self._sync_mode_widgets()
-        if self._points:
-            self._apply_current_mode()
-        else:
-            self._on_changed()
-
     def _on_field_settings_changed(self) -> None:
         if self._syncing:
             return
+        fid = self._selected_field_id()
+        if fid:
+            self._set_mode_ui(COLOR_MODE_FIELD)
+        elif self.color_mode() == COLOR_MODE_FIELD:
+            self._set_mode_ui(COLOR_MODE_UNIFORM)
         self._sync_mode_widgets()
         if self.color_mode() == COLOR_MODE_FIELD and self._points:
             self._apply_current_mode()
@@ -499,30 +518,16 @@ class AppearanceSection:
             self._on_changed()
 
     def _build(self):
-        QtCore, _, QtWidgets = qt_modules()
-        section = make_section("Appearance", self._parent)
-        layout = section.layout
-
-        mode_row = QtWidgets.QHBoxLayout()
-        mode_row.setSpacing(8)
-        self._mode_uniform = QtWidgets.QRadioButton(COLOR_MODE_UNIFORM_LABEL)
-        self._mode_field = QtWidgets.QRadioButton(COLOR_MODE_FIELD_LABEL)
-        self._mode_uniform.setChecked(True)
-        self._mode_uniform.toggled.connect(lambda on: on and self._on_mode_toggled())
-        self._mode_field.toggled.connect(lambda on: on and self._on_mode_toggled())
-        mode_row.addWidget(self._mode_uniform)
-        if self._show_per_point:
-            self._mode_per_point = QtWidgets.QRadioButton(COLOR_MODE_PER_POINT_LABEL)
-            self._mode_per_point.toggled.connect(lambda on: on and self._on_mode_toggled())
-            mode_row.addWidget(self._mode_per_point)
-        mode_row.addWidget(self._mode_field)
-        mode_row.addStretch(1)
-
-        if self._show_live_preview:
-            self._preview_mode = PreviewModeRadios(on_changed=lambda *_: self._emit_preview())
-            layout.addWidget(self._preview_mode.widget)
-
-        layout.addLayout(mode_row)
+        QtCore, QtGui, QtWidgets = qt_modules()
+        if self._section_title:
+            section = make_section(self._section_title, self._parent)
+            layout = section.layout
+            appearance_widget = section.widget
+        else:
+            appearance_widget = QtWidgets.QWidget(self._parent)
+            layout = QtWidgets.QVBoxLayout(appearance_widget)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(0)
 
         self._field_row = QtWidgets.QWidget()
         field_form = QtWidgets.QFormLayout(self._field_row)
@@ -541,15 +546,24 @@ class AppearanceSection:
             cmd=self.cmd,
             field_id_provider=provider,
         )
-        field_form.addRow(self._field_picker_label, self._field_picker.widget)
+        self._field_picker_label_widget = QtWidgets.QLabel(self._field_picker_label)
+        field_form.addRow(self._field_picker_label_widget, self._field_picker.widget)
         field_form.addRow(self._cmap_editor.widget)
-        layout.addWidget(self._field_row)
 
         action_row = QtWidgets.QHBoxLayout()
         action_row.setSpacing(8)
         self._color_all_btn = QtWidgets.QPushButton(COLOR_ALL_LABEL)
         self._color_sel_btn = QtWidgets.QPushButton(COLOR_SELECTION_LABEL)
         self._reset_colors_btn = QtWidgets.QPushButton(RESET_COLORS_LABEL)
+        apply_choice_icon(
+            self._color_all_btn, appearance_color_action_icon_kind("all"), QtGui, QtCore, QtWidgets,
+        )
+        apply_choice_icon(
+            self._color_sel_btn, appearance_color_action_icon_kind("selection"), QtGui, QtCore, QtWidgets,
+        )
+        apply_choice_icon(
+            self._reset_colors_btn, appearance_color_action_icon_kind("reset"), QtGui, QtCore, QtWidgets,
+        )
         apply_secondary_button_style(self._color_all_btn, "pmvColorAll")
         apply_secondary_button_style(self._color_sel_btn, "pmvColorSelection")
         apply_secondary_button_style(self._reset_colors_btn, "pmvResetColors")
@@ -570,6 +584,8 @@ class AppearanceSection:
         if not self._show_per_point:
             self._color_sel_btn.setVisible(False)
             self._reset_colors_btn.setVisible(False)
+
+        layout.addWidget(self._field_row)
 
         look_row = QtWidgets.QHBoxLayout()
         look_row.setSpacing(12)
@@ -592,7 +608,26 @@ class AppearanceSection:
 
         if self._show_wireframe or self._show_quality:
             layout.addLayout(look_row)
-        self._widget = section.widget
+
+        if self._show_live_preview:
+            self._preview_mode = PreviewModeRadios(on_changed=lambda *_: self._emit_preview())
+            if self._preview_as_sibling:
+                preview_section = make_section("Preview", self._parent)
+                preview_section.layout.addWidget(self._preview_mode.widget)
+                self._preview_section_widget = preview_section.widget
+                self._widget = appearance_widget
+            else:
+                preview_section = make_section("Preview", self._parent)
+                preview_section.layout.addWidget(self._preview_mode.widget)
+                host = QtWidgets.QWidget()
+                host_layout = QtWidgets.QVBoxLayout(host)
+                host_layout.setContentsMargins(0, 0, 0, 0)
+                host_layout.setSpacing(0)
+                host_layout.addWidget(preview_section.widget)
+                host_layout.addWidget(appearance_widget)
+                self._widget = host
+        else:
+            self._widget = appearance_widget
         self._sync_mode_widgets()
 
     def _selected_rows(self) -> List[int]:
@@ -606,12 +641,16 @@ class AppearanceSection:
         return []
 
     def _color_all(self) -> None:
+        self._set_mode_ui(COLOR_MODE_UNIFORM)
+        self._sync_mode_widgets()
         self._pick_for_rows(list(range(len(self._points))))
 
     def _color_selection(self) -> None:
         rows = self._selected_rows()
         if not rows:
             return
+        self._set_mode_ui(COLOR_MODE_PER_POINT)
+        self._sync_mode_widgets()
         self._pick_for_rows(rows)
 
     def _emit_preview(self) -> None:
@@ -653,10 +692,11 @@ class AppearanceSection:
         )
 
     def _reset_colors(self):
+        self._set_mode_ui(COLOR_MODE_PER_POINT)
         rows = [i for i, pt in enumerate(self._points) if getattr(pt, "enabled", True)]
         subset = [self._points[i] for i in rows]
         assign_distinct_colors(subset)
         for row, pt in zip(rows, subset):
             self._points[row] = pt
-        self.sync_from_points()
+        self._sync_mode_widgets()
         self._on_changed()

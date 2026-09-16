@@ -1,7 +1,7 @@
 """Middle-click gesture ownership for click-to-center vs translate."""
 
 from ..util.pymol_helpers import set_button_action
-from .pick import find_viewer_widget, qt_modules, record_viewer_atom_click
+from .pick import find_viewer_widget, qt_modules
 
 _ACTIVE_CLICK_FILTER = None
 _ACTIVE_CLICK_WIDGET = None
@@ -78,25 +78,6 @@ def install_middle_click_filter(wizard):
             if middle is None:
                 middle = QtCore.Qt.MouseButton.MiddleButton
             etype = event.type()
-
-            left = getattr(QtCore.Qt, "LeftButton", None)
-            if left is None:
-                left = getattr(getattr(QtCore.Qt, "MouseButton", None), "LeftButton", None)
-            if (
-                etype == QtCore.QEvent.MouseButtonPress
-                and left is not None
-                and event.button() == left
-            ):
-                try:
-                    local = widget.mapFromGlobal(QtGui.QCursor.pos())
-                    record_viewer_atom_click(
-                        getattr(wizard, "cmd", None),
-                        widget,
-                        float(local.x()),
-                        float(local.y()),
-                    )
-                except Exception:
-                    pass
 
             sphere = getattr(wizard, "camera_sphere", None)
             if sphere is None:

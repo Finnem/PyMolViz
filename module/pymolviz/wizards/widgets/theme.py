@@ -231,6 +231,49 @@ def secondary_button_css(object_name="pmvSecondary") -> str:
     )
 
 
+def add_bar_button_css(object_name="pmvAddBar") -> str:
+    """Peer chrome for Add Clicked / Camera / Current Selection."""
+    sel = _button_selector(object_name)
+    return (
+        "%s { background: %s; color: %s; border: 1px solid %s;"
+        " border-radius: 8px; padding: 0px 12px; font-weight: 600; font-size: 13px;"
+        " min-height: 40px; max-height: 40px; }"
+        "%s:hover { background: %s; border: 1px solid %s; }"
+        "%s:pressed { background: %s; }"
+        "%s:disabled { color: %s; background: %s; }"
+        % (
+            sel,
+            rgb_css(ROW),
+            rgb_css(INK),
+            rgb_css(BORDER),
+            sel,
+            rgb_css(SELECTED),
+            rgb_css(PRIMARY),
+            sel,
+            rgb_css(SECONDARY_PRESSED),
+            sel,
+            rgb_css(MUTED),
+            rgb_css(ROW),
+        )
+    )
+
+
+def add_bar_switch_css() -> str:
+    return (
+        "QFrame#pmvAddBarSwitch { background: %s; border: 1px solid %s;"
+        " border-radius: 8px; min-height: 40px; max-height: 40px; }"
+        % (rgb_css(ROW), rgb_css(BORDER))
+    )
+
+
+def add_bar_summary_css() -> str:
+    return (
+        "QLabel#pmvAddBarSummary { color: %s; font-size: 12px; font-weight: 600;"
+        " padding: 2px 4px 0px 4px; min-height: 16px; }"
+        % rgb_css(HEADER_INK)
+    )
+
+
 def apply_shrinking_combo(combo, QtWidgets, *, min_chars=8) -> None:
     """Keep a combo filling its row without sizing the window to the longest item."""
     if combo is None or QtWidgets is None:
@@ -304,7 +347,8 @@ def section_css() -> str:
     return (
         "QFrame#pmvSection { background: %s; border: 1px solid %s;"
         " border-radius: 8px; }"
-        "QFrame#pmvSectionHeader { background: %s; border: none;"
+        "QFrame#pmvSectionHeader, QFrame#pmvSectionActions { background: %s; border: none; }"
+        "QFrame#pmvSectionHeader {"
         " border-top-left-radius: 7px; border-top-right-radius: 7px; }"
         "QFrame#pmvSection[collapsed=\"true\"] QFrame#pmvSectionHeader {"
         " border-radius: 7px; }"
@@ -462,6 +506,13 @@ def apply_secondary_button_style(button, object_name="pmvSecondary") -> None:
         return
     button.setObjectName(object_name)
     button.setStyleSheet(secondary_button_css(object_name))
+
+
+def apply_add_bar_button_style(button) -> None:
+    if button is None:
+        return
+    button.setObjectName("pmvAddBar")
+    button.setStyleSheet(add_bar_button_css())
 
 
 def apply_dashed_button_style(button, object_name="pmvAddVisual") -> None:

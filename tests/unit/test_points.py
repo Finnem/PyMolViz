@@ -197,6 +197,30 @@ def test_nearest_atom_at_view_center_ignores_atoms_beyond_two_angstroms():
     assert nearest_atom_at_view_center(cmd) is None
 
 
+def test_nearest_atom_at_view_center_does_not_iterate_all_visible():
+    from tests.fakes.cmd import FakeAtom, FakeCmd
+
+    cmd = FakeCmd()
+    cmd.set_view(_look_at_origin_view())
+    cmd.add_atom(FakeAtom("prot", 1, 0.0, 0.0, 1.5, name="CA"))
+    cmd.add_atom(FakeAtom("prot", 2, 80.0, 0.0, 0.0, name="CB"))
+    queries = []
+    original = cmd.iterate
+
+    def wrapped(sele_expr, expr, space=None):
+        queries.append(str(sele_expr))
+        return original(sele_expr, expr, space)
+
+    cmd.iterate = wrapped
+    hit = nearest_atom_at_view_center(cmd)
+    assert hit is not None
+    assert queries
+    assert not any(
+        query.strip("() ") in ("visible", "visible and enabled", "all")
+        for query in queries
+    )
+
+
 def test_camera_center_snap_uses_nearby_atom():
     from pymolviz.points import AtomPoint
     from tests.fakes.cmd import FakeAtom, FakeCmd

@@ -278,6 +278,83 @@ def _draw_lattice(painter, QtGui, QtCore, size, color):
         painter.drawRect(QtCore.QRectF(dx * s, dy * s, 11.5 * s, 11.5 * s))
 
 
+def _draw_preview_off(painter, QtGui, QtCore, size, color):
+    """Hidden preview: eye outline with a strike."""
+    painter.setPen(_pen(QtGui, QtCore, color, size, 1.5))
+    painter.setBrush(QtGui.QBrush(QtGui.QColor(0, 0, 0, 0)))
+    s = size / 32.0
+    painter.drawEllipse(QtCore.QRectF(6.5 * s, 11.5 * s, 19 * s, 11 * s))
+    painter.setBrush(_fill(color, QtGui, 100))
+    painter.drawEllipse(QtCore.QRectF(13.5 * s, 14.5 * s, 5 * s, 5 * s))
+    painter.setPen(_pen(QtGui, QtCore, color, size, 1.65))
+    painter.drawLine(_pt(QtCore, size, 7.5, 22.5), _pt(QtCore, size, 24.5, 9.5))
+
+
+def _draw_preview_simple(painter, QtGui, QtCore, size, color):
+    """Cheap stand-in: wireframe mesh."""
+    _draw_isomesh(painter, QtGui, QtCore, size, color)
+
+
+def _draw_preview_full(painter, QtGui, QtCore, size, color):
+    """Full fidelity: solid volume block."""
+    _draw_volume(painter, QtGui, QtCore, size, color)
+
+
+def _draw_color_uniform(painter, QtGui, QtCore, size, color):
+    painter.setPen(_pen(QtGui, QtCore, color, size, 1.4))
+    painter.setBrush(_fill(color, QtGui, 110))
+    s = size / 32.0
+    painter.drawEllipse(QtCore.QRectF(10 * s, 10 * s, 12 * s, 12 * s))
+
+
+def _draw_color_per_point(painter, QtGui, QtCore, size, color):
+    painter.setPen(_pen(QtGui, QtCore, color, size, 1.2))
+    painter.setBrush(_fill(color, QtGui, 110))
+    s = size / 32.0
+    for cx, cy, r in ((10.5, 11.0, 3.2), (21.0, 11.0, 3.2), (15.5, 21.0, 3.2)):
+        painter.drawEllipse(QtCore.QRectF((cx - r) * s, (cy - r) * s, 2 * r * s, 2 * r * s))
+
+
+def _draw_color_reset(painter, QtGui, QtCore, size, color):
+    """Reassign distinct palette colors."""
+    s = size / 32.0
+    painter.setPen(_pen(QtGui, QtCore, color, size, 1.25))
+    painter.setBrush(_fill(color, QtGui, 105))
+    for cx, cy in ((8.5, 11.5), (15.5, 20.0), (23.0, 12.0)):
+        painter.drawEllipse(QtCore.QRectF((cx - 2.4) * s, (cy - 2.4) * s, 4.8 * s, 4.8 * s))
+    painter.setBrush(QtGui.QBrush(QtGui.QColor(0, 0, 0, 0)))
+    painter.drawArc(QtCore.QRectF(4.0 * s, 13.5 * s, 13.5 * s, 13.5 * s), 210 * 16, 130 * 16)
+    painter.drawLine(_pt(QtCore, size, 6.5, 24.5), _pt(QtCore, size, 4.0, 27.0))
+    painter.drawLine(_pt(QtCore, size, 6.5, 24.5), _pt(QtCore, size, 9.0, 27.0))
+
+
+def _draw_color_field(painter, QtGui, QtCore, size, color):
+    """Horizontal value ramp — sample field along a bar."""
+    s = size / 32.0
+    rect = QtCore.QRectF(5.5 * s, 12.5 * s, 21 * s, 7 * s)
+    painter.setPen(_pen(QtGui, QtCore, color, size, 1.2))
+    painter.setBrush(QtGui.QBrush(QtGui.QColor(0, 0, 0, 0)))
+    painter.drawRoundedRect(rect, 1.4 * s, 1.4 * s)
+    base = color if hasattr(color, "red") else color
+    stops = (0.25, 0.55, 0.85)
+    for i, alpha in enumerate(stops):
+        c = QtGui.QColor(base)
+        c.setAlphaF(alpha)
+        painter.setBrush(QtGui.QBrush(c))
+        x0 = rect.left() + rect.width() * (i / 3.0)
+        x1 = rect.left() + rect.width() * ((i + 1) / 3.0)
+        painter.drawRect(QtCore.QRectF(x0, rect.top(), x1 - x0, rect.height()))
+
+
+def apply_choice_icon(widget, kind, QtGui, QtCore, QtWidgets=None, size=16, color=None):
+    """Small glyph beside wizard radio choices (preview mode, color mode, …)."""
+    pix = action_icon_pixmap(kind, QtGui, QtCore, QtWidgets, size=size, color=color)
+    if pix is None:
+        return
+    widget.setIcon(QtGui.QIcon(pix))
+    widget.setIconSize(QtCore.QSize(int(size), int(size)))
+
+
 def _draw_plus(painter, QtGui, QtCore, size, color):
     painter.setPen(_pen(QtGui, QtCore, color, size, 2.2))
     painter.setBrush(QtGui.QBrush(QtGui.QColor(0, 0, 0, 0)))
@@ -483,4 +560,11 @@ _ACTION_DRAWERS = {
     "snap": _draw_snap,
     "zoom": _draw_zoom,
     "anchor": _draw_anchor,
+    "preview_off": _draw_preview_off,
+    "preview_simple": _draw_preview_simple,
+    "preview_full": _draw_preview_full,
+    "color_uniform": _draw_color_uniform,
+    "color_per_point": _draw_color_per_point,
+    "color_field": _draw_color_field,
+    "color_reset": _draw_color_reset,
 }

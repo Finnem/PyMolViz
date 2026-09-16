@@ -69,6 +69,44 @@ def _kind_role(QtCore):
     return int(getattr(QtCore.Qt, "UserRole", 256)) + 1
 
 
+COLORMAP_COMBO_ICON_WIDTH = 72
+COLORMAP_COMBO_ICON_HEIGHT = 14
+
+
+def definition_for_preset_label(name: str) -> ColormapDefinition:
+    text = str(name or "").strip()
+    custom = custom_preset_definition(text)
+    if custom is not None:
+        return custom
+    preset, reverse = parse_colormap_reverse(text, presets=FIELD_COLORMAPS)
+    return definition_from_preset(preset, reverse=reverse)
+
+
+def colormap_preview_pixmap(QtGui, QtCore, definition, width=COLORMAP_COMBO_ICON_WIDTH, height=COLORMAP_COMBO_ICON_HEIGHT):
+    """Small horizontal ramp for combo rows and the closed combo display."""
+    if QtGui is None or definition is None:
+        return None
+    try:
+        rgba = ramp_rgba(definition, n=max(8, int(width)))
+    except Exception:
+        return None
+    n = int(rgba.shape[0])
+    fmt = getattr(QtGui.QImage, "Format_RGB32", None)
+    qrgb = getattr(QtGui, "qRgb", None)
+    if fmt is None or qrgb is None:
+        return None
+    image = QtGui.QImage(n, 1, fmt)
+    for i in range(n):
+        r, g, b = [max(0, min(255, int(round(float(c) * 255.0)))) for c in rgba[i][:3]]
+        image.setPixel(i, 0, qrgb(r, g, b))
+    return QtGui.QPixmap.fromImage(image).scaled(
+        int(width),
+        int(height),
+        getattr(QtCore.Qt, "IgnoreAspectRatio", 0),
+        getattr(QtCore.Qt, "SmoothTransformation", 0),
+    )
+
+
 def _icon_button(QtWidgets, QtGui, QtCore, kind, text, tip, object_name, on_click):
     from ..widgets.type_icons import action_icon_pixmap
 
@@ -125,6 +163,7 @@ class ColormapPresetPicker:
         combo.setToolTip(COLORMAP_PRESET_TIP)
         combo.currentIndexChanged.connect(lambda *_: self._emit_selected())
         apply_shrinking_combo(combo, QtWidgets)
+        combo.setIconSize(QtCore.QSize(COLORMAP_COMBO_ICON_WIDTH, COLORMAP_COMBO_ICON_HEIGHT))
         self._combo = combo
 
         self._gear = _icon_button(
@@ -191,7 +230,7 @@ class ColormapPresetPicker:
         self._sync_gear()
 
     def reload(self, select=None) -> None:
-        QtCore, _, _ = qt_modules()
+        QtCore, QtGui, _ = qt_modules()
         if not qt_widget_alive(self._combo):
             return
         keep = str(select or self.current_name() or self._default_name)
@@ -204,7 +243,9 @@ class ColormapPresetPicker:
             self._combo.clear()
             for name in builtin_preset_names():
                 self._combo.addItem(name, name)
-                self._combo.setItemData(self._combo.count() - 1, KIND_BUILTIN, role)
+                idx = self._combo.count() - 1
+                self._combo.setItemData(idx, KIND_BUILTIN, role)
+                self._set_item_icon(idx, name, QtGui, QtCore)
             customs = load_custom_presets()
             labels = [str(item.get("name") or "") for item in customs if item.get("name")]
             ephemeral = keep and keep not in builtins and keep not in labels
@@ -213,9 +254,9 @@ class ColormapPresetPicker:
                 if callable(inserter):
                     inserter(self._combo.count())
                 for label in labels:
-                    self._add_custom_item(label, role, tip_role)
+                    self._add_custom_item(label, role, tip_role, QtGui, QtCore)
                 if ephemeral:
-                    self._add_custom_item(keep, role, tip_role)
+                    self._add_custom_item(keep, role, tip_role, QtGui, QtCore)
             idx = self._combo.findText(keep)
             if idx < 0:
                 idx = self._combo.findText(self._default_name)
@@ -226,11 +267,32 @@ class ColormapPresetPicker:
             self._syncing = False
         self._sync_gear()
 
-    def _add_custom_item(self, label, role, tip_role) -> None:
+    def set_item_icon_from_definition(self, index: int, definition: ColormapDefinition) -> None:
+        QtCore, QtGui, _ = qt_modules()
+        if not qt_widget_alive(self._combo) or QtGui is None:
+            return
+        self._set_item_icon(int(index), None, QtGui, QtCore, definition=definition)
+
+    def _set_item_icon(self, index, name, QtGui, QtCore, definition=None) -> None:
+        if not qt_widget_alive(self._combo) or QtGui is None or index < 0:
+            return
+        defn = definition
+        if defn is None:
+            label = str(name or self._combo.itemText(index) or "").strip()
+            if not label:
+                return
+            defn = definition_for_preset_label(label)
+        pix = colormap_preview_pixmap(QtGui, QtCore, defn)
+        if pix is not None:
+            self._combo.setItemIcon(int(index), QtGui.QIcon(pix))
+
+    def _add_custom_item(self, label, role, tip_role, QtGui=None, QtCore=None) -> None:
         self._combo.addItem(label, label)
         idx = self._combo.count() - 1
         self._combo.setItemData(idx, KIND_CUSTOM, role)
         self._combo.setItemData(idx, ADJUST_CUSTOM_COLORMAP_TIP, tip_role)
+        if QtGui is not None and QtCore is not None:
+            self._set_item_icon(idx, label, QtGui, QtCore)
 
     def tooltips(self) -> Sequence[Tuple[object, str, str]]:
         return (
@@ -279,7 +341,6 @@ class ColormapEditor:
         self._range = None
         self._lo = None
         self._hi = None
-        self._strip = None
         self._widget = None
         self._default_name = str(default_name or DEFAULT_SURFACE_COLORMAP)
         self._definition = definition_from_preset(self._default_name)
@@ -447,8 +508,9 @@ class ColormapEditor:
             (self._range, COLORMAP_RANGE_TIP, "Range"),
             (self._lo, COLORMAP_CLIM_TIP, "Min"),
             (self._hi, COLORMAP_CLIM_TIP, "Max"),
-            (self._strip, COLORMAP_STRIP_TIP, "Colormap preview"),
         ))
+        if self._picker is not None and qt_widget_alive(self._picker.combo):
+            tips.append((self._picker.combo, COLORMAP_STRIP_TIP, "Colormap preview"))
         return tuple(tips)
 
     def _field_id(self):
@@ -517,34 +579,11 @@ class ColormapEditor:
             self._hi.setEnabled(manual)
 
     def _refresh_strip(self) -> None:
-        if not qt_widget_alive(self._strip):
+        if self._picker is None or not qt_widget_alive(self._picker.combo):
             return
-        QtCore, QtGui, QtWidgets = qt_modules()
-        if QtGui is None or not hasattr(QtGui, "QImage"):
-            return
-        try:
-            rgba = ramp_rgba(self._definition, n=96)
-        except Exception:
-            return
-        n = int(rgba.shape[0])
-        fmt = getattr(QtGui.QImage, "Format_RGB32", None)
-        if fmt is None:
-            return
-        image = QtGui.QImage(n, 1, fmt)
-        qrgb = getattr(QtGui, "qRgb", None)
-        if qrgb is None:
-            return
-        for i in range(n):
-            r, g, b = [max(0, min(255, int(round(float(c) * 255.0)))) for c in rgba[i][:3]]
-            image.setPixel(i, 0, qrgb(r, g, b))
-        # Keep the pixmap short. Unrealized QWidget.width() is 640, and a
-        # 640px QLabel sizeHint blows the wizard past 360 and clips the plus.
-        pix = QtGui.QPixmap.fromImage(image).scaled(
-            96, 14, getattr(QtCore.Qt, "IgnoreAspectRatio", 0),
-            getattr(QtCore.Qt, "SmoothTransformation", 0),
-        )
-        self._strip.setPixmap(pix)
-        self._strip.setScaledContents(True)
+        idx = self._picker.combo.currentIndex()
+        if idx >= 0:
+            self._picker.set_item_icon_from_definition(idx, self._definition)
 
     def _open_editor(self, mapping=None, *, save_name=None):
         from .colormap_dialog import open_colormap_editor
@@ -693,22 +732,6 @@ class ColormapEditor:
         clim_row.addWidget(self._lo, stretch=1)
         clim_row.addWidget(self._hi, stretch=1)
         form.addRow("Min / max", clim_wrap)
-
-        self._strip = QtWidgets.QLabel()
-        self._strip.setObjectName("pmvColormapPreview")
-        self._strip.setMinimumHeight(14)
-        self._strip.setMaximumHeight(18)
-        self._strip.setMinimumWidth(0)
-        expanding = getattr(QtWidgets.QSizePolicy, "Expanding", None)
-        fixed = getattr(QtWidgets.QSizePolicy, "Fixed", None)
-        ignored = getattr(QtWidgets.QSizePolicy, "Ignored", None)
-        if ignored is not None and fixed is not None:
-            # Ignored is 0 in Qt; do not use `ignored or expanding`.
-            self._strip.setSizePolicy(ignored, fixed)
-        elif expanding is not None and fixed is not None:
-            self._strip.setSizePolicy(expanding, fixed)
-        self._strip.setScaledContents(True)
-        form.addRow("", self._strip)
 
         self._widget = box
         self._sync_enabled()

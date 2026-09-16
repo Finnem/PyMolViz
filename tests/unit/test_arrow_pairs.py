@@ -73,6 +73,26 @@ def test_pair_row_text_uses_title_when_set():
     assert pair_row_text(pair) == "Helix 1"
 
 
+def test_arrow_appearance_color_writes_both_endpoints():
+    from pymolviz.wizards.builders.arrow_page import ArrowBuilderPage
+    from pymolviz.wizards.builders.colors import ColorChoice
+
+    start = _free_point((0.0, 0.0, 0.0), name="s")
+    start = start.with_color((1.0, 0.0, 0.0))
+    end = _free_point((1.0, 0.0, 0.0), name="e")
+    end = end.with_color((0.0, 1.0, 0.0))
+    page = ArrowBuilderPage.__new__(ArrowBuilderPage)
+    page._pairs = [VisualPair(start, end)]
+    painted = start.with_color_choice(ColorChoice(rgba=(0.0, 0.0, 1.0, 1.0)))
+    page._appearance_pts = [painted]
+    page._write_appearance_to_pairs()
+    out = page._pairs[0]
+    assert out.start.color[2] == pytest.approx(1.0)
+    assert out.end.color[2] == pytest.approx(1.0)
+    assert out.start.xyz() == (0.0, 0.0, 0.0)
+    assert out.end.xyz() == (1.0, 0.0, 0.0)
+
+
 def test_pair_status_picking_ok_missing(fake_cmd):
     complete = VisualPair(_atom_point("A", "42", "CA"), _atom_point("A", "87", "CA", atom_id=2))
     assert pair_status(complete) == STATUS_OK
@@ -231,9 +251,64 @@ def test_take_selection_endpoints_counts(fake_cmd):
     assert start.z == pytest.approx(0.0)
 
 
+def test_take_selection_endpoints_max_expand_skips_full_iterate(fake_cmd):
+    from pymolviz.wizards.builders.pairs import take_selection_endpoints
+    from pymolviz.wizards.last_click import set_last_clicked_atom
+    from tests.fakes.cmd import FakeAtom
+
+    set_last_clicked_atom(None)
+    for i in range(1, 21):
+        fake_cmd.add_atom(FakeAtom(
+            "prot", i, float(i), 0.0, 0.0, chain="A", resi=str(i), name="CA",
+        ))
+    fake_cmd.select("sele", 'object "prot"')
+    calls = []
+    original = fake_cmd.iterate
+
+    def wrapped(sele_expr, expr, space=None):
+        calls.append(str(sele_expr))
+        return original(sele_expr, expr, space)
+
+    fake_cmd.iterate = wrapped
+    start, end, status = take_selection_endpoints(
+        fake_cmd, interactive_only=True, max_expand=2,
+    )
+    assert status == "multiple"
+    assert start is None and end is None
+    assert calls == []
+
+    set_last_clicked_atom("prot", 4)
+    start, end, status = take_selection_endpoints(
+        fake_cmd, interactive_only=True, max_expand=2,
+    )
+    assert status == "one"
+    assert endpoint_label(start) == "A/4/CA"
+    assert any("`" in item for item in calls)
+    assert all("object \"prot\"" != item.strip() for item in calls)
+    assert not any("pk1" in item for item in calls)
+    set_last_clicked_atom(None)
+
+
+def test_fake_cmd_resolves_object_tick_inside_sele(fake_cmd):
+    from tests.fakes.cmd import FakeAtom
+
+    for i in range(1, 6):
+        fake_cmd.add_atom(FakeAtom(
+            "prot", i, float(i), 0.0, 0.0, chain="A", resi=str(i), name="CA",
+        ))
+    fake_cmd.select("sele", 'object "prot"')
+    hits = fake_cmd._resolve_selection("(prot)`4")
+    assert [atom.atom_id for atom in hits] == [4]
+    hits = fake_cmd._resolve_selection("(((sele)) and (prot)`4)")
+    assert [atom.atom_id for atom in hits] == [4]
+
+
 def test_parse_atom_sele_and_last_click():
     from pymolviz.wizards.last_click import (
         last_clicked_atom,
+        last_clicked_path,
+        last_you_clicked_line,
+        note_click_feedback,
         parse_atom_sele,
         set_last_clicked_atom,
     )
@@ -241,10 +316,126 @@ def test_parse_atom_sele_and_last_click():
     assert parse_atom_sele("(prot)`12") == ("prot", 12)
     assert parse_atom_sele("prot`3") == ("prot", 3)
     assert parse_atom_sele("") is None
+    assert parse_atom_sele("/prot//A/GLY`77/C") is None
     set_last_clicked_atom("obj", 9)
     assert last_clicked_atom() == ("obj", 9)
     set_last_clicked_atom(None)
     assert last_clicked_atom() is None
+
+    assert note_click_feedback(" You clicked /4C1D-out//A/GLY`77/C") is True
+    assert last_clicked_path() == "/4C1D-out//A/GLY`77/C"
+    assert last_clicked_atom() is None
+    assert note_click_feedback("You clicked /prot//A/GLY`1/CA -> (prot`4)") is True
+    assert last_clicked_atom() == ("prot", 4)
+    assert last_clicked_path() == "/prot//A/GLY`1/CA"
+    log = (
+        "PyMOL>select\n"
+        " You clicked /4C1D-out//A/GLY`77/C\n"
+        ' Selector: selection "sele" defined with 14 atoms.\n'
+    )
+    assert last_you_clicked_line(log) == " You clicked /4C1D-out//A/GLY`77/C"
+    set_last_clicked_atom(None)
+
+
+def test_you_clicked_path_picks_atom_in_molecule_sele(fake_cmd):
+    from pymolviz.wizards.last_click import note_click_feedback, set_last_clicked_atom
+
+    set_last_clicked_atom(None)
+    for i in range(1, 21):
+        fake_cmd.add_atom(FakeAtom(
+            "4C1D-out", i, float(i), 0.0, 0.0,
+            chain="A", resn="GLY", resi=str(i), name="C",
+        ))
+    fake_cmd.select("sele", 'object "4C1D-out"')
+    assert note_click_feedback(" You clicked /4C1D-out//A/GLY`7/C") is True
+    start, end, status = take_selection_endpoints(
+        fake_cmd, interactive_only=True, max_expand=2,
+    )
+    assert status == "one"
+    assert end is None
+    assert start.atom_ref.model == "4C1D-out"
+    assert start.atom_ref.atom_id == 7
+    assert endpoint_label(start) == "A/7/C"
+    set_last_clicked_atom(None)
+
+
+def test_fake_cmd_resolves_slash_path_before_tick(fake_cmd):
+    fake_cmd.add_atom(FakeAtom(
+        "4C1D-out", 77, 1.0, 0.0, 0.0,
+        chain="A", resn="GLY", resi="77", name="C",
+    ))
+    fake_cmd.add_atom(FakeAtom(
+        "GLY", 77, 9.0, 0.0, 0.0, chain="X", resn="GLY", resi="1", name="CA",
+    ))
+    path = "/4C1D-out//A/GLY`77/C"
+    hits = fake_cmd._resolve_selection(path)
+    assert [atom.atom_id for atom in hits] == [77]
+    assert hits[0].model == "4C1D-out"
+    hits = fake_cmd._resolve_selection("first (%s)" % path)
+    assert [atom.atom_id for atom in hits] == [77]
+    assert fake_cmd.count_atoms(path) == 1
+
+
+def test_record_named_pick_skips_molecule_indicate(fake_cmd):
+    from pymolviz.wizards.last_click import (
+        last_clicked_atom,
+        record_named_pick,
+        record_pymol_click,
+        set_last_clicked_atom,
+    )
+
+    set_last_clicked_atom(None)
+    for i in range(1, 21):
+        fake_cmd.add_atom(FakeAtom(
+            "prot", i, float(i), 0.0, 0.0, chain="A", resi=str(i), name="CA",
+        ))
+    fake_cmd.select("indicate", 'object "prot"')
+    assert record_named_pick(fake_cmd, "indicate") is False
+    assert last_clicked_atom() is None
+    assert record_pymol_click(fake_cmd) is False
+    assert last_clicked_atom() is None
+    fake_cmd.select("pk1", 'object "prot" and id 7')
+    assert record_named_pick(fake_cmd, "pk1") is True
+    assert last_clicked_atom() == ("prot", 7)
+    set_last_clicked_atom(None)
+
+
+def test_click_feedback_hook_notes_you_clicked():
+    import pymol
+    import pymolviz.wizards.last_click as last_click
+
+    def orig(*_args, **_kwargs):
+        return [" You clicked /4C1D-out//A/GLY`77/C"]
+
+    last_click.uninstall_click_feedback_hook()
+    last_click.set_last_clicked_atom(None)
+    pymol.cmd._get_feedback = orig
+    try:
+        last_click.install_click_feedback_hook()
+        lines = pymol.cmd._get_feedback()
+        assert "You clicked" in lines[0]
+        assert last_click.last_clicked_path() == "/4C1D-out//A/GLY`77/C"
+        assert last_click.last_clicked_atom() is None
+    finally:
+        last_click.uninstall_click_feedback_hook()
+        last_click.set_last_clicked_atom(None)
+        if getattr(pymol.cmd, "_get_feedback", None) is orig:
+            delattr(pymol.cmd, "_get_feedback")
+
+
+def test_use_atom_selection_mode_sets_atoms_and_restores(fake_cmd):
+    from pymolviz.wizards import last_click
+
+    last_click.restore_atom_selection_mode(fake_cmd)
+    fake_cmd.set("mouse_selection_mode", 5)
+    last_click.use_atom_selection_mode(fake_cmd, True)
+    assert fake_cmd.get_setting_int("mouse_selection_mode") == 0
+    last_click.use_atom_selection_mode(fake_cmd, True)
+    last_click.use_atom_selection_mode(fake_cmd, False)
+    assert fake_cmd.get_setting_int("mouse_selection_mode") == 0
+    last_click.use_atom_selection_mode(fake_cmd, False)
+    assert fake_cmd.get_setting_int("mouse_selection_mode") == 5
+    last_click.restore_atom_selection_mode(fake_cmd)
 
 
 def test_take_two_atoms_as_center_not_pair(fake_cmd):

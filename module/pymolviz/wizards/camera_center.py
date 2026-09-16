@@ -9,8 +9,8 @@ from ..util.pymol_helpers import (
     place_object,
     purge_objects,
 )
-from ..util.view import click_ray_points, screen_center
-from .pick import pick_atom, qt_to_pymol_xy, widget_fb_scale
+from ..util.view import screen_center
+from .pick import pick_atom, viewer_click_selection_expr
 
 CAM_PSEUDOATOM_STEM = "cam_center"
 
@@ -170,39 +170,11 @@ class CameraCenterSphere:
 
     def _coords_along_click(self, widget, x, y, view, viewport, fov):
         """Atoms in the click-ray bounding box — not the whole visible molecule."""
-        click_x, click_y = qt_to_pymol_xy(widget, x, y)
-        try:
-            width, height = float(viewport[0]), float(viewport[1])
-        except Exception:
-            width, height = 0.0, 0.0
-        if width < 1 or height < 1:
-            scale = widget_fb_scale(widget)
-            width = float(widget.width()) * scale
-            height = float(widget.height()) * scale
-        rect_bottom = max(widget_fb_scale(widget) * widget.height() - height, 0.0)
-        sx = float(click_x)
-        sy = float(click_y) - rect_bottom
-        samples = click_ray_points(view, sx, sy, width, height, fov, n=8)
+        sele = viewer_click_selection_expr(widget, x, y, view, viewport, fov)
         try:
             state = int(self.cmd.get_state())
         except Exception:
             state = 1
-        pad = 2.5
-        xs = [point[0] for point in samples]
-        ys = [point[1] for point in samples]
-        zs = [point[2] for point in samples]
-        sele = (
-            "(visible and enabled) and "
-            "x > %g and x < %g and y > %g and y < %g and z > %g and z < %g"
-            % (
-                min(xs) - pad,
-                max(xs) + pad,
-                min(ys) - pad,
-                max(ys) + pad,
-                min(zs) - pad,
-                max(zs) + pad,
-            )
-        )
         try:
             coords = self.cmd.get_coords(sele, state)
         except Exception:

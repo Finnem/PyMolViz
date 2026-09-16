@@ -5,8 +5,9 @@ from __future__ import annotations
 from .pairs import PENDING_END, endpoint_label, free_point_display_names
 from .point_insertion import (
     INSERT_SOURCE_CAMERA,
+    INSERT_SOURCE_FRESH,
     INSERT_SOURCE_SELECTION,
-    make_add_from_source_toggle,
+    InsertionAddBar,
 )
 from .spatial_item_list import (
     ARROW_LIST_COLUMNS,
@@ -32,8 +33,8 @@ from ..widgets.theme import muted_label_css
 from ..widgets.type_icons import action_icon_pixmap
 
 ADD_ARROW_TIP = (
-    "Add an arrow from the chosen source. Current selection uses atoms "
-    "selected now. Fresh selection waits for a new pick after Add."
+    "Add Camera Center starts an arrow at the view. Add Current Selection "
+    "uses atoms selected now. Add Clicked Atoms waits for picks in PyMOL."
 )
 CANCEL_PICK_TIP = "Cancel the current start/end pick and drop any incomplete arrow."
 DELETE_ARROW_TIP = "Remove this arrow from the list."
@@ -63,12 +64,16 @@ class ArrowPairEditor:
             columns=ARROW_LIST_COLUMNS,
             empty_hint="No arrows yet.",
             context="ArrowPairEditor",
+            show_add=False,
         )
         self._box = self._list.widget
         self._add_btn = self._list.add_button
         self._picking = False
-        self._add_from, self._source_radios = make_add_from_source_toggle()
-        self._source_radios.connect_changed(lambda *_: self._sync_add_chrome())
+        self._add_bar = InsertionAddBar(
+            on_clicked_atoms=self._host.set_add_clicked_atoms,
+            on_camera=lambda: self._host.add_arrow(INSERT_SOURCE_CAMERA),
+            on_selection=lambda: self._host.add_arrow(INSERT_SOURCE_SELECTION),
+        )
 
     @property
     def widget(self):
@@ -76,24 +81,28 @@ class ArrowPairEditor:
 
     def attach_add_to_section(self, section) -> None:
         if section is not None and hasattr(section, "add_header_widget"):
-            section.add_header_widget(self._add_from)
+            section.add_header_widget(self._add_bar.widget)
         self._list.attach_add_to_section(section)
 
     def add_source(self) -> str:
-        radios = getattr(self, "_source_radios", None)
-        if radios is None:
-            return INSERT_SOURCE_SELECTION
-        return radios.source()
+        if self.clicked_atoms_checked():
+            return INSERT_SOURCE_FRESH
+        return INSERT_SOURCE_SELECTION
+
+    def clicked_atoms_checked(self) -> bool:
+        return self._add_bar.clicked_atoms_checked()
+
+    def set_clicked_atoms(self, checked: bool, notify: bool = True) -> None:
+        self._add_bar.set_clicked_atoms(checked, notify=notify)
+
+    def sync_add_bar(self, cmd) -> None:
+        self._add_bar.sync_from_cmd(cmd)
 
     def set_picking(self, picking: bool) -> None:
         self._picking = bool(picking)
-        self._sync_add_chrome()
 
     def _sync_add_chrome(self) -> None:
-        if self._picking and self.add_source() != INSERT_SOURCE_CAMERA:
-            self._list.set_add_chrome("Cancel pick", CANCEL_PICK_TIP)
-        else:
-            self._list.reset_add_chrome()
+        return
 
     def rebuild(self, pairs, selected_id, pick_pair_id, pick_role, context=None):
         QtCore, QtGui, QtWidgets = qt_modules()

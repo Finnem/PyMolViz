@@ -27,6 +27,7 @@ from pymolviz.wizards.builders.preview_mode import (
     preview_is_on,
     preview_mesh_quality,
     preview_mode_choices,
+    preview_mode_icon_kind,
     preview_wireframe,
     stride_sample_grid,
 )
@@ -44,6 +45,12 @@ def test_read_and_stamp_preview_mode_on_objects():
     assert data["preview_mode"] == PREVIEW_OFF
     restored = displayable_from_dict(data)
     assert read_preview_mode(restored) == PREVIEW_OFF
+
+
+def test_preview_mode_icon_kinds():
+    assert preview_mode_icon_kind(PREVIEW_OFF) == "preview_off"
+    assert preview_mode_icon_kind(PREVIEW_SIMPLE) == "preview_simple"
+    assert preview_mode_icon_kind(PREVIEW_FULL) == "preview_full"
 
 
 def test_preview_mode_labels_and_aliases():

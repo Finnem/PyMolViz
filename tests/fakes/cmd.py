@@ -70,6 +70,20 @@ class FakeCmd:
 
     def iterate(self, sele_expr: str, expr: str, space: Optional[dict] = None) -> None:
         space = space if space is not None else {}
+        if space.get("rows") is not None and "rows.append" in expr:
+            rows_out = space["rows"]
+            ident_id = "ID" in expr
+            for atom in self._resolve_selection(sele_expr):
+                ident = atom.atom_id if ident_id else atom.index
+                rows_out.append((atom.model, ident, atom.x, atom.y, atom.z))
+            return
+        if space.get("ids") is not None and "ids.append" in expr:
+            ids_out = space["ids"]
+            ident_id = "ID" in expr
+            for atom in self._resolve_selection(sele_expr):
+                ident = atom.atom_id if ident_id else atom.index
+                ids_out.append((atom.model, ident))
+            return
         atoms_out = space.setdefault("atoms", [])
         for atom in self._resolve_selection(sele_expr):
             self._append_atom(expr, atom, atoms_out)
@@ -115,13 +129,40 @@ class FakeCmd:
                         seen.add(key)
                         out.append(atom)
             return out
-        if expr in ("(sele)", "sele"):
+        while expr.startswith("(") and expr.endswith(")"):
+            inner = expr[1:-1].strip()
+            if not inner or inner.count("(") < inner.count(")"):
+                break
+            expr = inner
+        if expr in ("sele", "(sele)"):
             return list(self.selections.get("sele", []))
-        if expr in ("(selextended)",):
+        if expr in ("selextended", "(selextended)"):
             return list(self.selections.get("sele", []))
-        if expr in ("(pk1)",):
+        if expr in ("pk1", "(pk1)"):
             pk = self.selections.get("pk1", [])
             return list(pk[:1])
+        if expr in ("indicate", "(indicate)"):
+            pk = self.selections.get("indicate", []) or self.selections.get("pk1", [])
+            return list(pk)
+        if expr.startswith("/"):
+            return self._match_atom_path(expr)
+        tick = re.search(r"\(?([A-Za-z0-9_.-]+)\)?`(\d+)", expr)
+        if tick and "/" not in expr:
+            model, atom_id = tick.group(1), int(tick.group(2))
+            hits = [
+                atom for atom in self.atoms
+                if atom.model == model and atom.atom_id == atom_id
+            ]
+            if hits and re.search(r"\bsele\b", expr, flags=re.I):
+                selected = {
+                    (atom.model, atom.atom_id)
+                    for atom in self.selections.get("sele", [])
+                }
+                hits = [
+                    atom for atom in hits
+                    if (atom.model, atom.atom_id) in selected
+                ]
+            return hits
         lowered = expr.lower().strip("() ")
         if lowered in ("all", "visible", "enabled", "visible and enabled"):
             return list(self.atoms)
@@ -184,6 +225,36 @@ class FakeCmd:
         if by_model:
             return by_model
         return self._match(expr)
+
+    def _match_atom_path(self, expr: str) -> List[FakeAtom]:
+        """Parse ``/model/segi/chain/resn`resi/name`` from PyMOL click feedback."""
+        text = str(expr).strip()
+        while text.startswith("(") and text.endswith(")"):
+            inner = text[1:-1].strip()
+            if not inner:
+                break
+            text = inner
+        match = re.match(
+            r"^/([^/]*)/([^/]*)/([^/]*)/([^/`]+)`([^/]+)/([^/`]+)",
+            text,
+        )
+        if not match:
+            return []
+        model, _segi, chain, resn, resi, name = match.groups()
+        out = []
+        for atom in self.atoms:
+            if model and atom.model != model:
+                continue
+            if chain and atom.chain != chain:
+                continue
+            if resn and atom.resn != resn:
+                continue
+            if resi and str(atom.resi) != str(resi):
+                continue
+            if name and atom.name != name:
+                continue
+            out.append(atom)
+        return out
 
     def _match(self, sele_expr: str) -> List[FakeAtom]:
         expr = str(sele_expr).strip()
@@ -443,6 +514,12 @@ class FakeCmd:
 
     def get(self, key: str, name: str = ""):
         return self.settings.get(str(name), {}).get(str(key), 0.0)
+
+    def get_setting_int(self, key: str) -> int:
+        try:
+            return int(float(self.get(key)))
+        except Exception:
+            return 0
 
     def set(self, key: str, value, name: str = "", quiet=1) -> None:
         self.settings.setdefault(str(name), {})[str(key)] = value

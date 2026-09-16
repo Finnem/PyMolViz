@@ -46,18 +46,25 @@ def test_from_selection_field_preview_tooltips_and_defaults():
 
 
 @pytest.mark.qt
-def test_from_selection_page_shows_color_mode_radios():
-    from pymolviz.wizards.builders.appearance_section import appearance_color_mode_labels
+def test_from_selection_page_appearance_color_tooltips():
+    from pymolviz.wizards.builders.appearance_section import (
+        COLOR_ALL_LABEL,
+        appearance_color_mode_labels,
+    )
     from pymolviz.wizards.builders.from_selection_page import FromSelectionFieldPage
     from pymolviz.wizards.builders.point_table_page import PointTableBuilderPage
 
-    uniform = _FakeWidget(class_name="QRadioButton")
-    from_field = _FakeWidget(class_name="QRadioButton")
+    color_all = _FakeWidget(class_name="QPushButton")
+    field_picker = _FakeWidget(class_name="QWidget")
     labels = appearance_color_mode_labels(show_per_point=False)
     missing = apply_required_tooltips(
         [
-            (uniform, "One solid color for the whole object.", labels[0]),
-            (from_field, "Sample a Field at this object's points. The object stores a field id, not a voxel copy.", labels[1]),
+            (color_all, "One solid color for the whole object.", COLOR_ALL_LABEL),
+            (
+                field_picker,
+                "Sample a Field at this object's points. The object stores a field id, not a voxel copy.",
+                labels[1],
+            ),
         ],
         context=FromSelectionFieldPage.CONTEXT,
     )
@@ -221,6 +228,7 @@ def test_from_selection_appearance_has_live_preview():
     assert "Iso value" in opts
     appear = inspect.getsource(AppearanceSection._build)
     assert "PreviewModeRadios" in appear
+    assert 'make_section("Preview"' in appear
     assert "pmvPreviewMode" in appear or "PreviewModeRadios" in appear
     cfg = FromSelectionFieldPage._appearance_config(None)
     assert cfg.get("show_live_preview") is True
@@ -236,6 +244,7 @@ def test_field_visual_volume_has_no_isosurface_section_and_has_colormap_editor()
 
     src = inspect.getsource(FieldVisualBuilderPage._build)
     assert "AppearanceSection(" in src
+    assert "preview_as_sibling=True" in src
     assert "colormap_in_uniform=True" in src
     appear_chunk = src.split('iso = make_section("Options")')[0]
     iso_chunk = src.split('iso = make_section("Options")')[1].split("clip = make_section")[0]

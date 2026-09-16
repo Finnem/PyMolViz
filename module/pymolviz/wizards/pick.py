@@ -2,7 +2,7 @@
 
 import math
 
-PICK_SELE = "visible and enabled"
+_CACHED_VIEWER = None
 
 
 def qt_modules():
@@ -610,6 +610,20 @@ def overlay_get_save_file_name(parent, caption, directory="", filter=""):
 
 
 def find_viewer_widget(QtWidgets):
+    global _CACHED_VIEWER
+    cached = _CACHED_VIEWER
+    if cached is not None:
+        try:
+            if (
+                qt_widget_alive(cached)
+                and cached.isVisible()
+                and cached.width() >= 80
+                and cached.height() >= 80
+            ):
+                return cached
+        except Exception:
+            pass
+        _CACHED_VIEWER = None
     app = QtWidgets.QApplication.instance()
     if app is None:
         return None
@@ -632,7 +646,8 @@ def find_viewer_widget(QtWidgets):
     if not ranked:
         return None
     ranked.sort()
-    return ranked[-1][-1]
+    _CACHED_VIEWER = ranked[-1][-1]
+    return _CACHED_VIEWER
 
 
 def _widget_is_descendant(widget, root):
@@ -648,6 +663,46 @@ def _widget_is_descendant(widget, root):
             return False
         if current is None:
             return False
+    return False
+
+
+def _cursor_in_widget(QtGui, widget) -> bool:
+    if widget is None:
+        return False
+    try:
+        local = widget.mapFromGlobal(QtGui.QCursor.pos())
+        return bool(widget.rect().contains(local))
+    except Exception:
+        return False
+
+
+def idle_selection_poll_ok(page=None) -> bool:
+    """True when an idle ``cmd`` poll will not cancel names-panel hover.
+
+    ``cmd.get_names`` / ``count_atoms`` / ``iterate`` from a QTimer abort
+    PyMOL object-list hover, so skip those polls unless the pointer is on the
+    3D view or the wizard page that owns the timer.
+
+    OpenGL viewers often fail ``widgetAt`` (``under is None``). Fall back to
+    the viewer rectangle so Add Clicked Atoms still polls while picking.
+    """
+    QtCore, QtGui, QtWidgets = qt_modules()
+    if QtWidgets is None or QtGui is None:
+        return True
+    try:
+        app = QtWidgets.QApplication.instance()
+        if app is None or not hasattr(app, "widgetAt"):
+            return True
+        under = app.widgetAt(QtGui.QCursor.pos())
+    except Exception:
+        return True
+    viewer = find_viewer_widget(QtWidgets)
+    if under is None:
+        return _cursor_in_widget(QtGui, viewer)
+    if viewer is not None and _widget_is_descendant(under, viewer):
+        return True
+    if page is not None and _widget_is_descendant(under, page):
+        return True
     return False
 
 
@@ -703,6 +758,25 @@ def atom_sele(ids, index):
         return None
     model, atm = ids[index]
     return "(%s)`%d" % (model, atm)
+
+
+def viewer_click_selection_expr(widget, x, y, view, viewport, fov, pad=2.5):
+    """``(visible and enabled)`` clipped to the click-ray AABB. No ``cmd`` calls."""
+    from ..util.view import click_ray_selection
+
+    click_x, click_y = qt_to_pymol_xy(widget, x, y)
+    try:
+        width, height = float(viewport[0]), float(viewport[1])
+    except Exception:
+        width, height = 0.0, 0.0
+    if width < 1 or height < 1:
+        scale = widget_fb_scale(widget)
+        width = float(widget.width()) * scale
+        height = float(widget.height()) * scale
+    rect_bottom = max(widget_fb_scale(widget) * widget.height() - height, 0.0)
+    sx = float(click_x)
+    sy = float(click_y) - rect_bottom
+    return click_ray_selection(view, sx, sy, width, height, fov, pad=pad)
 
 
 def pick_atom(view, coords, widget, x, y, viewport, fov, ortho, ids=None, max_px=24.0):
@@ -764,20 +838,82 @@ def pick_atom(view, coords, widget, x, y, viewport, fov, ortho, ids=None, max_px
     return best, atom_sele(ids, best_index)
 
 
-def _pick_atom_rows(cmd_):
-    """``(model, id, x, y, z)`` for visible atoms. Empty if iterate is unavailable."""
+_LIVE_CLICK_SELE_MAX = 32
+_CLICK_PICK_PX = 48.0
+
+
+def _cmd_state(cmd_) -> int:
+    try:
+        state = int(cmd_.get_state())
+    except Exception:
+        return 1
+    return state if state > 0 else 1
+
+
+def _view_fov(cmd_) -> float:
+    try:
+        fov = abs(float(cmd_.get("field_of_view")))
+    except Exception:
+        fov = 0.0
+    return fov if fov >= 1.0 else 20.0
+
+
+def _view_ortho(cmd_, view) -> int:
+    try:
+        return int(float(cmd_.get("orthoscopic")))
+    except Exception:
+        pass
+    if len(view) > 17 and float(view[17]) > 0.5:
+        return 1
+    return 0
+
+
+def _live_sele_expr(cmd_):
+    """``(sele)`` when it is enabled and small enough to iterate on a click."""
+    get_names = getattr(cmd_, "get_names", None)
+    if callable(get_names):
+        try:
+            names = get_names("selections", enabled_only=1)
+        except TypeError:
+            try:
+                names = get_names("selections", 1)
+            except Exception:
+                names = None
+        except Exception:
+            names = None
+        if names is not None:
+            try:
+                enabled = {str(name) for name in names}
+            except TypeError:
+                enabled = None
+            if enabled is not None and "sele" not in enabled:
+                return None
+    try:
+        n = int(cmd_.count_atoms("(sele)"))
+    except Exception:
+        return None
+    if n <= 0 or n > _LIVE_CLICK_SELE_MAX:
+        return None
+    return "(sele)"
+
+
+def _pick_atom_rows(cmd_, sele, state=None):
+    """``(model, id, x, y, z)`` for ``sele``. Empty if iterate is unavailable."""
+    if state is None:
+        state = _cmd_state(cmd_)
     expressions = (
         "rows.append((model, ID, x, y, z))",
         "rows.append((model, index, x, y, z))",
     )
+    iterate_state = getattr(cmd_, "iterate_state", None)
+    iterate = getattr(cmd_, "iterate", None)
     for expr in expressions:
         rows = []
         try:
-            iterate_state = getattr(cmd_, "iterate_state", None)
             if callable(iterate_state):
-                iterate_state(0, PICK_SELE, expr, space={"rows": rows})
-            elif callable(getattr(cmd_, "iterate", None)):
-                cmd_.iterate(PICK_SELE, expr, space={"rows": rows})
+                iterate_state(state, sele, expr, space={"rows": rows})
+            elif callable(iterate):
+                iterate(sele, expr, space={"rows": rows})
         except Exception:
             rows = []
         if rows:
@@ -785,47 +921,96 @@ def _pick_atom_rows(cmd_):
     return []
 
 
+def _atom_id_near(cmd_, pos, state):
+    """``(model, id)`` of a visible atom at ``pos``. Does not create a named selection."""
+    x, y, z = float(pos[0]), float(pos[1]), float(pos[2])
+    sele = "(visible and enabled) within 0.2 of [%g,%g,%g]" % (x, y, z)
+    expressions = (
+        "ids.append((model, ID))",
+        "ids.append((model, index))",
+    )
+    iterate_state = getattr(cmd_, "iterate_state", None)
+    iterate = getattr(cmd_, "iterate", None)
+    for expr in expressions:
+        ids = []
+        try:
+            if callable(iterate_state):
+                iterate_state(state, sele, expr, space={"ids": ids})
+            elif callable(iterate):
+                iterate(sele, expr, space={"ids": ids})
+        except Exception:
+            ids = []
+        if ids:
+            return (str(ids[0][0]), int(ids[0][1]))
+    return None
+
+
 def record_viewer_atom_click(cmd_, widget, x, y) -> None:
-    """Remember the atom under a viewer click. Does not consume the click."""
-    from .last_click import parse_atom_sele, set_last_clicked_atom
+    """Remember the atom under a viewer click. Does not consume the click.
+
+    Prefers PyMOL's own pick (``You clicked`` / ``pk1``). Screen-space
+    fallback never iterates all visible atoms and never clears a better hit.
+    """
+    from .last_click import (
+        last_clicked_atom,
+        last_clicked_path,
+        parse_atom_sele,
+        record_pymol_click,
+        set_last_clicked_atom,
+    )
 
     if cmd_ is None or widget is None:
-        set_last_clicked_atom(None)
+        return
+    record_pymol_click(cmd_)
+    if last_clicked_atom() is not None or last_clicked_path() is not None:
         return
     try:
         view = tuple(cmd_.get_view())
     except Exception:
-        set_last_clicked_atom(None)
         return
     try:
         viewport = tuple(float(v) for v in cmd_.get_viewport())
     except Exception:
         viewport = (float(widget.width()), float(widget.height()))
-    try:
-        fov = abs(float(cmd_.get("field_of_view")))
-    except Exception:
-        fov = 20.0
-    try:
-        ortho = int(float(cmd_.get("orthoscopic")))
-    except Exception:
-        ortho = 1 if len(view) > 17 and float(view[17]) > 0.5 else 0
-    rows = _pick_atom_rows(cmd_)
+    fov = _view_fov(cmd_)
+    ortho = _view_ortho(cmd_, view)
+    state = _cmd_state(cmd_)
+    live = _live_sele_expr(cmd_)
+    ray = viewer_click_selection_expr(widget, x, y, view, viewport, fov)
+    rows = _pick_atom_rows(cmd_, live, state) if live else []
     if not rows:
-        set_last_clicked_atom(None)
-        return
-    try:
-        coords = [[float(row[2]), float(row[3]), float(row[4])] for row in rows]
-        ids = [(row[0], int(row[1])) for row in rows]
-    except Exception:
-        set_last_clicked_atom(None)
-        return
-    target = pick_atom(view, coords, widget, x, y, viewport, fov, ortho, ids=ids)
-    if target is None:
-        set_last_clicked_atom(None)
-        return
-    parsed = parse_atom_sele(target[1])
+        rows = _pick_atom_rows(cmd_, ray, state)
+    target = None
+    parsed = None
+    if rows:
+        try:
+            coords = [[float(row[2]), float(row[3]), float(row[4])] for row in rows]
+            ids = [(row[0], int(row[1])) for row in rows]
+        except Exception:
+            coords = None
+            ids = None
+        else:
+            target = pick_atom(
+                view, coords, widget, x, y, viewport, fov, ortho,
+                ids=ids, max_px=_CLICK_PICK_PX,
+            )
+            if target is None and len(rows) == 1:
+                parsed = (str(rows[0][0]), int(rows[0][1]))
+    if target is None and parsed is None:
+        try:
+            coords = cmd_.get_coords(ray, state)
+        except Exception:
+            coords = None
+        if coords is not None and len(coords):
+            target = pick_atom(
+                view, coords, widget, x, y, viewport, fov, ortho,
+                max_px=_CLICK_PICK_PX,
+            )
+            if target is not None:
+                parsed = _atom_id_near(cmd_, target[0], state)
+    if parsed is None and target is not None:
+        parsed = parse_atom_sele(target[1])
     if parsed is None:
-        set_last_clicked_atom(None)
         return
     set_last_clicked_atom(parsed[0], parsed[1])
 

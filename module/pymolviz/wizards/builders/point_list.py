@@ -9,8 +9,8 @@ from ..pick import qt_modules
 from ..tooltips import warn_missing_setting_tooltips
 
 ADD_POINT_TIP = (
-    "Insert points from the chosen source. Current selection uses atoms "
-    "selected now. Fresh selection waits for a new pick after Add."
+    "Insert points from Add Camera Center or Add Current Selection. "
+    "Add Clicked Atoms waits for a new pick in PyMOL."
 )
 
 
@@ -27,6 +27,7 @@ class PointListEditor:
             columns=POINT_LIST_COLUMNS,
             empty_hint="No points yet.",
             context="PointListEditor",
+            show_add=False,
         )
         self._box = self._list.widget
         self._add_btn = self._list.add_button

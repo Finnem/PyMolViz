@@ -12,7 +12,7 @@ from ...util.line_style import (
     max_margin_for_length,
     style_margins,
 )
-from ..pick import qt_modules, qt_widget_alive
+from ..pick import idle_selection_poll_ok, qt_modules, qt_widget_alive
 from ..widgets.breadcrumb import CRUMB_ARROWS
 from ..widgets.ascii_locale import apply_ascii_float_locale
 from ..widgets.log_slider import LogSegmentRadiusWidget
@@ -27,6 +27,7 @@ from .pairs import (
     DEFAULT_ARROW_WIDTH,
     MULTI_CENTER,
     MULTI_CLICKED,
+    POLL_SELECTION_MAX_ATOMS,
     VisualPair,
     commit_pair_anchors,
     complete_pairs,
@@ -35,8 +36,8 @@ from .pairs import (
     take_selection_endpoints,
     take_single_selection_point,
 )
-from .points import VisualPoint, camera_center_point
-from .point_insertion import INSERT_SOURCE_CAMERA, INSERT_SOURCE_FRESH
+from .points import VisualPoint, camera_center_point, insertion_preview_fingerprint
+from .point_insertion import INSERT_SOURCE_CAMERA, INSERT_SOURCE_FRESH, INSERT_SOURCE_SELECTION
 from .preview import (
     ArrowPreview,
     build_arrow_collection,
@@ -73,6 +74,8 @@ class ArrowBuilderPage(BuilderPage):
         self._selected_id = None
         self._ignore_xyz = None
         self._poll_timer = None
+        self._add_bar_timer = None
+        self._add_bar_fp = None
         self._list = None
         self._appearance = None
         self._appearance_pts: List[VisualPoint] = []
@@ -98,6 +101,7 @@ class ArrowBuilderPage(BuilderPage):
 
     def _cleanup_ephemeral(self):
         self._stop_poll_timer()
+        self._stop_add_bar_timer()
         if self._modifiers is not None:
             self._modifiers.cleanup()
         self._pick_role = None
@@ -292,6 +296,11 @@ class ArrowBuilderPage(BuilderPage):
         self._poll_timer = QtCore.QTimer(page)
         self._poll_timer.setInterval(250)
         self._poll_timer.timeout.connect(self._poll_selection)
+        self._add_bar_timer = QtCore.QTimer(page)
+        self._add_bar_timer.setInterval(250)
+        self._add_bar_timer.timeout.connect(self._sync_add_bar)
+        self._add_bar_timer.start()
+        self._sync_add_bar()
 
         class _KeyFilter(QtCore.QObject):
             def __init__(self, owner):
@@ -326,7 +335,7 @@ class ArrowBuilderPage(BuilderPage):
                 (self._head_radius, "Cone radius at the arrow head (defaults to shaft × %.1f)." % HEAD_WIDTH),
                 (self._clicked_atom_box, CLICKED_ATOM_TIP, CLICKED_ATOM_LABEL),
                 (self._center_radio, SELECTION_CENTER_TIP, SELECTION_AVERAGE_LABEL),
-            ] + list(self._appearance.tooltips()) + list(self._modifiers.tooltips()),
+            ] + list(self._list._add_bar.tooltips()) + list(self._appearance.tooltips()) + list(self._modifiers.tooltips()),
         )
 
     def _after_build(self):
@@ -399,8 +408,7 @@ class ArrowBuilderPage(BuilderPage):
             if i >= len(self._appearance_pts):
                 break
             start = self._appearance_pts[i]
-            end = pair.end
-            self._pairs[i] = pair.with_start(start).with_end(end)
+            self._pairs[i] = pair.with_start(start).with_color_choice(start.color_choice())
 
     def _on_appearance_preview(self):
         self._write_appearance_to_pairs()
@@ -530,7 +538,12 @@ class ArrowBuilderPage(BuilderPage):
             self._start_poll_timer()
 
     def _abort_pick(self, silent=False):
+        from ..last_click import use_atom_selection_mode
+
+        use_atom_selection_mode(self.cmd, False)
         if self._pick_role is None:
+            if self._list is not None:
+                self._list.set_clicked_atoms(False, notify=False)
             return
         pid = self._pick_pair_id
         if pid:
@@ -540,6 +553,8 @@ class ArrowBuilderPage(BuilderPage):
                 if self._selected_id == pid:
                     self._selected_id = None
         self._clear_pick()
+        if self._list is not None:
+            self._list.set_clicked_atoms(False, notify=False)
         if silent:
             return
         if self._pairs:
@@ -561,6 +576,36 @@ class ArrowBuilderPage(BuilderPage):
             return
         try:
             self._poll_timer.stop()
+        except RuntimeError:
+            pass
+
+    def _sync_add_bar(self):
+        if self._list is None:
+            return
+        if not qt_widget_alive(self._page):
+            self._stop_add_bar_timer()
+            return
+        is_vis = getattr(self._page, "isVisible", None)
+        if callable(is_vis):
+            try:
+                if not is_vis():
+                    return
+            except RuntimeError:
+                self._stop_add_bar_timer()
+                return
+        if not idle_selection_poll_ok(self._page):
+            return
+        fp = insertion_preview_fingerprint(self.cmd, INSERT_SOURCE_SELECTION)
+        if fp == getattr(self, "_add_bar_fp", None):
+            return
+        self._add_bar_fp = fp
+        self._list.sync_add_bar(self.cmd)
+
+    def _stop_add_bar_timer(self):
+        if not qt_widget_alive(self._add_bar_timer):
+            return
+        try:
+            self._add_bar_timer.stop()
         except RuntimeError:
             pass
 
@@ -605,8 +650,9 @@ class ArrowBuilderPage(BuilderPage):
             width=float(width), head=float(head),
         )
 
-    def add_arrow(self):
-        source = self._list.add_source() if self._list is not None else INSERT_SOURCE_SELECTION
+    def add_arrow(self, source=None):
+        if source is None:
+            source = self._list.add_source() if self._list is not None else INSERT_SOURCE_SELECTION
         if source == INSERT_SOURCE_CAMERA:
             pt = camera_center_point(
                 self.cmd,
@@ -619,10 +665,11 @@ class ArrowBuilderPage(BuilderPage):
                 return
             self._begin_incomplete(pt)
             return
-        if self._pick_role is not None:
+        if self._pick_role is not None and source != INSERT_SOURCE_FRESH:
             self._abort_pick()
-            return
         if source == INSERT_SOURCE_FRESH:
+            if self._pick_role is not None:
+                return
             self._clear_pymol_selection()
             self._set_pick("start", None, "Select start in PyMOL.")
             self._sync_list()
@@ -647,7 +694,23 @@ class ArrowBuilderPage(BuilderPage):
         if status == "multiple":
             self._set_status("Select atoms to place an endpoint, or pick them one at a time.")
             return
-        self._set_status("Nothing selected. Select atoms, or use Fresh selection.")
+        self._set_status("Nothing selected. Select atoms, or turn on Add Clicked Atoms.")
+
+    def set_add_clicked_atoms(self, on: bool) -> None:
+        from ..last_click import use_atom_selection_mode
+
+        use_atom_selection_mode(self.cmd, bool(on))
+        if bool(on):
+            self.add_arrow(INSERT_SOURCE_FRESH)
+            return
+        self._abort_pick(silent=True)
+        if self._list is not None:
+            self._list.set_clicked_atoms(False, notify=False)
+        if self._pairs:
+            self._set_status("Pick cancelled.")
+        else:
+            self._set_status("Add an arrow, or select two atoms first.")
+        self._sync_list()
 
     def _begin_incomplete(self, start: VisualPoint):
         pair = self._stamp_pair(start, None)
@@ -675,6 +738,8 @@ class ArrowBuilderPage(BuilderPage):
         if not qt_widget_alive(self._page):
             self._stop_poll_timer()
             return
+        if not idle_selection_poll_ok(self._page):
+            return
         if self._pick_role == "start" and self._pick_pair_id is None:
             start, end, status = take_selection_endpoints(
                 self.cmd,
@@ -682,6 +747,7 @@ class ArrowBuilderPage(BuilderPage):
                 interactive_only=True,
                 hook_to_selection=self._hook(),
                 multi_atom=self._multi_atom(),
+                max_expand=POLL_SELECTION_MAX_ATOMS,
             )
             if status == "pair" and start is not None and end is not None:
                 if not self._same_as_ignored(start):
@@ -696,9 +762,17 @@ class ArrowBuilderPage(BuilderPage):
             interactive_only=True,
             hook_to_selection=self._hook(),
             multi_atom=self._multi_atom(),
+            max_expand=POLL_SELECTION_MAX_ATOMS,
         )
         if status == "one" and not self._same_as_ignored(point):
             self._accept_point(point)
+
+    def _clicked_atoms_on(self) -> bool:
+        return self._list is not None and self._list.clicked_atoms_checked()
+
+    def _resume_clicked_atoms_if_on(self) -> None:
+        if self._clicked_atoms_on() and self._pick_role is None:
+            self.add_arrow(INSERT_SOURCE_FRESH)
 
     def _finish_new_pair(self, start: VisualPoint, end: VisualPoint):
         pair = self._stamp_pair(start, end)
@@ -708,6 +782,7 @@ class ArrowBuilderPage(BuilderPage):
         self._clear_pick()
         self._set_status("Arrow added.")
         self._sync_list()
+        self._resume_clicked_atoms_if_on()
 
     def _accept_point(self, point: VisualPoint):
         if self._pick_role is None:
@@ -734,6 +809,7 @@ class ArrowBuilderPage(BuilderPage):
         self._clear_pick()
         self._set_status("Arrow updated.")
         self._sync_list()
+        self._resume_clicked_atoms_if_on()
 
     def select_arrow(self, pair_id, zoom=True):
         if zoom and self._selected_id == pair_id:

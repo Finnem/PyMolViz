@@ -60,6 +60,8 @@ class Section:
         header_layout.addWidget(self.summary_label, 0)
         outer.addWidget(header)
         self._header_layout = header_layout
+        self._action_strip = None
+        self._action_layout = None
 
         body = QtWidgets.QWidget()
         body.setObjectName("pmvSectionBody")
@@ -127,8 +129,27 @@ class Section:
         self._sync_chrome()
 
     def add_header_widget(self, widget) -> None:
-        """Place an action (for example + Add) on the section header bar."""
-        self._header_layout.addWidget(widget)
+        """Place an action on a full-width strip under the title bar."""
+        if widget is None:
+            return
+        if self._action_layout is None:
+            QtCore, _, QtWidgets = qt_modules()
+            strip = QtWidgets.QFrame()
+            strip.setObjectName("pmvSectionActions")
+            action_layout = QtWidgets.QHBoxLayout(strip)
+            action_layout.setContentsMargins(12, 6, 12, 10)
+            action_layout.setSpacing(8)
+            align_top = getattr(getattr(QtCore, "Qt", None), "AlignTop", None)
+            if align_top is not None:
+                action_layout.setAlignment(align_top)
+            expanding = getattr(QtWidgets.QSizePolicy, "Expanding", None)
+            minimum = getattr(QtWidgets.QSizePolicy, "Minimum", None)
+            if expanding is not None and minimum is not None:
+                strip.setSizePolicy(expanding, minimum)
+            self.frame.layout().insertWidget(1, strip)
+            self._action_strip = strip
+            self._action_layout = action_layout
+        self._action_layout.addWidget(widget)
 
     def is_expanded(self) -> bool:
         return bool(self._expanded)
@@ -148,6 +169,9 @@ class Section:
         else:
             self.title_label.setText(self._title_text)
         self.body.setVisible(bool(self._expanded))
+        strip = getattr(self, "_action_strip", None)
+        if strip is not None:
+            strip.setVisible(bool(self._expanded))
         collapsed = self._collapsible and not self._expanded
         self.frame.setProperty("collapsed", collapsed)
         style = self.frame.style()

@@ -87,6 +87,144 @@ def test_snap_get_coords_uses_ray_bounds_not_all_visible():
     assert not any(query.strip("() ") in ("visible", "visible and enabled", "all") for query in queries)
 
 
+def test_click_ray_selection_is_bounded_visible_box():
+    from pymolviz.util.view import click_ray_selection
+
+    expr = click_ray_selection(_view(), 200.0, 200.0, 400.0, 400.0, 20.0)
+    assert "visible and enabled" in expr
+    assert "x >" in expr and "x <" in expr
+    assert "y >" in expr and "z >" in expr
+    assert expr.strip("() ") not in ("visible", "visible and enabled", "all")
+
+
+def test_record_viewer_atom_click_iterates_click_ray_not_all_visible():
+    from pymolviz.wizards.last_click import last_clicked_atom, set_last_clicked_atom
+    from pymolviz.wizards.pick import record_viewer_atom_click
+    from tests.fakes.cmd import FakeAtom, FakeCmd
+
+    cmd = FakeCmd()
+    cmd._view = _view()
+    cmd.get_viewport = lambda: (400.0, 400.0)
+    cmd.set("orthoscopic", 1)
+    cmd.set("field_of_view", 20.0)
+    cmd.add_atom(FakeAtom("prot", 1, 0.0, 0.0, 0.0, name="CA"))
+    cmd.add_atom(FakeAtom("prot", 2, 80.0, 0.0, 0.0, name="CB"))
+    queries = []
+    original = cmd.iterate
+
+    def wrapped(sele_expr, expr, space=None):
+        queries.append(str(sele_expr))
+        return original(sele_expr, expr, space)
+
+    cmd.iterate = wrapped
+    set_last_clicked_atom(None)
+    record_viewer_atom_click(cmd, _Widget(), 200.0, 200.0)
+    assert queries
+    assert all("x >" in query and "x <" in query for query in queries)
+    assert all("visible and enabled" in query for query in queries)
+    assert not any(
+        query.strip("() ") in ("visible", "visible and enabled", "all")
+        for query in queries
+    )
+    assert last_clicked_atom() == ("prot", 1)
+    set_last_clicked_atom(None)
+
+
+def test_record_viewer_atom_click_keeps_you_clicked_without_iterate():
+    from pymolviz.wizards.last_click import (
+        last_clicked_atom,
+        last_clicked_path,
+        note_click_feedback,
+        set_last_clicked_atom,
+    )
+    from pymolviz.wizards.pick import record_viewer_atom_click
+    from tests.fakes.cmd import FakeAtom, FakeCmd
+
+    cmd = FakeCmd()
+    cmd._view = _view()
+    cmd.get_viewport = lambda: (400.0, 400.0)
+    cmd.set("orthoscopic", 1)
+    cmd.set("field_of_view", 20.0)
+    cmd.add_atom(FakeAtom(
+        "4C1D-out", 77, 0.0, 0.0, 0.0, chain="A", resn="GLY", resi="77", name="C",
+    ))
+    queries = []
+    original = cmd.iterate
+
+    def wrapped(sele_expr, expr, space=None):
+        queries.append(str(sele_expr))
+        return original(sele_expr, expr, space)
+
+    cmd.iterate = wrapped
+    set_last_clicked_atom(None)
+    assert note_click_feedback(" You clicked /4C1D-out//A/GLY`77/C") is True
+    record_viewer_atom_click(cmd, _Widget(), 200.0, 200.0)
+    assert last_clicked_path() == "/4C1D-out//A/GLY`77/C"
+    assert last_clicked_atom() in (None, ("4C1D-out", 77))
+    assert queries == []
+    set_last_clicked_atom(None)
+
+
+def test_record_viewer_atom_click_uses_small_sele_not_all_visible():
+    from pymolviz.wizards.last_click import last_clicked_atom, set_last_clicked_atom
+    from pymolviz.wizards.pick import record_viewer_atom_click
+    from tests.fakes.cmd import FakeAtom, FakeCmd
+
+    cmd = FakeCmd()
+    cmd._view = _view()
+    cmd.get_viewport = lambda: (400.0, 400.0)
+    cmd.set("orthoscopic", 1)
+    cmd.set("field_of_view", 20.0)
+    cmd.add_atom(FakeAtom("prot", 1, 0.0, 0.0, 0.0, name="CA", chain="A", resi="1"))
+    for i in range(2, 9):
+        cmd.add_atom(FakeAtom("prot", i, 80.0, float(i), 0.0, name="C", chain="A", resi="1"))
+    cmd.select("sele", 'object "prot"')
+    queries = []
+    original = cmd.iterate
+
+    def wrapped(sele_expr, expr, space=None):
+        queries.append(str(sele_expr))
+        return original(sele_expr, expr, space)
+
+    cmd.iterate = wrapped
+    set_last_clicked_atom(None)
+    record_viewer_atom_click(cmd, _Widget(), 200.0, 200.0)
+    assert last_clicked_atom() == ("prot", 1)
+    assert queries
+    assert any("(sele)" in query or query.strip() == "sele" for query in queries)
+    assert not any(
+        query.strip("() ") in ("visible", "visible and enabled", "all")
+        for query in queries
+    )
+    set_last_clicked_atom(None)
+
+
+def test_middle_click_does_not_record_atom_on_left_click():
+    import inspect
+
+    from pymolviz.wizards import middle_click
+
+    installed = inspect.getsource(middle_click.install_middle_click_filter)
+    assert "_queue_viewer_atom_click" not in installed
+    assert "record_viewer_atom_click" not in installed
+    assert "LeftButton" not in installed
+    assert "MiddleButton" in installed
+
+
+def test_idle_selection_poll_ok_uses_viewer_rect_when_widgetAt_misses():
+    import inspect
+
+    import pymolviz.wizards.pick as pick
+    from pymolviz.wizards.pick import idle_selection_poll_ok
+
+    src = inspect.getsource(idle_selection_poll_ok)
+    helper = inspect.getsource(pick._cursor_in_widget)
+    assert "_cursor_in_widget" in src
+    assert "widgetAt" in src
+    assert "under is None" in src
+    assert "mapFromGlobal" in helper
+
+
 def test_follow_view_does_not_fetch_coords():
     from pymolviz.wizards.camera_center import CameraCenterSphere
     from tests.fakes.cmd import FakeCmd
@@ -152,9 +290,11 @@ def test_ensure_object_recreates_deleted_cgo():
 
 
 def test_pointer_over_viewer_true_without_qt_app():
-    from pymolviz.wizards.pick import pointer_over_viewer
+    from pymolviz.wizards.pick import idle_selection_poll_ok, pointer_over_viewer
 
     assert pointer_over_viewer() is True
+    assert idle_selection_poll_ok() is True
+    assert idle_selection_poll_ok(page=object()) is True
 
 
 def test_stacked_tool_windows_raise_color_picker_last():

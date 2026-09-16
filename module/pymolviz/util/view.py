@@ -77,6 +77,35 @@ def click_ray_points(view, sx, sy, width, height, fov, n=8):
     return points
 
 
+def click_ray_bounds(view, sx, sy, width, height, fov, pad=2.5, n=8):
+    """Axis-aligned pad around :func:`click_ray_points` samples."""
+    samples = click_ray_points(view, sx, sy, width, height, fov, n=n)
+    pad = float(pad)
+    xs = [point[0] for point in samples]
+    ys = [point[1] for point in samples]
+    zs = [point[2] for point in samples]
+    return (
+        min(xs) - pad,
+        max(xs) + pad,
+        min(ys) - pad,
+        max(ys) + pad,
+        min(zs) - pad,
+        max(zs) + pad,
+    )
+
+
+def click_ray_selection(view, sx, sy, width, height, fov, pad=2.5, n=8):
+    """Visible-atom selection limited to the click-ray bounding box."""
+    xmin, xmax, ymin, ymax, zmin, zmax = click_ray_bounds(
+        view, sx, sy, width, height, fov, pad=pad, n=n,
+    )
+    return (
+        "(visible and enabled) and "
+        "x > %g and x < %g and y > %g and y < %g and z > %g and z < %g"
+        % (xmin, xmax, ymin, ymax, zmin, zmax)
+    )
+
+
 def translation_ttt(center):
     """Identity rotation + translation as a 16-float object TTT matrix."""
     return [

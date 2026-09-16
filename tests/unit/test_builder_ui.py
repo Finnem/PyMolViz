@@ -197,6 +197,7 @@ def test_editable_fields_and_warning_banner_follow_scheme():
         primary_button_css,
         compact_primary_button_css,
         section_css,
+        add_bar_button_css,
         swatch_button_css,
         type_card_css,
         wizard_page_css,
@@ -234,7 +235,10 @@ def test_editable_fields_and_warning_banner_follow_scheme():
     assert "padding: 0px" in swatch_button_css("rgb(1, 2, 3)")
     assert "min-height: 18px" in compact_primary_button_css()
     assert "max-height: 18px" in compact_primary_button_css()
+    assert "min-height: 40px" in add_bar_button_css()
+    assert "max-height: 40px" in add_bar_button_css()
     assert "205, 226, 240" in section_css()
+    assert "pmvSectionActions" in section_css()
     assert "219, 238, 249" in catalog_table_css()
     assert "245, 249, 251" in wizard_page_css()
     css = wizard_page_css()
@@ -623,6 +627,9 @@ def test_insertion_poll_skips_refresh_when_fingerprint_unchanged(fake_cmd):
         def setEnabled(self, enabled):
             self.enabled = bool(enabled)
 
+        def setToolTip(self, *_args):
+            pass
+
     class _FakeLabel:
         def __init__(self):
             self.text = ""
@@ -649,9 +656,13 @@ def test_insertion_poll_skips_refresh_when_fingerprint_unchanged(fake_cmd):
     widget._timer = None
     widget._poll_page = None
     widget._widget = object()
+    widget._add_bar = None
+    widget.clicked = None
+    widget._waiting_fresh = False
     widget._source = _FakeCombo()
     widget._preview = _FakeLabel()
     widget._add_btn = _FakeBtn()
+    widget._selection_btn = widget._add_btn
     widget.snap = _FakeCheck()
     widget.hook = _FakeCheck()
 
@@ -665,7 +676,7 @@ def test_insertion_poll_skips_refresh_when_fingerprint_unchanged(fake_cmd):
     fake_cmd.select("sele", 'object "prot"')
     widget._poll_preview()
     assert widget._preview.writes == writes + 1
-    assert widget._add_btn.text == ADD_POINT_HEADER_LABEL
+    assert widget._add_btn.enabled is True
 
 
 def test_insertion_poll_clears_preview_when_sele_disabled(fake_cmd):
@@ -684,6 +695,9 @@ def test_insertion_poll_clears_preview_when_sele_disabled(fake_cmd):
 
         def setEnabled(self, enabled):
             self.enabled = bool(enabled)
+
+        def setToolTip(self, *_args):
+            pass
 
     class _FakeLabel:
         def __init__(self):
@@ -717,14 +731,17 @@ def test_insertion_poll_clears_preview_when_sele_disabled(fake_cmd):
     widget._timer = None
     widget._poll_page = None
     widget._widget = object()
+    widget._add_bar = None
+    widget.clicked = None
+    widget._waiting_fresh = False
     widget._source = _FakeCombo()
     widget._preview = _FakeLabel()
     widget._add_btn = _FakeBtn()
+    widget._selection_btn = widget._add_btn
     widget.snap = _FakeCheck()
     widget.hook = _FakeCheck()
 
     widget.refresh_preview()
-    assert widget._add_btn.text == ADD_POINT_HEADER_LABEL
     assert widget._add_btn.enabled is True
     writes = widget._preview.writes
 
@@ -733,20 +750,15 @@ def test_insertion_poll_clears_preview_when_sele_disabled(fake_cmd):
     widget._poll_preview()
     assert widget._preview.writes == writes + 1
     assert widget._preview.text == INSERTION_NOTHING_SELECTED
-    assert widget._add_btn.text == ADD_POINT_HEADER_LABEL
     assert widget._add_btn.enabled is False
 
     fake_cmd.enable("sele")
     widget._poll_preview()
-    assert widget._add_btn.text == ADD_POINT_HEADER_LABEL
     assert widget._add_btn.enabled is True
 
 
 def test_point_insertion_widget_camera_source_enabled_without_selection(fake_cmd):
-    from pymolviz.wizards.builders.point_insertion import (
-        INSERT_SOURCE_CAMERA,
-        PointInsertionWidget,
-    )
+    from pymolviz.wizards.builders.point_insertion import PointInsertionWidget
 
     class _FakeBtn:
         def __init__(self):
@@ -759,19 +771,18 @@ def test_point_insertion_widget_camera_source_enabled_without_selection(fake_cmd
         def setEnabled(self, enabled):
             self.enabled = bool(enabled)
 
+        def setToolTip(self, *_args):
+            pass
+
+        def setToolTip(self, *_args):
+            pass
+
     class _FakeLabel:
         def __init__(self):
             self.text = ""
 
         def setText(self, text):
             self.text = str(text)
-
-    class _FakeCombo:
-        def __init__(self, data):
-            self._data = data
-
-        def currentData(self):
-            return self._data
 
     class _FakeCheck:
         def isChecked(self):
@@ -780,30 +791,24 @@ def test_point_insertion_widget_camera_source_enabled_without_selection(fake_cmd
         def setEnabled(self, *_args):
             pass
 
-    fake_cmd.set_view([
-        1.0, 0.0, 0.0,
-        0.0, 1.0, 0.0,
-        0.0, 0.0, 1.0,
-        0.0, 0.0, -50.0,
-        1.0, 2.0, 3.0,
-        2.0, 200.0, 0.0,
-    ])
-
     widget = PointInsertionWidget.__new__(PointInsertionWidget)
     widget.cmd = fake_cmd
     widget._get_existing = lambda: ()
     widget._timer = None
     widget._poll_page = None
-    widget._source = _FakeCombo(INSERT_SOURCE_CAMERA)
+    widget._add_bar = None
+    widget.clicked = None
+    widget._waiting_fresh = False
     widget._preview = _FakeLabel()
     widget._add_btn = _FakeBtn()
+    widget._selection_btn = widget._add_btn
     widget.snap = _FakeCheck()
     widget.hook = _FakeCheck()
 
     widget.refresh_preview()
-    assert widget._add_btn.enabled is True
-    assert widget._add_btn.text == ADD_POINT_HEADER_LABEL
-    assert widget._preview.text.startswith("Camera center")
+    assert widget._add_btn.enabled is False
+    assert widget._preview.text == INSERTION_NOTHING_SELECTED
+    assert widget.can_add() is False
 
 
 def test_fresh_selection_waits_for_atoms_after_add(fake_cmd):
@@ -818,24 +823,24 @@ def test_fresh_selection_waits_for_atoms_after_add(fake_cmd):
         insertion_preview_text,
     )
     from tests.fakes.cmd import FakeAtom
+    from pymolviz.wizards import last_click
 
+    last_click.restore_atom_selection_mode(fake_cmd)
     assert insertion_can_add(fake_cmd, INSERT_SOURCE_FRESH) is True
     assert insertion_preview_text(fake_cmd, INSERT_SOURCE_FRESH) == INSERTION_FRESH_HINT
 
     class _FakeBtn:
         def __init__(self):
-            self.text = ""
             self.enabled = True
-            self.tip = ""
-
-        def setText(self, text):
-            self.text = str(text)
 
         def setEnabled(self, enabled):
             self.enabled = bool(enabled)
 
-        def setToolTip(self, tip):
-            self.tip = str(tip)
+        def setToolTip(self, *_args):
+            pass
+
+        def setToolTip(self, *_args):
+            pass
 
     class _FakeLabel:
         def __init__(self):
@@ -843,10 +848,6 @@ def test_fresh_selection_waits_for_atoms_after_add(fake_cmd):
 
         def setText(self, text):
             self.text = str(text)
-
-    class _FakeCombo:
-        def currentData(self):
-            return INSERT_SOURCE_FRESH
 
     class _FakeCheck:
         def isChecked(self):
@@ -865,24 +866,33 @@ def test_fresh_selection_waits_for_atoms_after_add(fake_cmd):
     widget._timer = None
     widget._poll_page = None
     widget._widget = object()
+    widget._add_bar = None
+    widget.clicked = None
     widget._waiting_fresh = False
-    widget._source = _FakeCombo()
     widget._preview = _FakeLabel()
     widget._add_btn = _FakeBtn()
+    widget._selection_btn = widget._add_btn
     widget.snap = _FakeCheck()
     widget.hook = _FakeCheck()
 
     fake_cmd.add_atom(FakeAtom("prot", 1, 1.0, 2.0, 3.0, name="CA"))
     fake_cmd.select("sele", 'object "prot"')
-    widget._clicked_add()
+    fake_cmd.set("mouse_selection_mode", 5)
+    widget._on_clicked_atoms_toggled(True)
     assert added == []
     assert widget._waiting_fresh is True
     assert widget._preview.text == INSERTION_FRESH_WAITING
     assert fake_cmd.count_atoms("sele") == 0
+    assert fake_cmd.get_setting_int("mouse_selection_mode") == 0
 
     fake_cmd.select("sele", 'object "prot"')
     widget._poll_preview()
     assert len(added) == 1
+    assert widget._waiting_fresh is True
+    assert fake_cmd.count_atoms("sele") == 0
+
+    widget._on_clicked_atoms_toggled(False)
+    assert fake_cmd.get_setting_int("mouse_selection_mode") == 5
     assert widget._waiting_fresh is False
 
 
@@ -903,6 +913,9 @@ def test_point_insertion_widget_refresh_updates_button(fake_cmd):
 
         def setEnabled(self, enabled):
             self.enabled = bool(enabled)
+
+        def setToolTip(self, *_args):
+            pass
 
         def setAutoDefault(self, *_args):
             pass
@@ -964,9 +977,13 @@ def test_point_insertion_widget_refresh_updates_button(fake_cmd):
     widget._timer = None
     widget._poll_page = None
     widget._focus_filter = None
-    widget._source = _FakeCombo()
+    widget._add_bar = None
+    widget.clicked = None
+    widget._waiting_fresh = False
     widget._preview = _FakeLabel()
     widget._add_btn = _FakeBtn()
+    widget._selection_btn = widget._add_btn
+    widget._selection_summary = _FakeLabel()
     widget.snap = _FakeCheck(True)
     widget.hook = _FakeCheck(True)
     widget.zoom = _FakeCheck(False)
@@ -976,28 +993,65 @@ def test_point_insertion_widget_refresh_updates_button(fake_cmd):
 
     widget.refresh_preview()
     assert widget._preview.text == INSERTION_NOTHING_SELECTED
-    assert widget._add_btn.text == ADD_POINT_HEADER_LABEL
     assert widget._add_btn.enabled is False
+    assert widget._selection_summary.text == "Nothing selected"
 
     fake_cmd.add_atom(FakeAtom("prot", 1, 1.0, 2.0, 3.0, name="CA", chain="A", resn="GLY", resi="42"))
     fake_cmd.add_atom(FakeAtom("prot", 2, 4.0, 5.0, 6.0, name="CB", chain="A", resn="ALA", resi="43"))
     fake_cmd.select("sele", 'object "prot"')
     widget.refresh_preview()
-    assert widget._add_btn.text == ADD_POINT_HEADER_LABEL
     assert widget._add_btn.enabled is True
+    assert widget._add_btn.text == ""
+    assert widget._selection_summary.text == "42 GLY, 43 ALA (2 atoms)"
     assert "2 atoms selected" in widget._preview.text
 
 
 def test_insertion_add_label_is_count_independent():
     from pymolviz.wizards.builders.point_insertion import insertion_add_label
 
-    assert ADD_POINT_HEADER_LABEL == "Add Point(s)"
-    assert INSERTION_NOTHING_SELECTED == (
-        "Nothing selected. Select atoms, or use Fresh selection to pick after Add."
-    )
+    assert ADD_POINT_HEADER_LABEL == "Add Current Selection"
+    assert "Add Clicked Atoms" in INSERTION_NOTHING_SELECTED
     assert insertion_add_label(0) == ADD_POINT_HEADER_LABEL
     assert insertion_add_label(1) == ADD_POINT_HEADER_LABEL
     assert insertion_add_label(14) == ADD_POINT_HEADER_LABEL
+    assert insertion_add_label(1, "sele") == ADD_POINT_HEADER_LABEL
+    assert insertion_add_label(0, "  ligand  ") == ADD_POINT_HEADER_LABEL
+
+
+def test_insertion_selection_caption_uses_resi_resn_and_count(fake_cmd):
+    from pymolviz.wizards.builders.points import (
+        INSERTION_SELECTION_EMPTY,
+        insertion_selection_caption,
+    )
+    from tests.fakes.cmd import FakeAtom
+
+    assert insertion_selection_caption(fake_cmd) == INSERTION_SELECTION_EMPTY
+    fake_cmd.add_atom(FakeAtom(
+        "prot", 1, 1.0, 2.0, 3.0, name="CA", chain="A", resn="GLY", resi="42",
+    ))
+    fake_cmd.add_atom(FakeAtom(
+        "prot", 2, 1.2, 2.0, 3.0, name="C", chain="A", resn="GLY", resi="42",
+    ))
+    fake_cmd.add_atom(FakeAtom(
+        "prot", 3, 1.4, 2.0, 3.0, name="O", chain="A", resn="GLY", resi="42",
+    ))
+    fake_cmd.select("sele", 'object "prot"')
+    assert insertion_selection_caption(fake_cmd) == "42 GLY (3 atoms)"
+    fake_cmd.add_atom(FakeAtom(
+        "prot", 4, 4.0, 5.0, 6.0, name="CA", chain="A", resn="ALA", resi="43",
+    ))
+    fake_cmd.select("sele", 'object "prot"')
+    assert insertion_selection_caption(fake_cmd) == "42 GLY, 43 ALA (4 atoms)"
+
+
+def test_insertion_selection_identifier_unwraps_sele(fake_cmd):
+    from pymolviz.wizards.builders.points import insertion_selection_identifier
+    from tests.fakes.cmd import FakeAtom
+
+    assert insertion_selection_identifier(fake_cmd) is None
+    fake_cmd.add_atom(FakeAtom("prot", 1, 1.0, 2.0, 3.0, name="CA"))
+    fake_cmd.select("sele", 'object "prot"')
+    assert insertion_selection_identifier(fake_cmd) == "sele"
 
 
 def test_picker_color_choice_solid_and_field():
@@ -1041,8 +1095,19 @@ def test_appearance_color_mode_labels_and_apply():
         COLOR_MODE_UNIFORM,
     )
 
+    from pymolviz.wizards.builders.appearance_section import (
+        appearance_color_action_icon_kind,
+        appearance_color_mode_icon_kind,
+    )
+
     assert appearance_color_mode_labels() == ("Uniform", "Per-point", "From field")
+    assert appearance_color_action_icon_kind("all") == "color_uniform"
+    assert appearance_color_action_icon_kind("selection") == "color_per_point"
+    assert appearance_color_action_icon_kind("reset") == "color_reset"
     assert appearance_color_mode_labels(show_per_point=False) == ("Uniform", "From field")
+    assert appearance_color_mode_icon_kind(COLOR_MODE_UNIFORM) == "color_uniform"
+    assert appearance_color_mode_icon_kind(COLOR_MODE_PER_POINT) == "color_per_point"
+    assert appearance_color_mode_icon_kind(COLOR_MODE_FIELD) == "color_field"
     assert appearance_clim_mode_labels() == ("Auto", "Custom", "Symmetric", "Percentile")
     pts = [
         VisualPoint("a", "manual", 0, 0, 0, color=(1.0, 0.0, 0.0), field_id="map1"),
@@ -1355,6 +1420,17 @@ def test_colormap_stop_color_picker_is_solid_only():
     assert "allow_field=False" in special
 
 
+def test_colormap_preview_pixmap_builtin():
+    from pymolviz.wizards.builders.colormap_editor import (
+        colormap_preview_pixmap,
+        definition_for_preset_label,
+    )
+
+    defn = definition_for_preset_label("viridis")
+    assert defn.preset == "viridis"
+    assert colormap_preview_pixmap(None, None, defn) is None
+
+
 def test_colormap_preset_reload_skips_deleted_combo(monkeypatch):
     from pymolviz.wizards.builders.colormap_editor import ColormapPresetPicker
 
@@ -1386,7 +1462,6 @@ def test_colormap_editor_set_mapping_skips_deleted_combo(monkeypatch):
     editor._range = object()
     editor._lo = object()
     editor._hi = object()
-    editor._strip = object()
     editor._widget = object()
     editor._syncing = False
     monkeypatch.setattr(
@@ -1497,6 +1572,8 @@ def test_arrow_page_has_clicked_atom_toggle():
     assert "camera_center_point" in add
     assert "_begin_incomplete" in add
     assert "Select start in PyMOL" in add
+    assert "set_add_clicked_atoms" in inspect.getsource(ArrowBuilderPage)
+    assert "use_atom_selection_mode" in inspect.getsource(ArrowBuilderPage.set_add_clicked_atoms)
 
 
 def test_arrow_row_uses_global_width_and_labeled_attach():
@@ -1555,6 +1632,8 @@ def test_arrow_row_uses_global_width_and_labeled_attach():
     poll = inspect.getsource(PointTableBuilderPage._poll_atom_pick)
     assert "take_single_selection_point" in poll
     assert "MULTI_CLICKED" in poll
+    assert "max_expand" in poll
+    assert "idle_selection_poll_ok" in poll
     list_src = inspect.getsource(PointListEditor._make_block)
     assert "picking=pick_index == index" in list_src
     action = inspect.getsource(point_editor_mod._action_button)
@@ -1572,17 +1651,47 @@ def test_arrow_add_button_is_layout_footer_not_overlay():
 
     src = inspect.getsource(ArrowPairEditor.__init__)
     assert "StickyAddOverlay" not in src
-    assert 'add_text="+ Add arrow"' in src
-    assert "make_add_from_source_toggle" in src
-    assert "set_add_source_icon" not in src
+    assert "show_add=False" in src
+    assert "InsertionAddBar" in src
     attach = inspect.getsource(ArrowPairEditor.attach_add_to_section)
-    assert "add_header_widget(self._add_from)" in attach
-    from pymolviz.wizards.builders.point_insertion import AddFromSourceRadios, SOURCE_FRESH_LABEL
+    assert "add_header_widget(self._add_bar.widget)" in attach
+    assert "sync_from_cmd" in inspect.getsource(ArrowPairEditor.sync_add_bar)
+    from pymolviz.wizards.builders.arrow_page import ArrowBuilderPage
 
-    radio_src = inspect.getsource(AddFromSourceRadios.__init__)
-    assert "QRadioButton" in radio_src
-    assert "INSERT_SOURCE_FRESH" in radio_src
-    assert SOURCE_FRESH_LABEL == "Fresh selection"
+    sync = inspect.getsource(ArrowBuilderPage._sync_add_bar)
+    assert "idle_selection_poll_ok" in sync
+    assert "insertion_preview_fingerprint" in sync
+    poll = inspect.getsource(ArrowBuilderPage._poll_selection)
+    assert "max_expand=POLL_SELECTION_MAX_ATOMS" in poll
+    assert "idle_selection_poll_ok" in poll
+    from pymolviz.wizards.builders.points import _first_atom_identity
+
+    first_id = inspect.getsource(_first_atom_identity)
+    assert "first %s" in first_id
+    assert "for expr in" not in first_id
+    from pymolviz.wizards.widgets.section import Section
+
+    assert "pmvSectionActions" in inspect.getsource(Section.add_header_widget)
+    assert "insertWidget(1, strip)" in inspect.getsource(Section.add_header_widget)
+    from pymolviz.wizards.builders.point_insertion import (
+        CLICKED_ATOMS_LABEL,
+        SOURCE_FRESH_LABEL,
+        InsertionAddBar,
+    )
+
+    bar_src = inspect.getsource(InsertionAddBar.__init__)
+    assert "QGridLayout" in bar_src
+    assert "addWidget(self.selection_summary, 1, 2)" in bar_src
+    assert "CLICKED_ATOMS_LABEL" in bar_src
+    assert "ADD_CAMERA_LABEL" in bar_src
+    assert "ADD_SELECTION_LABEL" in bar_src
+    assert "selection_summary" in bar_src
+    assert "ADD_BAR_CONTROL_HEIGHT" in bar_src
+    assert "ADD_BAR_CAPTION_MIN" in bar_src
+    assert "apply_add_bar_button_style" in bar_src
+    assert "mark_primary_button" not in bar_src
+    assert SOURCE_FRESH_LABEL == "Add Clicked Atoms"
+    assert CLICKED_ATOMS_LABEL == "Add Clicked Atoms"
     list_src = inspect.getsource(SpatialItemList.__init__)
     assert "QPushButton(add_text)" in list_src
     assert "setSizePolicy" in list_src
@@ -1602,8 +1711,11 @@ def test_point_list_reuses_spatial_point_editor():
     assert "PointListEditor" in mount
     assert "QTableWidget" not in mount
     assert 'add_text="+ Add point"' in inspect.getsource(PointListEditor.__init__)
-    assert "set_add_waiting" in inspect.getsource(PointListEditor)
-    assert "on_wait_changed" in inspect.getsource(PointTableBuilderPage._mount_points_section)
+    assert "show_add=False" in inspect.getsource(PointListEditor.__init__)
+    assert "PointInsertionWidget" in inspect.getsource(PointTableBuilderPage._mount_points_section)
+    assert "self._insertion.attach_add_to_section(pts)" in inspect.getsource(
+        PointTableBuilderPage._mount_points_section
+    )
 
 
 def test_spatial_row_chevron_and_click_toggles_expand():

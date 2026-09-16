@@ -76,6 +76,12 @@ class PyMolVizWizard(Wizard):
         self._click_filter, self._click_widget = install_middle_click_filter(self)
         take_over_center_click(self.cmd)
         try:
+            from .wizards.last_click import install_click_feedback_hook
+
+            install_click_feedback_hook()
+        except Exception:
+            pass
+        try:
             from .runtime.follow import ensure_follow_input_hook
             ensure_follow_input_hook()
         except Exception:
@@ -149,6 +155,12 @@ class PyMolVizWizard(Wizard):
                 pass
             self.camera_sphere = None
         restore_viewing_mouse(self.cmd)
+        try:
+            from .wizards.last_click import restore_atom_selection_mode
+
+            restore_atom_selection_mode(self.cmd)
+        except Exception:
+            pass
 
     def get_event_mask(self):
         # Keep the default pick/select bits so PyMOL still shows the panel.
@@ -157,10 +169,14 @@ class PyMolVizWizard(Wizard):
         return Wizard.event_mask_pick + Wizard.event_mask_select
 
     def do_pick(self, *_args, **_kwargs):
-        return
+        from .wizards.last_click import record_pymol_click
+
+        record_pymol_click(getattr(self, "cmd", None))
 
     def do_select(self, *_args, **_kwargs):
-        return
+        from .wizards.last_click import record_pymol_click
+
+        record_pymol_click(getattr(self, "cmd", None))
 
     def _request_sphere_sync(self, delay_ms=0):
         """Run follow_view after PyMOL applies the current mouse/wheel event."""
@@ -415,6 +431,13 @@ class PyMolVizWizard(Wizard):
                 pass
             self.camera_sphere = None
         restore_viewing_mouse(self.cmd)
+        try:
+            from .wizards.last_click import restore_atom_selection_mode, uninstall_click_feedback_hook
+
+            restore_atom_selection_mode(self.cmd)
+            uninstall_click_feedback_hook()
+        except Exception:
+            pass
 
 
 def exit_wizard(cmd_=None):
@@ -441,6 +464,12 @@ def exit_wizard(cmd_=None):
 
     purge_ephemeral_wizard_objects(cmd_)
     restore_viewing_mouse(cmd_)
+    try:
+        from .wizards.last_click import restore_atom_selection_mode
+
+        restore_atom_selection_mode(cmd_)
+    except Exception:
+        pass
     try:
         cmd_.refresh_wizard()
     except Exception:

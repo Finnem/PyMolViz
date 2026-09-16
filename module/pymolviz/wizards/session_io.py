@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 IMPORT_LABEL = "Import PyMolViz File"
-EXPORT_LABEL = "Export Session"
+EXPORT_LABEL = "Export PyMolViz Session"
 IMPORT_TITLE = "Import PyMolViz"
 EXPORT_TITLE = "Export session"
 EMPTY_EXPORT_MSG = "Nothing to export."

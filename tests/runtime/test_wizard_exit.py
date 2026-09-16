@@ -47,6 +47,33 @@ def test_exit_wizard_cleans_pymolviz_wizard():
     assert cmd._stack == []
 
 
+def test_wizard_records_you_clicked_on_pick_and_select():
+    import inspect
+
+    from pymolviz.wizard import PyMolVizWizard
+
+    pick = inspect.getsource(PyMolVizWizard.do_pick)
+    select = inspect.getsource(PyMolVizWizard.do_select)
+    init = inspect.getsource(PyMolVizWizard._init_runtime)
+    cleanup = inspect.getsource(PyMolVizWizard.cleanup)
+    assert "record_pymol_click" in pick
+    assert "record_pymol_click" in select
+    assert "install_click_feedback_hook" in init
+    assert "uninstall_click_feedback_hook" in cleanup
+    assert "restore_atom_selection_mode" in cleanup
+
+
+def test_last_click_does_not_scrape_qt_widgets():
+    import inspect
+
+    from pymolviz.wizards import last_click
+
+    src = inspect.getsource(last_click)
+    assert "allWidgets" not in src
+    assert "toPlainText" not in src
+    assert "cmd._get_feedback" in src
+
+
 def test_wizard_event_mask_is_silent():
     from pymol.wizard import Wizard
 
@@ -84,7 +111,7 @@ def test_wizard_menu_includes_field_visuals():
     assert labels[1] == "Open Field Visuals Menu"
     assert labels[2] == "Open Colormap Menu"
     assert labels[3] == "Import PyMolViz File"
-    assert labels[4] == "Export Session"
+    assert labels[4] == "Export PyMolViz Session"
     assert labels[5] == "Create Pseudoatom at Cam Center"
     assert "Item B" not in labels
     assert "Item C" not in labels
@@ -100,9 +127,9 @@ def test_wizard_menu_includes_field_visuals():
         "Import PyMolViz File"
     )
     assert panel_labels.index("Import PyMolViz File") < panel_labels.index(
-        "Export Session"
+        "Export PyMolViz Session"
     )
-    assert panel_labels.index("Export Session") < panel_labels.index(
+    assert panel_labels.index("Export PyMolViz Session") < panel_labels.index(
         "Create Pseudoatom at Cam Center"
     )
 

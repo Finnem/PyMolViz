@@ -167,19 +167,29 @@ def preview_mode_choices():
     )
 
 
+def preview_mode_icon_kind(mode) -> str:
+    """Action-icon key for preview radio glyphs (no Qt)."""
+    key = normalize_preview_mode(mode)
+    return {
+        PREVIEW_OFF: "preview_off",
+        PREVIEW_SIMPLE: "preview_simple",
+        PREVIEW_FULL: "preview_full",
+    }.get(key, "preview_simple")
+
+
 class PreviewModeRadios:
     """No / Simple / Full radios for Appearance and field visual pages."""
 
     def __init__(self, on_changed=None, initial=DEFAULT_PREVIEW_MODE):
         from ..pick import qt_modules
+        from ..widgets.type_icons import apply_choice_icon
 
-        QtCore, _QtGui, QtWidgets = qt_modules()
+        QtCore, QtGui, QtWidgets = qt_modules()
         wrap = QtWidgets.QWidget()
         wrap.setObjectName("pmvPreviewMode")
         row = QtWidgets.QHBoxLayout(wrap)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(8)
-        row.addWidget(QtWidgets.QLabel("Preview"))
         group = QtWidgets.QButtonGroup(wrap)
         group.setExclusive(True)
         self._buttons = {}
@@ -188,9 +198,11 @@ class PreviewModeRadios:
             radio = QtWidgets.QRadioButton(label)
             radio.setToolTip(tip)
             radio.setObjectName("pmvPreviewMode_%s" % value)
+            apply_choice_icon(radio, preview_mode_icon_kind(value), QtGui, QtCore, QtWidgets)
             group.addButton(radio)
             row.addWidget(radio)
             self._buttons[value] = radio
+        row.addStretch(1)
         self._buttons[start].setChecked(True)
         group.buttonToggled.connect(lambda *_: self._emit(on_changed))
         self.widget = wrap

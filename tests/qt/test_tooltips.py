@@ -175,12 +175,14 @@ def test_new_section_tooltip_copy_is_applied():
         context="SharedEditorSections",
     )
     assert missing == []
+    assert "Add Camera" in ADD_POINT_TIP
     assert insertion_add_label(14) == ADD_POINT_HEADER_LABEL
+    assert insertion_add_label(1, "sele") == ADD_POINT_HEADER_LABEL
     assert SNAP_LABEL == "Snap to atoms"
     assert HOOK_LABEL == "Anchor to atoms"
     assert ZOOM_LABEL == "Zoom to new points"
     assert "clip" in ADD_CLIP_TIP.lower()
-    assert "insert" in ADD_POINT_TIP.lower()
+    assert "camera" in ADD_POINT_TIP.lower()
 
 
 @pytest.mark.qt
@@ -271,6 +273,7 @@ def test_field_library_layout_copy_and_tooltips():
     assert HEADER == (205, 226, 240)
     assert SELECTED == (219, 238, 249)
     assert "205, 226, 240" in section_css()
+    assert "pmvSectionActions" in section_css()
     assert "219, 238, 249" in catalog_table_css()
     assert "245, 249, 251" in wizard_page_css()
     combo = wizard_page_css().split("QComboBox {", 1)[1].split("}", 1)[0]

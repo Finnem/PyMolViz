@@ -651,11 +651,6 @@ def nearest_atom_at_view_center(cmd_, radius=SNAP_TO_ATOM_RADIUS):
         % (x - pad, x + pad, y - pad, y + pad, z - pad, z + pad)
     )
     atoms = _atom_dicts(cmd_, near_box)
-    if not atoms:
-        for sele in ("visible", "visible and enabled", "all"):
-            atoms = _atom_dicts(cmd_, sele)
-            if atoms:
-                break
     best = None
     best_d2 = limit
     for atom in atoms:
@@ -937,11 +932,14 @@ INSERT_SOURCE_SELECTION = "selection"
 INSERT_SOURCE_CAMERA = "camera"
 INSERT_SOURCE_FRESH = "fresh"
 INSERTION_NOTHING_SELECTED = (
-    "Nothing selected. Select atoms, or use Fresh selection to pick after Add."
+    "Nothing selected. Select atoms, then Add Current Selection, or turn on "
+    "Add Clicked Atoms and pick in PyMOL."
 )
-INSERTION_FRESH_HINT = "Click Add, then select atoms in PyMOL."
+INSERTION_FRESH_HINT = "Turn on Add Clicked Atoms, then pick atoms in PyMOL."
 INSERTION_FRESH_WAITING = "Select atoms in PyMOL to add them."
-ADD_POINT_LABEL = "Add Point(s)"
+INSERTION_SELECTION_EMPTY = "Nothing selected"
+INSERTION_CAPTION_ITERATE_LIMIT = 32
+ADD_POINT_LABEL = "Add Current Selection"
 
 
 def _selection_atom_dicts(cmd_, interactive_only: bool = True) -> List[dict]:
@@ -1014,21 +1012,90 @@ def insertion_selection_summary(
     return count, "%d atoms selected  (%s, …)" % (count, hint)
 
 
-def insertion_add_label(count: int) -> str:
-    """Add-button copy. Count is unused; the header is always plural-safe."""
+def _residue_caption_label(atom: dict) -> str:
+    """``RESI RESN`` label, e.g. ``42 GLY``."""
+    resn = str(atom.get("resn") or "").strip().upper()
+    resi = str(atom.get("resi") or "").strip()
+    if len(resn) != 3:
+        resn = resn_one_letter(resn) or resn
+    if resi and resn:
+        return "%s %s" % (resi, resn)
+    return resi or resn or "?"
+
+
+def insertion_selection_caption(
+    cmd_,
+    *,
+    interactive_only: bool = True,
+) -> str:
+    """Short name of the live selection, e.g. ``42 GLY (3 atoms)``.
+
+    Large selections only read the first atom so idle polls stay cheap.
+    """
+    if cmd_ is None:
+        return INSERTION_SELECTION_EMPTY
+    count = insertion_selection_count(cmd_, interactive_only=interactive_only)
+    if count <= 0:
+        return INSERTION_SELECTION_EMPTY
+    noun = "atom" if count == 1 else "atoms"
+    if count > INSERTION_CAPTION_ITERATE_LIMIT:
+        sele = _active_selection(cmd_, interactive_only=interactive_only)
+        if sele is None:
+            return INSERTION_SELECTION_EMPTY
+        rows = []
+        if not _iterate_atoms(cmd_, "first %s" % sele, rows, _current_state(cmd_)) or not rows:
+            return "%d %s" % (count, noun)
+        atom = _atom_row_as_dict(rows[0])
+        return "%s (%d %s)" % (_residue_caption_label(atom), count, noun)
+    atoms = _selection_atom_dicts(cmd_, interactive_only=interactive_only)
+    if not atoms:
+        return INSERTION_SELECTION_EMPTY
+    residue_keys = []
+    labels = []
+    for atom in atoms:
+        key = _residue_key(atom)
+        if key in residue_keys:
+            continue
+        residue_keys.append(key)
+        labels.append(_residue_caption_label(atom))
+        if len(labels) == 3:
+            break
+    if not labels:
+        return "%d %s" % (count, noun)
+    if len(residue_keys) == 1:
+        return "%s (%d %s)" % (labels[0], count, noun)
+    shown = labels[:2]
+    if len({_residue_key(atom) for atom in atoms}) > 2:
+        shown_text = "%s, …" % ", ".join(shown)
+    else:
+        shown_text = ", ".join(labels)
+    return "%s (%d %s)" % (shown_text, count, noun)
+
+
+def insertion_selection_identifier(cmd_, *, interactive_only: bool = True):
+    """Unwrapped PyMOL selection name for the live add target, or None."""
+    expr = _active_selection(cmd_, interactive_only=interactive_only)
+    if expr is None:
+        return None
+    name = _unwrap_selection_name(expr).strip()
+    return name or None
+
+
+def insertion_add_label(count: int, name: Optional[str] = None) -> str:
+    """Add-button copy. The live selection name is shown under the button."""
     return ADD_POINT_LABEL
 
 
 def _first_atom_identity(cmd_, sele: str):
-    """``(model, atom_id)`` of the first atom in ``sele``, or None."""
-    state = _current_state(cmd_)
-    for expr in ("first %s" % sele, sele):
-        rows = []
-        if not _iterate_atoms(cmd_, expr, rows, state) or not rows:
-            continue
-        atom = _atom_row_as_dict(rows[0])
-        return (str(atom.get("model") or ""), int(atom["index"]))
-    return None
+    """``(model, atom_id)`` of the first atom in ``sele``, or None.
+
+    Uses ``first`` only. Never iterates the rest of a large selection.
+    """
+    rows = []
+    if not _iterate_atoms(cmd_, "first %s" % sele, rows, _current_state(cmd_)) or not rows:
+        return None
+    atom = _atom_row_as_dict(rows[0])
+    return (str(atom.get("model") or ""), int(atom["index"]))
 
 
 def insertion_preview_fingerprint(

@@ -75,6 +75,7 @@ class SpatialItemList:
         columns: Sequence[Tuple[str, int]],
         empty_hint: str = "No items yet.",
         context: str = "SpatialItemList",
+        show_add: bool = True,
     ):
         QtCore, _, QtWidgets = qt_modules()
         self._columns = tuple(columns)
@@ -103,6 +104,10 @@ class SpatialItemList:
         add_row.addWidget(self._add_btn)
         self._add_wrap = add_wrap
         layout.addWidget(add_wrap)
+        self._show_add = bool(show_add)
+        if not self._show_add:
+            add_wrap.hide()
+            self._add_btn.hide()
 
         layout.addWidget(make_spatial_header(self._columns))
 
@@ -164,6 +169,8 @@ class SpatialItemList:
 
     def attach_add_to_section(self, section) -> None:
         """Move + Add onto the section header bar (mockup placement)."""
+        if not getattr(self, "_show_add", True):
+            return
         if section is None or not hasattr(section, "add_header_widget"):
             return
         section.add_header_widget(self._add_btn)
