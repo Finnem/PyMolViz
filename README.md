@@ -1,4 +1,5 @@
 # PyMOLViz 2
+[![PyPI](https://img.shields.io/pypi/v/pymolviz?style=flat-square&label=PyPI)](https://pypi.org/project/pymolviz/) [![Python](https://img.shields.io/badge/python-3.10%2B-blue?style=flat-square)](https://www.python.org/) [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 
 Build molecular visualization data in Python — headlessly or interactively inside PyMOL.
 
@@ -23,6 +24,8 @@ Add that line to `.pymolrc` if you use the wizard often, then start it with:
 ```python
 pmvw
 ```
+
+
 
 ## Quick headless example
 
@@ -118,4 +121,3 @@ The wizard holds additionally functionality:
 ## Futher steps
 
 Generally all options and knobs are explained via tooltips in the wizard. In /examples, simple examples are given for most concepts.
-
