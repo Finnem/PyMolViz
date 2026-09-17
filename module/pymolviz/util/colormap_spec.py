@@ -949,6 +949,13 @@ def clamp_range(vmin, vmax, *, gap=None) -> Tuple[float, float]:
     return (lo, hi)
 
 
+def range_mode_for_endpoint_edit(mode) -> str:
+    """Typing Start/End keeps Symmetric; otherwise the range becomes Custom."""
+    if str(mode or "") == RANGE_MODE_SYMMETRIC:
+        return RANGE_MODE_SYMMETRIC
+    return RANGE_MODE_CUSTOM
+
+
 def colorbar_caption(title: str, units: str) -> str:
     title = str(title or "").strip()
     units = str(units or "").strip()

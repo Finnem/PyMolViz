@@ -72,3 +72,22 @@ def test_preview_ramp_rgba_shape():
     rgba = preview_ramp_rgba("viridis", reverse=False, n=8)
     assert rgba.shape[0] == 8
     assert rgba.shape[1] >= 3
+
+
+def test_range_mode_for_endpoint_edit_promotes_auto_keeps_symmetric():
+    from pymolviz.util.colormap_spec import (
+        RANGE_MODE_AUTO,
+        RANGE_MODE_CUSTOM,
+        RANGE_MODE_PERCENTILE,
+        RANGE_MODE_SYMMETRIC,
+        clamp_range,
+        range_mode_for_endpoint_edit,
+    )
+
+    assert range_mode_for_endpoint_edit(RANGE_MODE_AUTO) == RANGE_MODE_CUSTOM
+    assert range_mode_for_endpoint_edit(RANGE_MODE_PERCENTILE) == RANGE_MODE_CUSTOM
+    assert range_mode_for_endpoint_edit(RANGE_MODE_CUSTOM) == RANGE_MODE_CUSTOM
+    assert range_mode_for_endpoint_edit(RANGE_MODE_SYMMETRIC) == RANGE_MODE_SYMMETRIC
+    lo, hi = clamp_range(3.0, 1.0)
+    assert lo == pytest.approx(1.0)
+    assert hi == pytest.approx(3.0)

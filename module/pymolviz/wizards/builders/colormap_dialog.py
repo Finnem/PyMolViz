@@ -47,6 +47,7 @@ from ...util.colormap_spec import (
     listed_preset_names,
     load_custom_presets,
     ramp_rgba,
+    range_mode_for_endpoint_edit,
     resolve_limits,
     reverse_definition,
     sample_unit,
@@ -111,11 +112,13 @@ ADD_STOP_LABEL = "Add stop"
 DELETE_STOP_LABEL = "Delete stop"
 HELP_TITLE = "Colormap editor"
 HELP_TEXT = (
-    "Drag the distribution handles to set min/max. Right-click a range handle to "
-    "type an explicit value. Color stops move left/right along the mapped range and "
-    "up/down for opacity. Left-click empty space to add a stop. Left-click a "
-    "selected stop again (without dragging) to edit its color, position, and opacity. "
-    "The colorbar below is the live preview."
+    "Start and End set the data values at the left and right of the colormap. "
+    "You can also drag the distribution handles, or right-click a handle to type a "
+    "value. Editing Start/End switches Auto or Percentile range to Custom. Color "
+    "stops move left/right along the mapped range and up/down for opacity. "
+    "Left-click empty space to add a stop. Left-click a selected stop again "
+    "(without dragging) to edit its color, position, and opacity. The colorbar "
+    "below is the live preview."
 )
 
 RANGE_AUTO_LABEL = "Auto"
@@ -298,6 +301,22 @@ class ColormapEditorDialog:
         hist_view_row.addWidget(QtWidgets.QLabel("Distribution view"))
         hist_view_row.addWidget(self._hist_view, stretch=1)
         hist.layout.addLayout(hist_view_row)
+        self._vmin = QtWidgets.QDoubleSpinBox()
+        self._vmax = QtWidgets.QDoubleSpinBox()
+        for spin in (self._vmin, self._vmax):
+            spin.setDecimals(4)
+            spin.setRange(-1e8, 1e8)
+            apply_ascii_float_locale(spin, QtCore)
+        bind_peer_steps(self._vmin, self._vmax, min_decimals=4)
+        self._vmin.setToolTip("Data value at the left (start) of the colormap.")
+        self._vmax.setToolTip("Data value at the right (end) of the colormap.")
+        ends = QtWidgets.QHBoxLayout()
+        ends.addWidget(QtWidgets.QLabel("Start"))
+        ends.addWidget(self._vmin, stretch=1)
+        ends.addSpacing(16)
+        ends.addWidget(QtWidgets.QLabel("End"))
+        ends.addWidget(self._vmax, stretch=1)
+        hist.layout.addLayout(ends)
         self._colorbar = _ColorbarPreview(
             body, compact=True, show_stops=True,
             on_select=self._on_handle_selected,
@@ -336,13 +355,10 @@ class ColormapEditorDialog:
         self._range.addItem(RANGE_CUSTOM_LABEL, RANGE_MODE_CUSTOM)
         self._range.addItem(RANGE_SYMMETRIC_LABEL, RANGE_MODE_SYMMETRIC)
         self._range.addItem(RANGE_PERCENTILE_LABEL, RANGE_MODE_PERCENTILE)
-        self._vmin = QtWidgets.QDoubleSpinBox()
-        self._vmax = QtWidgets.QDoubleSpinBox()
         self._center = QtWidgets.QDoubleSpinBox()
-        for spin in (self._vmin, self._vmax, self._center):
-            spin.setDecimals(4)
-            spin.setRange(-1e8, 1e8)
-            apply_ascii_float_locale(spin, QtCore)
+        self._center.setDecimals(4)
+        self._center.setRange(-1e8, 1e8)
+        apply_ascii_float_locale(self._center, QtCore)
         bind_peer_steps(self._vmin, self._vmax, self._center, min_decimals=4)
         self._link_zero = make_switch("Link center to 0")
         self._link_zero.setChecked(True)
@@ -361,9 +377,7 @@ class ColormapEditorDialog:
         self._pct_lo.setValue(2.0)
         self._pct_hi.setValue(98.0)
         rng.layout.addRow("Range mode", self._range)
-        rng.layout.addRow("Min", self._vmin)
         rng.layout.addRow("Center", self._center)
-        rng.layout.addRow("Max", self._vmax)
         rng.layout.addRow("", self._link_zero)
         pct = QtWidgets.QHBoxLayout()
         pct.addWidget(self._pct_lo)
@@ -436,7 +450,9 @@ class ColormapEditorDialog:
         self._add_stop.clicked.connect(self._add_color_stop)
         self._table.itemSelectionChanged.connect(self._on_table_select)
         self._range.currentIndexChanged.connect(lambda *_: self._edit_range())
-        for spin in (self._vmin, self._vmax, self._center, self._pct_lo, self._pct_hi):
+        self._vmin.valueChanged.connect(lambda *_: self._on_endpoint_edited())
+        self._vmax.valueChanged.connect(lambda *_: self._on_endpoint_edited())
+        for spin in (self._center, self._pct_lo, self._pct_hi):
             spin.valueChanged.connect(lambda *_: self._edit_range())
         self._link_zero.toggled.connect(lambda *_: self._edit_range())
         self._interp.currentIndexChanged.connect(lambda *_: self._edit_mapping())
@@ -565,11 +581,10 @@ class ColormapEditorDialog:
 
     def _sync_range_enabled(self):
         mode = str(self._range.currentData() or RANGE_MODE_AUTO)
-        custom = mode == RANGE_MODE_CUSTOM
         symmetric = mode == RANGE_MODE_SYMMETRIC
         pct = mode == RANGE_MODE_PERCENTILE
-        self._vmin.setEnabled(custom or symmetric)
-        self._vmax.setEnabled(custom or symmetric)
+        self._vmin.setEnabled(True)
+        self._vmax.setEnabled(True)
         self._center.setEnabled(symmetric and not self._link_zero.isChecked())
         self._link_zero.setEnabled(symmetric)
         self._pct_lo.setEnabled(pct)
@@ -885,9 +900,9 @@ class ColormapEditorDialog:
         if self._syncing:
             return
         vmin, vmax = clamp_range(vmin, vmax)
-        mode = RANGE_MODE_CUSTOM
         current = self._mapping.normalization
-        if current.mode == RANGE_MODE_SYMMETRIC:
+        mode = range_mode_for_endpoint_edit(current.mode)
+        if mode == RANGE_MODE_SYMMETRIC:
             center = 0.0 if current.link_center_zero else (current.center if current.center is not None else 0.0)
             mag = max(abs(vmin - center), abs(vmax - center), 1e-12)
             vmin, vmax = center - mag, center + mag
@@ -1075,6 +1090,13 @@ class ColormapEditorDialog:
         self._selected = max(0, min(self._selected, len(stops) - 1))
         self._replace_colormap(stops=tuple(stops), customized=True)
         self._commit_ui()
+
+    def _on_endpoint_edited(self):
+        if self._syncing:
+            return
+        self._on_range_dragged(float(self._vmin.value()), float(self._vmax.value()))
+        self._sync_range_enabled()
+        self._debounce.start()
 
     def _edit_range(self):
         if self._syncing:
