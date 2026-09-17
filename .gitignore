@@ -8,3 +8,4 @@ __pycache__/
 pymolviz.egg-info/
 module/dist
 .history
+.cursor
