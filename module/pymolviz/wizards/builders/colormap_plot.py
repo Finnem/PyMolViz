@@ -79,6 +79,9 @@ def _configure_editor_window(widget):
     widget._pmv_no_transient = True
     widget._pmv_raise_last = True
     widget.setWindowFlags(widget.windowFlags() | QtCore.Qt.WindowStaysOnTopHint)
+    from ..widgets.dialog_enter import install_enter_commits_editor
+
+    install_enter_commits_editor(widget)
 
 
 def _font_text_width(fm, text: str) -> float:
@@ -388,6 +391,9 @@ def _ask_float(parent, title, label, value, lo=-1e8, hi=1e8, decimals=4):
     buttons.accepted.connect(dialog.accept)
     buttons.rejected.connect(dialog.reject)
     form.addRow(buttons)
+    from ..widgets.dialog_enter import install_enter_commits_editor
+
+    install_enter_commits_editor(dialog)
     accepted = overlay_exec(dialog, parent)
     ok = getattr(QtWidgets.QDialog, "Accepted", 1)
     if int(accepted) != int(ok):
@@ -1303,6 +1309,10 @@ class ExportColorbarDialog:
         export = QtWidgets.QPushButton("Export")
         apply_secondary_button_style(cancel)
         mark_primary_button(export)
+        cancel.setAutoDefault(False)
+        cancel.setDefault(False)
+        export.setAutoDefault(True)
+        export.setDefault(True)
         cancel.clicked.connect(dialog.reject)
         export.clicked.connect(self._export)
         buttons.addWidget(cancel)

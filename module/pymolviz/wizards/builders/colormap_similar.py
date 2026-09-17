@@ -112,6 +112,9 @@ def build_similar_colormap_dialog(parent, new_defn: ColormapDefinition, match: S
     dialog.setWindowTitle("Similar colormap")
     dialog.setModal(True)
     apply_wizard_page_style(dialog)
+    from ..widgets.dialog_enter import install_enter_commits_editor
+
+    install_enter_commits_editor(dialog)
     dialog.resize(560, 420)
 
     root = QtWidgets.QVBoxLayout(dialog)

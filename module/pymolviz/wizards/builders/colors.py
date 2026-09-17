@@ -656,6 +656,9 @@ def _configure_color_dialog_window(widget, anchor=None):
     widget.setWindowFlags(
         widget.windowFlags() | QtCore.Qt.WindowStaysOnTopHint
     )
+    from ..widgets.dialog_enter import install_enter_commits_editor
+
+    install_enter_commits_editor(widget)
     non_modal = getattr(getattr(QtCore, "Qt", None), "NonModal", None)
     if non_modal is not None:
         try:

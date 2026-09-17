@@ -354,6 +354,9 @@ def configure_tool_window(widget, anchor=None):
     widget.setWindowFlags(
         widget.windowFlags() | QtCore.Qt.WindowStaysOnTopHint
     )
+    from .widgets.dialog_enter import install_enter_commits_editor
+
+    install_enter_commits_editor(widget)
 
 
 def overlay_window(widget):
@@ -454,6 +457,9 @@ def configure_overlay_dialog(dialog, parent=None):
         dialog._pmv_raise_last = True
     except Exception:
         pass
+    from .widgets.dialog_enter import install_enter_commits_editor
+
+    install_enter_commits_editor(dialog)
     _track_tool_window(dialog)
     _set_transient_parent(dialog, overlay)
     return dialog

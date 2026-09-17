@@ -449,6 +449,11 @@ class ColormapEditorDialog:
         apply_secondary_button_style(cancel)
         apply_secondary_button_style(apply_btn)
         mark_primary_button(ok)
+        for btn in (help_btn, cancel, apply_btn):
+            btn.setAutoDefault(False)
+            btn.setDefault(False)
+        ok.setAutoDefault(True)
+        ok.setDefault(True)
         cancel.clicked.connect(self._cancel)
         apply_btn.clicked.connect(self._apply)
         ok.clicked.connect(self._ok)
@@ -472,6 +477,8 @@ class ColormapEditorDialog:
             "Push the current colormap to the viewer once. If preview is off, "
             "shows a Simple preview without turning live updates on."
         )
+        self._update_preview_btn.setAutoDefault(False)
+        self._update_preview_btn.setDefault(False)
         self._update_preview_btn.clicked.connect(self._update_preview_now)
         preview_row.addWidget(self._preview_mode.widget)
         preview_row.addWidget(self._update_preview_btn)
@@ -905,6 +912,10 @@ class ColormapEditorDialog:
         done = QtWidgets.QPushButton("Done")
         done.setObjectName("pmvStopEditorDone")
         done.setStyleSheet(compact_primary_button_css("pmvStopEditorDone"))
+        self._delete.setAutoDefault(False)
+        self._delete.setDefault(False)
+        done.setAutoDefault(True)
+        done.setDefault(True)
         form.addRow("Position", self._pos)
         form.addRow("Color", self._swatch)
         form.addRow("Opacity", self._opacity)
