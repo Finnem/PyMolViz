@@ -7,7 +7,13 @@ from .builders.field_visual import (
     pymol_name_for,
 )
 from .builders.from_selection_page import FromSelectionFieldPage
-from .builders.load_field import KIND_DERIVED, KIND_FROM_SELECTION, KIND_IMPLICIT, load_field_file
+from .builders.load_field import (
+    KIND_DERIVED,
+    KIND_FROM_SELECTION,
+    KIND_IMPLICIT,
+    KIND_MTZ,
+    load_field_file,
+)
 from .builders.preview import set_visual_enabled, visual_is_enabled
 from .catalog import (
     KIND_ADD_VISUAL,
@@ -223,6 +229,7 @@ class FieldVisualsWindow:
         self._active_field_id = None
         self._editing_obj = None
         self._extend_dialog = None
+        self._mtz_dialog = None
 
     def show(self):
         QtCore, _, QtWidgets = qt_modules()
@@ -248,13 +255,8 @@ class FieldVisualsWindow:
 
     def _discard_window(self):
         self._restore_editing_visual()
-        dialog = getattr(self, "_extend_dialog", None)
-        if dialog is not None:
-            try:
-                dialog.close()
-            except Exception:
-                pass
-            self._extend_dialog = None
+        self._close_owned_dialog("_extend_dialog")
+        self._close_owned_dialog("_mtz_dialog")
         window = self._window
         self._reset_window()
         if window is None:
@@ -302,6 +304,17 @@ class FieldVisualsWindow:
         self._active_field_id = None
         self._editing_obj = None
         self._extend_dialog = None
+        self._mtz_dialog = None
+
+    def _close_owned_dialog(self, attr):
+        dialog = getattr(self, attr, None)
+        if dialog is None:
+            return
+        try:
+            dialog.close()
+        except Exception:
+            pass
+        setattr(self, attr, None)
 
     def _ensure_stack(self):
         """Catalog-only windows may never have built a QStackedWidget; Edit still needs one."""
@@ -1067,10 +1080,7 @@ class FieldVisualsWindow:
         current = default_extend_target_name(targets)
         existing = getattr(self, "_extend_dialog", None)
         if existing is not None:
-            try:
-                existing.close()
-            except Exception:
-                pass
+            self._close_owned_dialog("_extend_dialog")
 
         def apply_around(name):
             try:
@@ -1185,6 +1195,9 @@ class FieldVisualsWindow:
         )
         if not path:
             return
+        if kind == KIND_MTZ:
+            self._import_mtz(path)
+            return
         try:
             field = load_field_file(self.wizard.cmd, path, kind=kind)
         except Exception as exc:
@@ -1202,6 +1215,67 @@ class FieldVisualsWindow:
             )
             return
         self._goto(_PAGE_LIBRARY)
+
+    def _import_mtz(self, path):
+        from os.path import basename
+
+        from ..util.io import inspect_mtz_file
+        from .builders.load_field import load_mtz_fields
+        from .builders.mtz_dialog import show_mtz_import_dialog
+
+        try:
+            inventory = inspect_mtz_file(path)
+        except Exception as exc:
+            overlay_warning(
+                self._window,
+                "PyMOLViz",
+                "Could not read that MTZ:\n\n%s" % exc,
+            )
+            return
+        self._close_owned_dialog("_mtz_dialog")
+
+        def on_load(maps):
+            try:
+                fields = load_mtz_fields(self.wizard.cmd, path, maps)
+            except Exception as exc:
+                overlay_warning(
+                    self._window,
+                    "PyMOLViz",
+                    "Could not load those maps:\n\n%s" % exc,
+                )
+                return
+            if not fields:
+                overlay_warning(
+                    self._window,
+                    "PyMOLViz",
+                    "Could not load those maps as fields.",
+                )
+                return
+            n = len(fields)
+            try:
+                self.wizard.prompt = [
+                    "Loaded %d map%s from %s." % (n, "" if n == 1 else "s", basename(str(path))),
+                ]
+                self.wizard.cmd.refresh_wizard()
+            except Exception:
+                pass
+            self._goto(_PAGE_LIBRARY)
+
+        opened = show_mtz_import_dialog(self._window, inventory, on_load=on_load)
+        if opened is None:
+            maps = [row for row in inventory.get("maps") or () if row.get("default")]
+            if not maps:
+                maps = list(inventory.get("maps") or ())[:1]
+            if maps:
+                on_load(maps)
+            else:
+                overlay_warning(
+                    self._window,
+                    "PyMOLViz",
+                    "No amplitude/phase maps found in that MTZ.",
+                )
+            return
+        self._mtz_dialog = opened
 
     def _on_visual_type(self, name, kind):
         field = self._resolve_field(self._active_field_id)

@@ -33,12 +33,20 @@ def init_lattice(obj, values, positions=None, step_sizes=None, step_counts=None,
             for i in range(3):
                 unique = np.unique(positions[:, i])
                 sorted_u = np.sort(unique)
-                obj.step_sizes[i] = np.max(np.diff(sorted_u))
+                diffs = np.diff(sorted_u)
+                if diffs.size == 0:
+                    obj.step_sizes[i] = 1.0
+                else:
+                    obj.step_sizes[i] = float(np.max(diffs))
         if obj.step_counts is None:
             obj.step_counts = np.zeros(3)
             for i in range(3):
-                length = np.max(positions[:, i]) - np.min(positions[:, i])
-                obj.step_counts[i] = np.round(length / obj.step_sizes[i])
+                length = float(np.max(positions[:, i]) - np.min(positions[:, i]))
+                step = float(obj.step_sizes[i])
+                if not np.isfinite(step) or abs(step) < 1e-15:
+                    obj.step_counts[i] = 0
+                else:
+                    obj.step_counts[i] = np.round(length / step)
         if obj.origin is None:
             obj.origin = np.min(positions, axis=0).astype(np.float64)
 

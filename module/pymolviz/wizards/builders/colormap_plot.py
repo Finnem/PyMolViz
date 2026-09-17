@@ -22,7 +22,13 @@ from ...util.colormap_spec import (
     colorbar_tick_values,
     data_to_unit,
     field_histogram,
+    histogram_counts_for_span,
+    histogram_axis_delta_for_pixels,
     histogram_axis_to_value,
+    include_handle_in_view,
+    pad_span_around,
+    clamp_histogram_view,
+    shift_histogram_value,
     HISTOGRAM_VIEW_FULL,
     HISTOGRAM_VIEW_LOG,
     HISTOGRAM_VIEW_PERCENTILE,
@@ -303,11 +309,11 @@ def _hist_axis(hist) -> str:
     return str((hist or {}).get("axis") or HISTOGRAM_VIEW_FULL)
 
 
-def _x_for_value(rect, value, dmin, dmax, axis=HISTOGRAM_VIEW_FULL) -> float:
+def _x_for_value(rect, value, dmin, dmax, axis=HISTOGRAM_VIEW_FULL, clip: bool = True) -> float:
     if value is None:
         value = dmin
-    unit = value_to_histogram_axis(value, dmin, dmax, axis)
-    return unit_to_axis(unit, rect.left(), rect.right())
+    unit = value_to_histogram_axis(value, dmin, dmax, axis, clip=clip)
+    return unit_to_axis(unit, rect.left(), rect.right(), clip=False)
 
 
 def _x_for_stop_position(rect, position, vmin, vmax, dmin, dmax, axis=HISTOGRAM_VIEW_FULL) -> float:
@@ -412,6 +418,8 @@ class _DistributionEditor:
         self._drag_offset = (0.0, 0.0)
         self._drag_moved = False
         self._press_was_already_selected = False
+        self._view = None
+        self._drag_last_x = 0.0
         view = QtWidgets.QWidget(parent)
         view.setObjectName("pmvColormapDistribution")
         view.setMinimumHeight(220)
@@ -431,7 +439,8 @@ class _DistributionEditor:
             "The top of the plot is opaque, the bottom is transparent. End colors stay "
             "on min/max and only move up/down. Left-click empty space to add a stop. "
             "Left-click a selected stop again to edit it; right-click a range handle "
-            "to type a value."
+            "to type a value. Zoom to limits frames the current min/max with a margin; "
+            "Zoom to data shows the full field range."
         )
         view.paintEvent = lambda _event: self._paint(view, QtCore, QtGui)
         view.mousePressEvent = lambda event: self._press(view, event, QtCore)
@@ -453,7 +462,60 @@ class _DistributionEditor:
         if defn is not None:
             self._defn = defn
             self._selected = max(0, min(int(selected), len(defn.stops) - 1))
+        self._clamp_view()
+        if self._view is None:
+            self.zoom_to_limits()
+            return
         self.widget.update()
+
+    def reset_view(self) -> None:
+        self._view = None
+        self.widget.update()
+
+    def _data_extent(self):
+        hist = self._hist or {}
+        lo, hi = hist.get("vmin"), hist.get("vmax")
+        if lo is None or hi is None:
+            return _data_span(hist, self._limits)
+        return clamp_range(float(lo), float(hi))
+
+    def _span(self):
+        if self._view is not None:
+            return clamp_range(self._view[0], self._view[1])
+        return _data_span(self._hist, self._limits)
+
+    def _clamp_view(self) -> None:
+        if self._view is None:
+            return
+        full = self._data_extent()
+        self._view = clamp_histogram_view(
+            self._view[0], self._view[1], full[0], full[1], axis=self._axis(),
+        )
+
+    def _set_view(self, lo, hi) -> None:
+        self._view = clamp_range(lo, hi)
+        self._clamp_view()
+        self.widget.update()
+
+    def zoom_to_limits(self) -> None:
+        limits = self._limits or (0.0, 1.0)
+        full = self._data_extent()
+        self._set_view(*pad_span_around(
+            limits[0], limits[1], full[0], full[1], axis=self._axis(),
+        ))
+
+    def zoom_to_data(self) -> None:
+        lo, hi = self._data_extent()
+        self._set_view(*pad_span_around(lo, hi, lo, hi, axis=self._axis()))
+
+    def _nudge_view_for_handle(self, which: str, handle: float) -> None:
+        view = self._span()
+        full = self._data_extent()
+        grown = include_handle_in_view(
+            view[0], view[1], handle, which, full[0], full[1], axis=self._axis(),
+        )
+        if grown != view:
+            self._set_view(*grown)
 
     def _plot(self, widget):
         # Top pad: range-handle triangles. Bottom pad: value ticks.
@@ -463,9 +525,6 @@ class _DistributionEditor:
         """Shared plot: histogram bars and stop alpha use the same vertical span."""
         plot = self._plot(widget)
         return {"plot": plot, "bars": plot, "alpha": plot}
-
-    def _span(self):
-        return _data_span(self._hist, self._limits)
 
     def _axis(self) -> str:
         return _hist_axis(self._hist)
@@ -507,11 +566,18 @@ class _DistributionEditor:
             _end_widget_paint(painter)
 
     def _paint_histogram(self, painter, QtCore, QtGui, layout, dmin, dmax, vmin, vmax):
-        counts = list((self._hist or {}).get("counts") or ())
-        edges = list((self._hist or {}).get("edges") or ())
         bars = layout["bars"]
         plot = layout["plot"]
-        if not counts:
+        hist = self._hist or {}
+        axis = self._axis()
+        dmin, dmax = self._span()
+        samples = hist.get("samples")
+        if samples is not None and len(samples):
+            counts, edges = histogram_counts_for_span(samples, dmin, dmax, axis)
+        else:
+            counts = np.asarray(hist.get("counts") or (), dtype=int)
+            edges = np.asarray(hist.get("edges") or (), dtype=float)
+        if counts is None or len(counts) == 0:
             try:
                 painter.setPen(QtGui.QColor(*MUTED))
                 painter.drawText(
@@ -522,10 +588,15 @@ class _DistributionEditor:
             except Exception:
                 pass
             return
-        axis = self._axis()
-        dmin, dmax = self._span()
         bar_h = max(8, int(bars.height()))
-        peak = math.sqrt(float(max(max(counts), 1)))
+        visible_peak = 1
+        for i, count in enumerate(counts):
+            if len(edges) < i + 2:
+                break
+            if float(edges[i + 1]) < dmin or float(edges[i]) > dmax:
+                continue
+            visible_peak = max(visible_peak, int(count))
+        peak = math.sqrt(float(max(visible_peak, 1)))
         fallback = QtGui.QColor(*PRIMARY)
         fallback.setAlpha(180)
         muted = QtGui.QColor(*MUTED)
@@ -535,19 +606,26 @@ class _DistributionEditor:
             painter.setPen(no_pen)
         else:
             painter.setPen(QtGui.QPen(fallback, 0))
+        plot_left = float(plot.left())
+        plot_right = float(plot.right())
         tops = []
         for i, count in enumerate(counts):
             if len(edges) < i + 2:
                 break
-            x0 = _x_for_value(plot, float(edges[i]), dmin, dmax, axis)
-            x1 = _x_for_value(plot, float(edges[i + 1]), dmin, dmax, axis)
-            left = int(round(min(x0, x1)))
-            right = int(round(max(x0, x1)))
-            w = max(2, right - left)
-            bh = int(round((math.sqrt(float(max(count, 0))) / peak) * bar_h))
+            e0, e1 = float(edges[i]), float(edges[i + 1])
+            x0 = _x_for_value(plot, e0, dmin, dmax, axis, clip=False)
+            x1 = _x_for_value(plot, e1, dmin, dmax, axis, clip=False)
+            left_f, right_f = (x0, x1) if x0 <= x1 else (x1, x0)
+            if right_f <= plot_left or left_f >= plot_right:
+                continue
+            left = int(math.floor(max(left_f, plot_left)))
+            right = int(math.ceil(min(right_f, plot_right)))
+            if right <= left:
+                continue
+            w = right - left
+            bh = int(round((math.sqrt(float(max(int(count), 0))) / peak) * bar_h))
             if count > 0:
                 bh = max(3, bh)
-            e0, e1 = float(edges[i]), float(edges[i + 1])
             if axis == "log" and e0 > 0.0 and e1 > 0.0:
                 mid = math.sqrt(e0 * e1)
             else:
@@ -565,7 +643,9 @@ class _DistributionEditor:
             painter.setBrush(fill)
             painter.drawRect(left, int(bars.bottom()) - bh, w, bh)
             if count > 0:
-                tops.append((left + w * 0.5, int(bars.bottom()) - bh))
+                cx = 0.5 * (x0 + x1)
+                if plot_left <= cx <= plot_right:
+                    tops.append((cx, int(bars.bottom()) - bh))
         if len(tops) >= 2:
             painter.setPen(QtGui.QPen(QtGui.QColor(*INK), 1.25))
             for (x0, y0), (x1, y1) in zip(tops, tops[1:]):
@@ -692,6 +772,7 @@ class _DistributionEditor:
             self._press_was_already_selected = False
         self._drag = hit
         self._drag_offset = (0.0, 0.0)
+        self._drag_last_x = x
         grab = getattr(widget, "grabMouse", None)
         if callable(grab):
             try:
@@ -730,6 +811,8 @@ class _DistributionEditor:
             and self._on_edit_stop is not None
         ):
             self._on_edit_stop(int(payload))
+        if kind == "range" and moved:
+            self.zoom_to_limits()
         if self._on_drag_end is not None:
             self._on_drag_end()
         widget.update()
@@ -762,14 +845,27 @@ class _DistributionEditor:
         dmin, dmax = self._span()
         axis = self._axis()
         if kind == "range":
-            value = _value_for_x(plot, x, dmin, dmax, axis)
+            dx = x - float(self._drag_last_x)
+            self._drag_last_x = x
+            d_axis = histogram_axis_delta_for_pixels(
+                dx, dmin, dmax, plot.width(), axis,
+            )
             vmin, vmax = self._limits
+            full = self._data_extent()
             if payload == "vmin":
-                vmin, vmax = clamp_range(value, vmax)
+                vmin = shift_histogram_value(vmin, d_axis, axis)
+                vmin = min(max(float(vmin), float(full[0])), float(vmax))
             else:
-                vmin, vmax = clamp_range(vmin, value)
+                vmax = shift_histogram_value(vmax, d_axis, axis)
+                vmax = max(min(float(vmax), float(full[1])), float(vmin))
+            vmin, vmax = clamp_range(vmin, vmax)
             if self._on_range is not None:
                 self._on_range(vmin, vmax)
+            else:
+                self._limits = (vmin, vmax)
+            self._nudge_view_for_handle("vmin", self._limits[0])
+            self._nudge_view_for_handle("vmax", self._limits[1])
+            widget.update()
             return
         index = int(payload)
         stops = self._defn.stops

@@ -36,10 +36,7 @@ from ...util.colormap_spec import (
     field_histogram,
     field_values_for_stats,
     limits_sane_for_field,
-    HISTOGRAM_VIEW_AUTO,
     HISTOGRAM_VIEW_FULL,
-    HISTOGRAM_VIEW_LOG,
-    HISTOGRAM_VIEW_PERCENTILE,
     field_title,
     field_units,
     format_number,
@@ -116,11 +113,16 @@ REVERSE_LABEL = "Reverse"
 ADD_STOP_LABEL = "Add stop"
 DELETE_STOP_LABEL = "Delete stop"
 UPDATE_PREVIEW_LABEL = "Update preview"
+ZOOM_TO_LIMITS_LABEL = "Zoom to limits"
+ZOOM_TO_DATA_LABEL = "Zoom to data"
 HELP_TITLE = "Colormap editor"
 HELP_TEXT = (
     "Start and End set the data values at the left and right of the colormap. "
     "You can also drag the distribution handles, or right-click a handle to type a "
-    "value. Editing Start/End switches Auto or Percentile range to Custom. Color "
+    "value. Zoom to limits frames Start/End with a margin; Zoom to data shows the "
+    "full field range. Dragging a limit into the margin zooms out a bit; releasing "
+    "the handle (or editing Start/End) frames the new limits again. Editing "
+    "Start/End switches Auto or Percentile range to Custom. Color "
     "stops move left/right along the mapped range and up/down for opacity. "
     "Left-click empty space to add a stop. Left-click a selected stop again "
     "(without dragging) to edit its color, position, and opacity. The colorbar "
@@ -134,11 +136,6 @@ RANGE_AUTO_LABEL = "Auto"
 RANGE_CUSTOM_LABEL = "Custom"
 RANGE_SYMMETRIC_LABEL = "Symmetric around zero"
 RANGE_PERCENTILE_LABEL = "Percentile"
-
-HIST_VIEW_AUTO_LABEL = "Auto (analyze data)"
-HIST_VIEW_FULL_LABEL = "Full range"
-HIST_VIEW_LOG_LABEL = "Log scale"
-HIST_VIEW_PCT_LABEL = "Percentile (1–99%)"
 
 INTERP_RGB_LABEL = "Linear RGB"
 INTERP_HSV_LABEL = "Linear HSV"
@@ -303,20 +300,6 @@ class ColormapEditorDialog:
         hist_row.addWidget(self._histogram.widget, stretch=1)
         hist_row.addWidget(self._hist_stats)
         hist.layout.addLayout(hist_row)
-        hist_view_row = QtWidgets.QHBoxLayout()
-        self._hist_view = QtWidgets.QComboBox()
-        self._hist_view.addItem(HIST_VIEW_AUTO_LABEL, HISTOGRAM_VIEW_AUTO)
-        self._hist_view.addItem(HIST_VIEW_FULL_LABEL, HISTOGRAM_VIEW_FULL)
-        self._hist_view.addItem(HIST_VIEW_LOG_LABEL, HISTOGRAM_VIEW_LOG)
-        self._hist_view.addItem(HIST_VIEW_PCT_LABEL, HISTOGRAM_VIEW_PERCENTILE)
-        self._hist_view.setToolTip(
-            "How the histogram x-axis is drawn. Auto picks log or a focused range "
-            "for heavy-tailed fields (e.g. electron density)."
-        )
-        self._hist_view.currentIndexChanged.connect(self._on_hist_view_changed)
-        hist_view_row.addWidget(QtWidgets.QLabel("Distribution view"))
-        hist_view_row.addWidget(self._hist_view, stretch=1)
-        hist.layout.addLayout(hist_view_row)
         self._vmin = QtWidgets.QDoubleSpinBox()
         self._vmax = QtWidgets.QDoubleSpinBox()
         for spin in (self._vmin, self._vmax):
@@ -333,6 +316,22 @@ class ColormapEditorDialog:
         ends.addWidget(QtWidgets.QLabel("End"))
         ends.addWidget(self._vmax, stretch=1)
         hist.layout.addLayout(ends)
+        zoom_row = QtWidgets.QHBoxLayout()
+        self._zoom_limits = QtWidgets.QPushButton(ZOOM_TO_LIMITS_LABEL)
+        self._zoom_data = QtWidgets.QPushButton(ZOOM_TO_DATA_LABEL)
+        apply_secondary_button_style(self._zoom_limits)
+        apply_secondary_button_style(self._zoom_data)
+        self._zoom_limits.setToolTip(
+            "Frame the histogram around the current colormap Start/End, with a margin "
+            "on both sides."
+        )
+        self._zoom_data.setToolTip("Show the full field value range.")
+        self._zoom_limits.clicked.connect(self._zoom_histogram_to_limits)
+        self._zoom_data.clicked.connect(self._zoom_histogram_to_data)
+        zoom_row.addWidget(self._zoom_limits)
+        zoom_row.addWidget(self._zoom_data)
+        zoom_row.addStretch(1)
+        hist.layout.addLayout(zoom_row)
         self._colorbar = _ColorbarPreview(
             body, compact=True, show_stops=True,
             on_select=self._on_handle_selected,
@@ -1051,6 +1050,7 @@ class ColormapEditorDialog:
             else:
                 vmax = value
             self._on_range_dragged(vmin, vmax)
+            self._zoom_histogram_to_limits()
             return
         value = _ask_float(self._dialog, "Color stop", "Value", current)
         if value is None:
@@ -1197,7 +1197,18 @@ class ColormapEditorDialog:
             return
         self._on_range_dragged(float(self._vmin.value()), float(self._vmax.value()))
         self._sync_range_enabled()
+        self._zoom_histogram_to_limits()
         self._debounce.start()
+
+    def _zoom_histogram_to_limits(self) -> None:
+        hist = getattr(self, "_histogram", None)
+        if hist is not None:
+            hist.zoom_to_limits()
+
+    def _zoom_histogram_to_data(self) -> None:
+        hist = getattr(self, "_histogram", None)
+        if hist is not None:
+            hist.zoom_to_data()
 
     def _edit_range(self):
         if self._syncing:
@@ -1254,20 +1265,6 @@ class ColormapEditorDialog:
             limits = (0.0, 1.0)
         return limits
 
-    def _hist_view_mode(self) -> str:
-        combo = getattr(self, "_hist_view", None)
-        if combo is None:
-            return HISTOGRAM_VIEW_AUTO
-        data = combo.currentData()
-        return str(data or HISTOGRAM_VIEW_AUTO)
-
-    def _on_hist_view_changed(self, *_args):
-        if self._syncing:
-            return
-        if not self._mapping.colormap.customized:
-            self._align_stops_to_hist = True
-        self._refresh_histogram()
-
     def _align_stops_to_histogram(self, hist) -> None:
         if self._mapping.colormap.customized:
             self._align_stops_to_hist = False
@@ -1299,15 +1296,14 @@ class ColormapEditorDialog:
         self._align_stops_to_hist = False
 
     def _refresh_histogram(self):
-        view = self._hist_view_mode()
         hist = (
-            field_histogram(self._mapping.field_id, view=view)
+            field_histogram(self._mapping.field_id, view=HISTOGRAM_VIEW_FULL)
             if self._mapping.field_id
             else None
         )
         if hist is None and self._values is not None:
             from ...util.colormap_spec import histogram_from_values
-            hist = histogram_from_values(self._values, view=view)
+            hist = histogram_from_values(self._values, view=HISTOGRAM_VIEW_FULL)
         if getattr(self, "_align_stops_to_hist", False) and hist and hist.get("n"):
             self._align_stops_to_histogram(hist)
         limits = self._resolve_limits(hist)

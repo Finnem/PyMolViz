@@ -73,17 +73,52 @@ def load_field_file(cmd, path, kind=None, name=None):
     return _load_pymol_map(cmd, path, label)
 
 
-def _register_grid(cmd, grid, *, path=None, kind=None):
+def load_mtz_fields(cmd, path, maps, *, stem=None):
+    """Load each selected MTZ amplitude/phase pair as its own Field."""
+    from ...util.io import grid_from_mtz, mtz_field_basename
+    from .object_names import unused_object_name
+
+    path = str(path)
+    stem = stem or default_field_name(path)
+    fields = []
+    for product in maps or ():
+        factor = str(product.get("factor") or "").strip()
+        phase = str(product.get("phase") or "").strip()
+        if not factor or not phase:
+            continue
+        label = unused_object_name(mtz_field_basename(stem, product), cmd)
+        grid = grid_from_mtz(
+            path,
+            factor_column=factor,
+            phase_column=phase,
+            name=label,
+        )
+        field = _register_grid(
+            cmd, grid, path=path, kind=KIND_MTZ,
+            extra={
+                "factor_column": factor,
+                "phase_column": phase,
+                "map_title": str(product.get("title") or ""),
+            },
+        )
+        if field is not None:
+            fields.append(field)
+    return fields
+
+
+def _register_grid(cmd, grid, *, path=None, kind=None, extra=None):
     from ...fields.field import as_field, intern_field
     from ...util.field_sample import remember_field
 
     field = as_field(grid)
-    if field is not None and (path or kind):
+    if field is not None and (path or kind or extra):
         gen = dict(field.generator or {})
         if path:
             gen["path"] = str(path)
         if kind:
             gen["kind"] = str(kind)
+        if extra:
+            gen.update(extra)
         field.generator = gen
     remember_field(field if field is not None else grid)
     try:

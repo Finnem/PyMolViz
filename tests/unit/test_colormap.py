@@ -91,3 +91,74 @@ def test_range_mode_for_endpoint_edit_promotes_auto_keeps_symmetric():
     lo, hi = clamp_range(3.0, 1.0)
     assert lo == pytest.approx(1.0)
     assert hi == pytest.approx(3.0)
+
+
+def test_pad_span_around_leaves_margin_inside_data():
+    from pymolviz.util.colormap_spec import LIMIT_VIEW_PAD, pad_span_around
+
+    lo, hi = pad_span_around(10.0, 20.0, 0.0, 40.0)
+    width = 10.0
+    assert lo == pytest.approx(10.0 - width * LIMIT_VIEW_PAD)
+    assert hi == pytest.approx(20.0 + width * LIMIT_VIEW_PAD)
+
+
+def test_pad_span_around_caps_at_data_limits():
+    from pymolviz.util.colormap_spec import pad_span_around
+
+    lo, hi = pad_span_around(0.0, 10.0, 0.0, 10.0)
+    assert lo == pytest.approx(0.0)
+    assert hi == pytest.approx(10.0)
+    lo, hi = pad_span_around(0.0, 2.0, 0.0, 10.0)
+    assert lo == pytest.approx(0.0)
+    assert hi > 2.0
+    assert hi < 10.0
+
+
+def test_include_handle_in_view_caps_at_data_and_grows_only_to_handle():
+    from pymolviz.util.colormap_spec import include_handle_in_view
+
+    view = (2.0, 8.0)
+    same = include_handle_in_view(2.0, 8.0, 5.0, "vmin", 0.0, 10.0)
+    assert same[0] == pytest.approx(view[0])
+    assert same[1] == pytest.approx(view[1])
+    left = include_handle_in_view(2.0, 8.0, 0.5, "vmin", 0.0, 10.0)
+    assert left[0] == pytest.approx(0.5)
+    assert left[1] == pytest.approx(8.0)
+    capped = include_handle_in_view(2.0, 8.0, -5.0, "vmin", 0.0, 10.0)
+    assert capped[0] == pytest.approx(0.0)
+    right = include_handle_in_view(2.0, 8.0, 9.5, "vmax", 0.0, 10.0)
+    assert right[0] == pytest.approx(2.0)
+    assert right[1] == pytest.approx(9.5)
+    capped_r = include_handle_in_view(2.0, 8.0, 50.0, "vmax", 0.0, 10.0)
+    assert capped_r[1] == pytest.approx(10.0)
+
+
+def test_histogram_axis_delta_matches_view_scale():
+    from pymolviz.util.colormap_spec import (
+        histogram_axis_delta_for_pixels,
+        shift_histogram_value,
+        value_to_histogram_axis,
+    )
+
+    assert histogram_axis_delta_for_pixels(10.0, 0.0, 10.0, 100.0) == pytest.approx(1.0)
+    assert shift_histogram_value(5.0, 1.0) == pytest.approx(6.0)
+    assert value_to_histogram_axis(0.0, 10.0, 20.0) == pytest.approx(0.0)
+    assert value_to_histogram_axis(0.0, 10.0, 20.0, clip=False) == pytest.approx(-1.0)
+
+
+def test_histogram_counts_for_span_rebins_window_without_overflow_dump():
+    from pymolviz.util.colormap_spec import histogram_counts_for_span, histogram_from_values
+
+    counts, edges = histogram_counts_for_span(
+        [0.0, 1.0, 1.0, 1.0, 5.0, 10.0], 0.5, 1.5, "full", bins=8,
+    )
+    assert edges[0] == pytest.approx(0.5)
+    assert edges[-1] == pytest.approx(1.5)
+    assert int(np.sum(counts)) == 3
+    hist = histogram_from_values(
+        np.concatenate([np.linspace(0.0, 1.0, 200), np.array([1000.0])]),
+        view="percentile",
+    )
+    assert hist["overflow"] >= 1
+    assert int(np.sum(hist["counts"])) == int(hist["n"]) - int(hist["underflow"]) - int(hist["overflow"])
+    assert len(hist["samples"]) == int(hist["n"])

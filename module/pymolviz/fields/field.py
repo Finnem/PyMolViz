@@ -160,9 +160,9 @@ class Field(Displayable):
             factor_column,
             phase_column,
             sample_rate,
-            min_pos if min_pos is not None else [0, 0, 0],
-            max_pos if max_pos is not None else [1, 1, 1],
-            step_sizes if step_sizes is not None else [1.0, 1.0, 1.0],
+            min_pos,
+            max_pos,
+            step_sizes,
             *args,
             **kwargs
         )

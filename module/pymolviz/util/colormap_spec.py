@@ -909,24 +909,26 @@ def tick_values(vmin: float, vmax: float, count: int = 5) -> List[float]:
     return [float(v) for v in np.linspace(lo, hi, n)]
 
 
-def axis_to_unit(coord, start, end) -> float:
+def axis_to_unit(coord, start, end, clip: bool = True) -> float:
     """Map a plot coordinate onto ``[0, 1]``. ``start`` may be greater than ``end``."""
     span = float(end) - float(start)
     if abs(span) < 1e-15:
         return 0.0
-    return _clip01((float(coord) - float(start)) / span)
+    unit = (float(coord) - float(start)) / span
+    return _clip01(unit) if clip else unit
 
 
-def unit_to_axis(unit, start, end) -> float:
-    return float(start) + _clip01(unit) * (float(end) - float(start))
+def unit_to_axis(unit, start, end, clip: bool = True) -> float:
+    u = _clip01(unit) if clip else float(unit)
+    return float(start) + u * (float(end) - float(start))
 
 
-def data_to_unit(value, vmin, vmax) -> float:
-    return axis_to_unit(value, vmin, vmax)
+def data_to_unit(value, vmin, vmax, clip: bool = True) -> float:
+    return axis_to_unit(value, vmin, vmax, clip=clip)
 
 
-def unit_to_data(unit, vmin, vmax) -> float:
-    return unit_to_axis(unit, vmin, vmax)
+def unit_to_data(unit, vmin, vmax, clip: bool = True) -> float:
+    return unit_to_axis(unit, vmin, vmax, clip=clip)
 
 
 def screen_y_to_alpha(y, top, bottom) -> float:
@@ -954,6 +956,93 @@ def range_mode_for_endpoint_edit(mode) -> str:
     if str(mode or "") == RANGE_MODE_SYMMETRIC:
         return RANGE_MODE_SYMMETRIC
     return RANGE_MODE_CUSTOM
+
+
+LIMIT_VIEW_PAD = 0.08
+
+
+def histogram_axis_pair(dmin, dmax, axis: str = HISTOGRAM_VIEW_FULL) -> Tuple[float, float]:
+    """Linear coordinates used to pan/zoom (log10 for a log axis)."""
+    lo, hi = clamp_range(dmin, dmax)
+    if normalize_histogram_view(axis) == HISTOGRAM_VIEW_LOG:
+        lo = max(lo, 1e-300)
+        hi = max(hi, lo * (1.0 + 1e-12))
+        return (math.log10(lo), math.log10(hi))
+    return (float(lo), float(hi))
+
+
+def histogram_span_from_axis_pair(a, b, axis: str = HISTOGRAM_VIEW_FULL) -> Tuple[float, float]:
+    lo, hi = (float(a), float(b)) if float(a) <= float(b) else (float(b), float(a))
+    if normalize_histogram_view(axis) == HISTOGRAM_VIEW_LOG:
+        return (float(10.0 ** lo), float(10.0 ** hi))
+    return (lo, hi)
+
+
+def _clamp_axis_window(na, nb, fa, fb) -> Tuple[float, float]:
+    width = max(nb - na, 1e-12)
+    full = max(fb - fa, 1e-12)
+    if width >= full:
+        return (fa, fb)
+    if na < fa:
+        na, nb = fa, fa + width
+    if nb > fb:
+        nb, na = fb, fb - width
+    if na < fa:
+        return (fa, fb)
+    return (na, nb)
+
+
+def pad_span_around(lo, hi, full_lo=None, full_hi=None, pad_frac=LIMIT_VIEW_PAD, axis: str = HISTOGRAM_VIEW_FULL):
+    """Widen ``lo..hi`` by ``pad_frac`` on each side, clamped to the data span."""
+    a, b = histogram_axis_pair(lo, hi, axis)
+    pad = max(b - a, 1e-12) * float(pad_frac)
+    na, nb = a - pad, b + pad
+    if full_lo is not None and full_hi is not None:
+        fa, fb = histogram_axis_pair(full_lo, full_hi, axis)
+        na, nb = _clamp_axis_window(na, nb, fa, fb)
+    return histogram_span_from_axis_pair(na, nb, axis)
+
+
+def clamp_histogram_view(view_lo, view_hi, full_lo, full_hi, axis: str = HISTOGRAM_VIEW_FULL):
+    va, vb = histogram_axis_pair(view_lo, view_hi, axis)
+    fa, fb = histogram_axis_pair(full_lo, full_hi, axis)
+    na, nb = _clamp_axis_window(va, vb, fa, fb)
+    return histogram_span_from_axis_pair(na, nb, axis)
+
+
+def histogram_axis_delta_for_pixels(dx, view_lo, view_hi, width_px, axis: str = HISTOGRAM_VIEW_FULL) -> float:
+    """Axis-space delta for a horizontal pixel drag on the current view."""
+    va, vb = histogram_axis_pair(view_lo, view_hi, axis)
+    return float(dx) * (vb - va) / max(float(width_px), 1.0)
+
+
+def shift_histogram_value(value, d_axis, axis: str = HISTOGRAM_VIEW_FULL) -> float:
+    a = histogram_axis_pair(value, value, axis)[0]
+    return histogram_span_from_axis_pair(a + float(d_axis), a + float(d_axis), axis)[0]
+
+
+def include_handle_in_view(
+    view_lo,
+    view_hi,
+    handle,
+    which: str,
+    full_lo,
+    full_hi,
+    axis: str = HISTOGRAM_VIEW_FULL,
+):
+    """Grow one side of the view just enough to keep ``handle`` visible, capped at data."""
+    va, vb = histogram_axis_pair(view_lo, view_hi, axis)
+    ha = histogram_axis_pair(handle, handle, axis)[0]
+    fa, fb = histogram_axis_pair(full_lo, full_hi, axis)
+    if str(which or "vmin") == "vmin":
+        va = min(va, ha)
+    else:
+        vb = max(vb, ha)
+    va = max(min(va, vb), fa)
+    vb = min(max(vb, va), fb)
+    if vb <= va:
+        return histogram_span_from_axis_pair(fa, fb, axis)
+    return histogram_span_from_axis_pair(va, vb, axis)
 
 
 def colorbar_caption(title: str, units: str) -> str:
@@ -1078,7 +1167,7 @@ def choose_histogram_display(analysis: dict, view: str = HISTOGRAM_VIEW_AUTO) ->
     return axis, *clamp_range(lo, hi)
 
 
-def value_to_histogram_axis(value, dmin, dmax, axis: str = HISTOGRAM_VIEW_FULL) -> float:
+def value_to_histogram_axis(value, dmin, dmax, axis: str = HISTOGRAM_VIEW_FULL, clip: bool = True) -> float:
     """Map a field value to ``[0, 1]`` along the histogram x-axis."""
     mode = normalize_histogram_view(axis)
     if mode == HISTOGRAM_VIEW_LOG:
@@ -1087,19 +1176,19 @@ def value_to_histogram_axis(value, dmin, dmax, axis: str = HISTOGRAM_VIEW_FULL) 
         v = float(value)
         if not math.isfinite(v) or v <= 0.0:
             return 0.0
-        return axis_to_unit(math.log10(v), math.log10(lo), math.log10(hi))
-    return data_to_unit(value, dmin, dmax)
+        return axis_to_unit(math.log10(v), math.log10(lo), math.log10(hi), clip=clip)
+    return data_to_unit(value, dmin, dmax, clip=clip)
 
 
-def histogram_axis_to_value(unit, dmin, dmax, axis: str = HISTOGRAM_VIEW_FULL) -> float:
+def histogram_axis_to_value(unit, dmin, dmax, axis: str = HISTOGRAM_VIEW_FULL, clip: bool = True) -> float:
     mode = normalize_histogram_view(axis)
-    u = _clip01(float(unit))
+    u = _clip01(float(unit)) if clip else float(unit)
     if mode == HISTOGRAM_VIEW_LOG:
         lo = max(float(dmin), 1e-300)
         hi = max(float(dmax), lo * (1.0 + 1e-12))
-        log_v = unit_to_axis(u, math.log10(lo), math.log10(hi))
+        log_v = unit_to_axis(u, math.log10(lo), math.log10(hi), clip=False)
         return float(10.0 ** log_v)
-    return unit_to_data(u, dmin, dmax)
+    return unit_to_data(u, dmin, dmax, clip=False)
 
 
 def colorbar_tick_values(dmin, dmax, axis: str = HISTOGRAM_VIEW_FULL, count: int = 5) -> List[float]:
@@ -1223,6 +1312,33 @@ def subsample_values(values, max_samples: int = HISTOGRAM_MAX_SAMPLES) -> np.nda
     return finite[::step]
 
 
+def histogram_counts_for_span(
+    samples,
+    lo,
+    hi,
+    axis: str = HISTOGRAM_VIEW_FULL,
+    bins: int = HISTOGRAM_BINS,
+):
+    """Bin ``samples`` into ``lo..hi`` (log or linear). Values outside the window are omitted."""
+    arr = np.asarray(samples, dtype=float).reshape(-1)
+    arr = arr[np.isfinite(arr)]
+    lo, hi = clamp_range(lo, hi)
+    n_bins = max(8, min(128, int(bins)))
+    mode = normalize_histogram_view(axis)
+    if mode == HISTOGRAM_VIEW_LOG:
+        lo = max(float(lo), 1e-12)
+        hi = max(float(hi), lo * (1.0 + 1e-12))
+        arr = arr[arr > 0.0]
+        edges = np.logspace(math.log10(lo), math.log10(hi), n_bins + 1)
+    else:
+        edges = np.linspace(float(lo), float(hi), n_bins + 1)
+    if arr.size == 0:
+        counts = np.zeros(n_bins, dtype=int)
+        return counts, np.asarray(edges, dtype=float)
+    counts, edges = np.histogram(arr, bins=edges)
+    return counts.astype(int), np.asarray(edges, dtype=float)
+
+
 def histogram_from_values(
     values,
     bins: int = HISTOGRAM_BINS,
@@ -1247,6 +1363,7 @@ def histogram_from_values(
         "overflow": 0,
         "suggest_percentile_range": False,
         "preview_note": "",
+        "samples": (),
     }
     if samples.size == 0:
         return empty
@@ -1272,18 +1389,9 @@ def histogram_from_values(
     if axis == HISTOGRAM_VIEW_LOG and dlo <= 0.0:
         dlo = float(np.min(positive)) if positive.size else max(dhi * 1e-6, 1e-12)
         dlo = max(dlo, 1e-12)
-    if axis == HISTOGRAM_VIEW_LOG:
-        edges = np.logspace(math.log10(dlo), math.log10(dhi), n_bins + 1)
-    else:
-        edges = np.linspace(dlo, dhi, n_bins + 1)
-    counts, edges = np.histogram(bin_samples, bins=edges)
-    counts = counts.astype(int)
-    # Do not dump the zero-voxel pile into the first bin — that hides the shape.
-    under = int(np.sum(bin_samples < dlo))
-    over = int(np.sum(bin_samples > dhi))
-    if counts.size:
-        counts[0] += under
-        counts[-1] += over
+    counts, edges = histogram_counts_for_span(bin_samples, dlo, dhi, axis, n_bins)
+    under = int(np.sum(np.asarray(bin_samples, dtype=float) < dlo))
+    over = int(np.sum(np.asarray(bin_samples, dtype=float) > dhi))
     note = ""
     if axis == HISTOGRAM_VIEW_LOG:
         note = "Preview: log scale (%.3g–%.3g)" % (dlo, dhi)
@@ -1324,6 +1432,7 @@ def histogram_from_values(
         "suggest_percentile_range": bool(analysis.get("suggest_percentile_range")),
         "zero_fraction": zero_fraction,
         "preview_note": note,
+        "samples": np.asarray(bin_samples, dtype=float),
     }
 
 
