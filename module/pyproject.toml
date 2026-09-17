@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pymolviz"
-version = "2.0.4"
+version = "2.0.4.1"
 description = "Library to facilitate creation of PyMOL Vizualizations."
 readme = { text = "See https://github.com/Finnem/PyMolViz for a detailed documentation.", content-type = "text/plain" }
 license = { text = "MIT" }
