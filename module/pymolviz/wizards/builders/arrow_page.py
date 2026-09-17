@@ -422,9 +422,9 @@ class ArrowBuilderPage(BuilderPage):
             start = self._appearance_pts[i]
             self._pairs[i] = pair.with_start(start).with_color_choice(start.color_choice())
 
-    def _on_appearance_preview(self):
+    def _on_appearance_preview(self, force=False):
         self._write_appearance_to_pairs()
-        self._schedule_preview()
+        self._schedule_preview(force=force)
 
     def _on_appearance_changed(self):
         self._write_appearance_to_pairs()
@@ -1100,7 +1100,9 @@ class ArrowBuilderPage(BuilderPage):
         if preview:
             self._schedule_preview()
 
-    def _schedule_preview(self):
+    def _schedule_preview(self, force=False):
+        if force:
+            self._preview_force = True
         if self._suspend_preview:
             return
         self._refresh_margin_limit()
@@ -1110,7 +1112,7 @@ class ArrowBuilderPage(BuilderPage):
         if not qt_widget_alive(self._page):
             return
         try:
-            mode = self._current_preview_mode()
+            mode = self._effective_preview_mode()
             if not preview_is_on(mode):
                 self._preview.clear_meshes()
                 if self._modifiers is not None:

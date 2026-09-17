@@ -91,6 +91,11 @@ from ..widgets.theme import (
     rgb_css,
     swatch_button_css,
 )
+from .preview_mode import (
+    DEFAULT_PREVIEW_MODE,
+    PreviewModeRadios,
+    preview_is_on,
+)
 from .colormap_editor import (
     ADD_CUSTOM_COLORMAP_TIP,
     ColormapPresetPicker,
@@ -110,6 +115,7 @@ RESET_LABEL = "Reset"
 REVERSE_LABEL = "Reverse"
 ADD_STOP_LABEL = "Add stop"
 DELETE_STOP_LABEL = "Delete stop"
+UPDATE_PREVIEW_LABEL = "Update preview"
 HELP_TITLE = "Colormap editor"
 HELP_TEXT = (
     "Start and End set the data values at the left and right of the colormap. "
@@ -118,7 +124,10 @@ HELP_TEXT = (
     "stops move left/right along the mapped range and up/down for opacity. "
     "Left-click empty space to add a stop. Left-click a selected stop again "
     "(without dragging) to edit its color, position, and opacity. The colorbar "
-    "below is the live preview."
+    "below is the live preview. Viewer preview radios match the object or field "
+    "visual page: live colormap updates only while Simple or Full is on. "
+    "Update preview pushes the current colormap once (and shows a Simple preview "
+    "if preview was off)."
 )
 
 RANGE_AUTO_LABEL = "Auto"
@@ -181,6 +190,9 @@ class ColormapEditorDialog:
         on_change=None,
         on_apply=None,
         on_done=None,
+        preview_mode_provider=None,
+        on_preview_mode=None,
+        on_preview_now=None,
     ):
         QtCore, _, QtWidgets = qt_modules()
 
@@ -214,6 +226,10 @@ class ColormapEditorDialog:
         self._on_change = on_change
         self._on_apply = on_apply
         self._on_done = on_done
+        self._preview_mode_provider = preview_mode_provider
+        self._on_preview_mode = on_preview_mode
+        self._on_preview_now = on_preview_now
+        self._preview_syncing = True
         self._original = mapping
         self._mapping = mapping
         self._values = values
@@ -438,11 +454,40 @@ class ColormapEditorDialog:
         apply_btn.clicked.connect(self._apply)
         ok.clicked.connect(self._ok)
         footer.addWidget(help_btn)
+        self._preview_row = QtWidgets.QWidget()
+        preview_row = QtWidgets.QHBoxLayout(self._preview_row)
+        preview_row.setContentsMargins(8, 0, 0, 0)
+        preview_row.setSpacing(8)
+        initial_mode = DEFAULT_PREVIEW_MODE
+        if callable(preview_mode_provider):
+            try:
+                initial_mode = preview_mode_provider() or DEFAULT_PREVIEW_MODE
+            except Exception:
+                initial_mode = DEFAULT_PREVIEW_MODE
+        self._preview_mode = PreviewModeRadios(
+            on_changed=self._on_preview_mode_toggled, initial=initial_mode,
+        )
+        self._update_preview_btn = QtWidgets.QPushButton(UPDATE_PREVIEW_LABEL)
+        apply_secondary_button_style(self._update_preview_btn)
+        self._update_preview_btn.setToolTip(
+            "Push the current colormap to the viewer once. If preview is off, "
+            "shows a Simple preview without turning live updates on."
+        )
+        self._update_preview_btn.clicked.connect(self._update_preview_now)
+        preview_row.addWidget(self._preview_mode.widget)
+        preview_row.addWidget(self._update_preview_btn)
+        footer.addWidget(self._preview_row, stretch=1)
         footer.addStretch(1)
         footer.addWidget(cancel)
         footer.addWidget(apply_btn)
         footer.addWidget(ok)
         root.addLayout(footer)
+        self._preview_syncing = False
+        self._bind_preview(
+            preview_mode_provider=preview_mode_provider,
+            on_preview_mode=on_preview_mode,
+            on_preview_now=on_preview_now,
+        )
 
         self._save.clicked.connect(self._save_as)
         self._reset.clicked.connect(self._reset_preset)
@@ -649,8 +694,64 @@ class ColormapEditorDialog:
         self._debounce.start()
 
     def _emit_live(self):
+        if not self._viewer_live_preview():
+            return
         if self._on_change is not None:
             self._on_change(self._mapping)
+
+    def _viewer_live_preview(self) -> bool:
+        if self._preview_mode is None or not getattr(self, "_preview_row", None):
+            return True
+        if not self._preview_row.isVisible():
+            return True
+        return preview_is_on(self._preview_mode.mode())
+
+    def _bind_preview(self, *, preview_mode_provider=None, on_preview_mode=None, on_preview_now=None):
+        self._preview_mode_provider = preview_mode_provider
+        self._on_preview_mode = on_preview_mode
+        self._on_preview_now = on_preview_now
+        show = callable(preview_mode_provider) or callable(on_preview_mode) or callable(on_preview_now)
+        if qt_widget_alive(self._preview_row):
+            self._preview_row.setVisible(bool(show))
+        if show and callable(preview_mode_provider) and self._preview_mode is not None:
+            try:
+                self.sync_preview_mode(preview_mode_provider())
+            except Exception:
+                pass
+        self._sync_update_preview_button()
+
+    def sync_preview_mode(self, mode) -> None:
+        if self._preview_mode is None:
+            return
+        self._preview_syncing = True
+        try:
+            self._preview_mode.set_mode(mode, emit=False)
+        finally:
+            self._preview_syncing = False
+        self._sync_update_preview_button()
+
+    def _on_preview_mode_toggled(self, mode) -> None:
+        if getattr(self, "_preview_syncing", False):
+            return
+        self._sync_update_preview_button()
+        if self._on_preview_mode is not None:
+            self._on_preview_mode(mode)
+        if preview_is_on(mode) and self._on_change is not None:
+            self._on_change(self._mapping)
+
+    def _sync_update_preview_button(self) -> None:
+        btn = getattr(self, "_update_preview_btn", None)
+        if btn is None or not qt_widget_alive(btn):
+            return
+        live = self._viewer_live_preview() if getattr(self, "_preview_row", None) and self._preview_row.isVisible() else True
+        btn.setEnabled(not live)
+        btn.setVisible(bool(getattr(self, "_preview_row", None) and self._preview_row.isVisible()))
+
+    def _update_preview_now(self) -> None:
+        if self._on_change is not None:
+            self._on_change(self._mapping)
+        if self._on_preview_now is not None:
+            self._on_preview_now()
 
     def _on_preset(self):
         if self._syncing:
@@ -1336,6 +1437,9 @@ def open_colormap_editor(
     on_change=None,
     on_apply=None,
     on_done=None,
+    preview_mode_provider=None,
+    on_preview_mode=None,
+    on_preview_now=None,
 ) -> Optional[ColormapEditorDialog]:
     QtCore, _, QtWidgets = qt_modules()
     if QtWidgets is None:
@@ -1362,6 +1466,11 @@ def open_colormap_editor(
             existing._on_change = on_change
             existing._on_apply = on_apply
             existing._on_done = on_done
+            existing._bind_preview(
+                preview_mode_provider=preview_mode_provider,
+                on_preview_mode=on_preview_mode,
+                on_preview_now=on_preview_now,
+            )
             existing._cmd = cmd
             existing._values = values
             existing._original = mapping
@@ -1380,6 +1489,9 @@ def open_colormap_editor(
         editor = ColormapEditorDialog(
             parent, mapping, values=values, cmd=cmd,
             on_change=on_change, on_apply=on_apply, on_done=on_done,
+            preview_mode_provider=preview_mode_provider,
+            on_preview_mode=on_preview_mode,
+            on_preview_now=on_preview_now,
         )
     except Exception:
         if on_done is not None:
@@ -1388,3 +1500,13 @@ def open_colormap_editor(
     _LIVE_EDITOR.append(editor)
     editor.show()
     return editor
+
+
+def notify_colormap_editor_preview_mode(mode) -> None:
+    """Keep an open colormap editor's preview radios in sync with the parent page."""
+    existing = _LIVE_EDITOR[-1] if _LIVE_EDITOR else None
+    if existing is None or getattr(existing, "_closing", False):
+        return
+    setter = getattr(existing, "sync_preview_mode", None)
+    if callable(setter):
+        setter(mode)

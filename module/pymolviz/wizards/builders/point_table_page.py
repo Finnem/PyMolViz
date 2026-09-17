@@ -148,7 +148,7 @@ class PointTableBuilderPage(BuilderPage):
             if not enabled_points(self._points):
                 self._preview.cleanup()
                 return None
-            mode = self._current_preview_mode()
+            mode = self._effective_preview_mode()
             if not preview_is_on(mode):
                 self._preview.clear_meshes()
                 if self._modifiers is not None:
@@ -251,9 +251,9 @@ class PointTableBuilderPage(BuilderPage):
         root.addWidget(self._modifiers.widget)
         return self._modifiers.tooltips()
 
-    def _on_appearance_preview(self):
+    def _on_appearance_preview(self, force=False):
         self._refresh_color_cells()
-        self._schedule_preview()
+        self._schedule_preview(force=force)
 
     def _on_appearance_changed(self):
         self._sync_table(preview=True)

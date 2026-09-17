@@ -343,10 +343,16 @@ class ColormapEditor:
         default_name: str = DEFAULT_SURFACE_COLORMAP,
         field_id_provider: Optional[Callable[[], Optional[str]]] = None,
         cmd=None,
+        preview_mode_provider=None,
+        on_preview_mode=None,
+        on_preview_now=None,
     ):
         self._on_changed = on_changed or (lambda: None)
         self._field_id_provider = field_id_provider
         self.cmd = cmd
+        self._preview_mode_provider = preview_mode_provider
+        self._on_preview_mode = on_preview_mode
+        self._on_preview_now = on_preview_now
         self._syncing = False
         self._picker = None
         self._reverse = None
@@ -652,6 +658,9 @@ class ColormapEditor:
             on_apply=lambda updated: apply_mapping(updated, persist=True),
             on_change=live,
             on_done=done,
+            preview_mode_provider=self._preview_mode_provider,
+            on_preview_mode=self._on_preview_mode,
+            on_preview_now=self._on_preview_now,
         )
 
     def _add_custom(self):

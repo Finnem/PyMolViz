@@ -575,7 +575,7 @@ class FromSelectionFieldPage(PointTableBuilderPage):
             centers = self._domain_centers()
             self._sync_domain_schematic(domain, centers)
             aabb = domain.resolve_aabb(centers)
-            mode = self._preview_mode()
+            mode = self._effective_preview_mode(self._preview_mode())
             show_domain = preview_is_on(mode)
             if not enabled_points(self._points):
                 self._preview.update(

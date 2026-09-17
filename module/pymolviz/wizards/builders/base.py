@@ -102,10 +102,25 @@ class BuilderPage:
             return self.DEFAULT_NAME
         return self._object_name.text().strip() or self.DEFAULT_NAME
 
-    def _schedule_preview(self):
+    def _schedule_preview(self, force=False):
+        if force:
+            self._preview_force = True
         if self._suspend_preview:
             return
         self._deferred.schedule(self._refresh_preview, page=self._page)
+
+    def _flush_preview_force(self) -> bool:
+        force = bool(getattr(self, "_preview_force", False))
+        self._preview_force = False
+        return force
+
+    def _effective_preview_mode(self, mode=None) -> str:
+        from .preview_mode import preview_mode_for_forced_update
+
+        key = self._current_preview_mode() if mode is None else mode
+        if self._flush_preview_force():
+            return preview_mode_for_forced_update(key)
+        return key
 
     def _refresh_preview(self):
         raise NotImplementedError

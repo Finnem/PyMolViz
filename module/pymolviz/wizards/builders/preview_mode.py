@@ -62,6 +62,13 @@ def preview_is_full(mode) -> bool:
     return normalize_preview_mode(mode) == PREVIEW_FULL
 
 
+def preview_mode_for_forced_update(mode) -> str:
+    """One-shot viewer update: keep Simple/Full, or use Simple when preview is off."""
+    if preview_is_on(mode):
+        return normalize_preview_mode(mode)
+    return DEFAULT_PREVIEW_MODE
+
+
 def preview_can_promote(mode) -> bool:
     """Only a full-fidelity preview may be renamed into the committed object."""
     return preview_is_full(mode)
@@ -215,11 +222,19 @@ class PreviewModeRadios:
                 return value
         return DEFAULT_PREVIEW_MODE
 
-    def set_mode(self, mode) -> None:
+    def set_mode(self, mode, *, emit=True) -> None:
         key = normalize_preview_mode(mode)
         btn = self._buttons.get(key)
-        if btn is not None:
+        if btn is None:
+            return
+        if emit:
             btn.setChecked(True)
+            return
+        self._group.blockSignals(True)
+        try:
+            btn.setChecked(True)
+        finally:
+            self._group.blockSignals(False)
 
     def buttons(self):
         return self._buttons

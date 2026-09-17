@@ -545,6 +545,9 @@ class AppearanceSection:
             on_changed=self._on_field_settings_changed,
             cmd=self.cmd,
             field_id_provider=provider,
+            preview_mode_provider=self.preview_mode if self._show_live_preview else None,
+            on_preview_mode=self.set_preview_mode if self._show_live_preview else None,
+            on_preview_now=self._force_preview if self._show_live_preview else None,
         )
         self._field_picker_label_widget = QtWidgets.QLabel(self._field_picker_label)
         field_form.addRow(self._field_picker_label_widget, self._field_picker.widget)
@@ -654,10 +657,20 @@ class AppearanceSection:
         self._pick_for_rows(rows)
 
     def _emit_preview(self) -> None:
+        from .colormap_dialog import notify_colormap_editor_preview_mode
+
+        notify_colormap_editor_preview_mode(self.preview_mode())
         if self._on_preview is not None:
             self._on_preview()
             return
         self._on_changed()
+
+    def _force_preview(self) -> None:
+        fn = self._on_preview or self._on_changed
+        try:
+            fn(force=True)
+        except TypeError:
+            fn()
 
     def _pick_for_rows(self, rows: Sequence[int]) -> None:
         targets = [int(row) for row in rows if 0 <= int(row) < len(self._points)]

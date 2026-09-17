@@ -27,6 +27,7 @@ from pymolviz.wizards.builders.preview_mode import (
     preview_is_on,
     preview_mesh_quality,
     preview_mode_choices,
+    preview_mode_for_forced_update,
     preview_mode_icon_kind,
     preview_wireframe,
     stride_sample_grid,
@@ -63,6 +64,9 @@ def test_preview_mode_labels_and_aliases():
     assert normalize_preview_mode("live") == PREVIEW_FULL
     assert preview_is_on(PREVIEW_SIMPLE) is True
     assert preview_is_on(PREVIEW_OFF) is False
+    assert preview_mode_for_forced_update(PREVIEW_OFF) == PREVIEW_SIMPLE
+    assert preview_mode_for_forced_update(PREVIEW_SIMPLE) == PREVIEW_SIMPLE
+    assert preview_mode_for_forced_update(PREVIEW_FULL) == PREVIEW_FULL
     assert preview_is_full(PREVIEW_FULL) is True
     assert preview_can_promote(PREVIEW_SIMPLE) is False
     assert preview_can_promote(PREVIEW_FULL) is True

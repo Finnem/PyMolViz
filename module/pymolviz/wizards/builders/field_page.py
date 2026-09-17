@@ -467,9 +467,9 @@ class FieldVisualBuilderPage(BuilderPage):
             return False
         return preview_is_on(self._appearance.preview_mode())
 
-    def _on_preview_setting(self):
+    def _on_preview_setting(self, force=False):
         self._sync_form()
-        self._schedule_preview()
+        self._schedule_preview(force=force)
 
     def _on_clip_axis_enabled(self, axis: int) -> None:
         if self._clip_gizmo is not None:
@@ -570,7 +570,12 @@ class FieldVisualBuilderPage(BuilderPage):
                     self._preview.update(None)
                 self._sync_clip_gizmos()
                 return
-            if not self._live_preview_enabled():
+            mode = self._effective_preview_mode(
+                self._appearance.preview_mode()
+                if self._appearance is not None
+                else DEFAULT_PREVIEW_MODE
+            )
+            if not preview_is_on(mode):
                 if self._preview is not None:
                     field = self._selected_field()
                     grid = resolve_field_grid(field)
@@ -589,11 +594,6 @@ class FieldVisualBuilderPage(BuilderPage):
                     self._preview.update(None)
                 self._sync_clip_gizmos()
                 return
-            mode = (
-                self._appearance.preview_mode()
-                if self._appearance is not None
-                else DEFAULT_PREVIEW_MODE
-            )
             display_grid = preview_grid(grid, mode)
             preview_kind = preview_iso_kind(self._kind, mode)
             if not preview_is_simple(mode) and not self._confirm_heavy_iso(display_grid):
