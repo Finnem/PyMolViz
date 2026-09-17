@@ -67,21 +67,17 @@ from .export import export_objects
 
 
 def _field_with_preview_grid(field, grid):
-    """Field-like object whose brick is a preview downsample of ``grid``."""
+    """Preview brick as a Field, keeping the interned geometry field id."""
     if field is None or grid is None:
         return field
-    if getattr(field, "grid_data", None) is grid:
+    if grid is field:
         return field
-
-    class _PreviewField:
-        def __init__(self, src, brick):
-            object.__setattr__(self, "_src", src)
-            object.__setattr__(self, "grid_data", brick)
-
-        def __getattr__(self, name):
-            return getattr(self._src, name)
-
-    return _PreviewField(field, grid)
+    src_id = str(getattr(field, "id", "") or "")
+    if type(grid).__name__ == "Field":
+        if src_id and str(getattr(grid, "id", "") or "") != src_id:
+            grid.id = src_id
+        return grid
+    return field
 
 
 _KIND_CRUMBS = {
@@ -607,12 +603,12 @@ class FieldVisualBuilderPage(BuilderPage):
             level = float(self._level.value()) if self._level is not None else default_iso_level(grid)
             transparency = float(self._transparency.value()) if self._transparency is not None else 0.0
             color_field_id = None
-            if (
-                not preview_is_simple(mode)
-                and self._color_from_field()
-                and self._appearance is not None
-            ):
+            color_src = None
+            if self._color_from_field() and self._appearance is not None:
                 color_field_id = self._appearance.color_field_id()
+                geom_id = str(getattr(field, "id", "") or "")
+                if color_field_id and str(color_field_id) == geom_id:
+                    color_src = display_grid
             carve_sel, carve_radius = self._carve_args()
             iso_key = field_visual_preview_key(
                 kind=preview_kind,
@@ -643,6 +639,7 @@ class FieldVisualBuilderPage(BuilderPage):
                 color=self._color,
                 transparency=transparency,
                 color_field_id=color_field_id,
+                color_src=color_src,
                 colormap=colormap,
                 colormap_spec=colormap_spec,
                 cmd=self.cmd,
@@ -684,7 +681,18 @@ class FieldVisualBuilderPage(BuilderPage):
     def _editor_clims(self, grid=None):
         if self._appearance is None:
             return None
-        values = getattr(grid, "values", None) if grid is not None else None
+        values = None
+        if self._color_from_field():
+            fid = self._appearance.color_field_id()
+            if fid:
+                try:
+                    from ...util.colormap_spec import field_values_for_stats
+
+                    values = field_values_for_stats(fid)
+                except Exception:
+                    values = None
+        if values is None and grid is not None:
+            values = getattr(grid, "values", None)
         return self._appearance.resolved_clims(values)
 
     def _commit_kwargs(self):

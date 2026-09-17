@@ -159,7 +159,16 @@ def bind_iso_color_ramp(visual, colormap="RdYlBu_r"):
     if issubclass(type(color), ColorRamp):
         return visual
     fid = getattr(visual, "color_field_id", None)
-    ramp = color_ramp_for_field(fid, colormap=colormap)
+    spec = getattr(visual, "colormap_spec", None)
+    if spec:
+        from ..util.colormap_spec import volume_colormap_arg
+
+        colormap = volume_colormap_arg(colormap, spec)
+    ramp = color_ramp_for_field(
+        fid,
+        colormap=colormap,
+        clims=getattr(visual, "clims", None),
+    )
     if ramp is not None:
         visual.color = ramp
         deps = list(getattr(visual, "dependencies", None) or [])
@@ -175,9 +184,9 @@ def named_grid_copy(grid, name):
         return None
     import numpy as np
 
-    from .GridData import GridData
+    from ..fields.field import Field
 
-    copied = GridData(
+    copied = Field(
         np.asarray(grid.values, dtype=float).reshape(-1),
         step_sizes=tuple(float(v) for v in np.asarray(grid.step_sizes).reshape(3)),
         step_counts=tuple(int(v) for v in np.asarray(grid.step_counts).reshape(3)),

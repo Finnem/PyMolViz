@@ -388,7 +388,7 @@ def test_surface_preview_reuses_mesh_for_wireframe_and_color(preview_runtime, mo
     assert preview.collection[0] is mesh
     assert mesh.wireframe is True
     kinds = [t for t in mesh._create_CGO_list() if isinstance(t, str)]
-    assert "CONE" in kinds
+    assert "CYLINDER" in kinds
     assert "TRIANGLES" not in kinds
     recolored = _point("a", (0.0, 0.0, 0.0), color=(0.0, 1.0, 0.0))
     preview.update([recolored], DEFAULT_ATOM_RADIUS, DEFAULT_PROBE_RADIUS, "SASA", 1, True)

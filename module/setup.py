@@ -11,6 +11,7 @@ setup(name='pymolviz',
                 'matplotlib',
                 'scipy',
                 'cmap',
+                'gemmi',
         ],
         extras_require={
                 'test': ['pytest>=7.0'],

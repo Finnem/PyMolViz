@@ -1126,10 +1126,10 @@ def test_sas_wireframe_cgo_uses_unique_cones():
     )
     tokens = mesh._create_CGO_list()
     kinds = [t for t in tokens if isinstance(t, str)]
-    assert "CONE" in kinds
+    assert "CYLINDER" in kinds
     assert "TRIANGLES" not in kinds
     n_unique = len(_unique_undirected_edges(mesh.faces))
-    assert kinds.count("CONE") == n_unique
+    assert kinds.count("CYLINDER") == n_unique
     assert n_unique < 3 * len(mesh.faces)
 
 
@@ -1138,7 +1138,7 @@ def test_build_surface_collection_wireframe():
     coll = build_surface_collection(pts, 1.5, 1.4, "SASA", 1, True, "pmv_surface")
     tokens = coll._create_CGO_list()
     kinds = [t for t in tokens if isinstance(t, str)]
-    assert "CONE" in kinds
+    assert "CYLINDER" in kinds
     assert "TRIANGLES" not in kinds
 
 
@@ -1180,7 +1180,7 @@ def test_retarget_surface_collection_rejects_algorithm_change():
     assert retarget_surface_collection(coll, recolored, 1.5, 1.4, "SASA", 1, True)
     assert coll[0].wireframe is True
     kinds = [t for t in coll[0]._create_CGO_list() if isinstance(t, str)]
-    assert "CONE" in kinds
+    assert "CYLINDER" in kinds
     assert "TRIANGLES" not in kinds
 
 

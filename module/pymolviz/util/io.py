@@ -7,7 +7,7 @@ def grid_from_xyz(path, in_bohr = True, *args, **kwargs):
     Assumes lines starting with # are comments and that the value is in the last column.
     """
 
-    from ..volumetric.GridData import GridData
+    from ..fields.field import Field
     with open(path, "r") as f:
         coords = []
         values = []
@@ -24,12 +24,12 @@ def grid_from_xyz(path, in_bohr = True, *args, **kwargs):
         if in_bohr:
             coords /= 1.89
 
-        return GridData(values, coords, *args, **kwargs)
+        return Field(values, coords, *args, **kwargs)
 
 
 def grid_from_mtz(path, factor_column = "FWT", phase_column = "PHWT", sample_rate = 2.6, min_pos = [0, 0, 0], max_pos = [1, 1, 1], step_size = [1., 1., 1.], *args, **kwargs):
     import gemmi
-    from ..volumetric.GridData import GridData
+    from ..fields.field import Field
     mtz = gemmi.read_mtz_file(path)
     map = mtz.transform_f_phi_to_map(factor_column, phase_column, sample_rate = sample_rate)
     step_size = np.array(step_size)
@@ -39,11 +39,11 @@ def grid_from_mtz(path, factor_column = "FWT", phase_column = "PHWT", sample_rat
     values = np.zeros(np.ceil((max_pos - min_pos) / step_size).astype(int), dtype = np.float32)
     map.interpolate_values(values, transform)
     positions = (np.array(m.tolist()).reshape(3,3) @ np.indices(values.shape).reshape(3,-1)).T + np.array(min_pos)
-    return GridData(values.flatten(), positions, *args, **kwargs)
+    return Field(values.flatten(), positions, *args, **kwargs)
             
 
 def grid_from_orca3d(path, *args, **kwargs):
-    from ..volumetric.GridData import GridData
+    from ..fields.field import Field
     step_counts = None
     origin = None
     step_sizes = None
@@ -69,4 +69,4 @@ def grid_from_orca3d(path, *args, **kwargs):
                 if len(line.strip()) > 0:
                     values.append(float(line))
     values = np.array(values)
-    return GridData(values, step_counts = step_counts, origin = origin, step_sizes = step_sizes, *args, **kwargs)
+    return Field(values, step_counts=step_counts, origin=origin, step_sizes=step_sizes, *args, **kwargs)

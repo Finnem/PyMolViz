@@ -890,32 +890,29 @@ def _dump_field(obj) -> dict:
 
 def _load_field(cls, data: dict):
     from .fields.domain import Domain
-    from .volumetric.GridData import GridData
 
-    grid = None
     brick = data.get("brick")
-    if brick:
-        grid = GridData(
-            resolve_numeric_array(brick["values"]),
-            step_sizes=brick.get("step_sizes"),
-            step_counts=brick.get("step_counts"),
-            origin=brick.get("origin"),
-            name=brick.get("name") or data.get("name"),
-        )
-        if brick.get("name"):
-            grid._name = brick["name"]
-    field = cls(
+    kwargs = dict(
         name=data.get("name"),
         kind=data.get("kind"),
         units=data.get("units"),
         generator=data.get("generator"),
         domain=Domain.from_dict(data.get("domain")),
         provenance=data.get("provenance"),
-        grid_data=grid,
         categories=data.get("categories"),
         obj_id=data.get("id"),
         default_color_field_id=data.get("default_color_field_id"),
     )
+    if brick:
+        field = cls(
+            resolve_numeric_array(brick["values"]),
+            step_sizes=brick.get("step_sizes"),
+            step_counts=brick.get("step_counts"),
+            origin=brick.get("origin"),
+            **kwargs
+        )
+    else:
+        field = cls(**kwargs)
     if data.get("name"):
         field._name = data["name"]
     from .fields.field import remember_wrap
@@ -1010,9 +1007,9 @@ def _resolve_geometry_grid(data: dict):
 def _load_volumetric(cls, data: dict):
     field, grid = _resolve_geometry_grid(data)
     if grid is None:
-        from .volumetric.GridData import GridData
+        from .fields.field import Field
 
-        grid = GridData(
+        grid = Field(
             np.zeros(8),
             step_sizes=(1.0, 1.0, 1.0),
             step_counts=(1, 1, 1),

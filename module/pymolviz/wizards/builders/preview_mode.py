@@ -113,7 +113,7 @@ def stride_sample_grid(grid, stride=SIMPLE_GRID_STRIDE):
         return grid
     import numpy as np
 
-    from ...volumetric.GridData import GridData
+    from ...fields.field import Field
 
     counts = np.asarray(getattr(grid, "step_counts", (0, 0, 0)), dtype=int).reshape(3)
     shape = tuple(int(c) + 1 for c in counts)
@@ -125,7 +125,7 @@ def stride_sample_grid(grid, stride=SIMPLE_GRID_STRIDE):
     new_counts = np.maximum(new_counts, 0)
     new_steps = np.asarray(grid.step_sizes, dtype=float).reshape(3) * float(step)
     origin = tuple(float(v) for v in np.asarray(grid.origin).reshape(3))
-    copied = GridData(
+    copied = Field(
         sampled.reshape(-1),
         step_sizes=tuple(float(v) for v in new_steps),
         step_counts=tuple(int(v) for v in new_counts),

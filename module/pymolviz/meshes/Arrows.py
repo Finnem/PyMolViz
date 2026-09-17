@@ -24,20 +24,19 @@ HEAD_LENGTH = default_head_length(DEFAULT_SHAFT_RADIUS)
 _LINE_WIDTH_PER_ANGSTROM = 2.4 / DEFAULT_SHAFT_RADIUS
 
 
-def _native_cone_cgo(p0, p1, radius, color, alpha=1.0, color_end=None):
-    """Native CGO CONE with equal radii (a cylinder). ``color_end`` tints the far cap."""
+def _native_cylinder_cgo(p0, p1, radius, color, alpha=1.0, color_end=None):
+    """Native CGO CYLINDER (ray-traces; equal-radius CONE does not)."""
     c0 = [float(c) for c in color[:3]]
     c1 = [float(c) for c in (color if color_end is None else color_end)[:3]]
     r = float(radius)
     a = max(0.0, min(1.0, float(alpha)))
     return [
         "ALPHA", a,
-        "CONE",
+        "CYLINDER",
         float(p0[0]), float(p0[1]), float(p0[2]),
         float(p1[0]), float(p1[1]), float(p1[2]),
-        r, r,
+        r,
         c0[0], c0[1], c0[2], c1[0], c1[1], c1[2],
-        1.0, 1.0,
     ]
 
 
@@ -162,7 +161,7 @@ GRADIENT_SHAFT_SLICES = 12
 
 
 def _gradient_shaft_cgo(p0, p1, radius, c0, c1, alpha, quality, segs):
-    """Shaft as a start→end color gradient (native CONE, or colored 2D lines)."""
+    """Shaft as a start→end color gradient (native CYLINDER, or colored 2D lines)."""
     if not segs:
         return []
     if quality == 0:
@@ -179,7 +178,7 @@ def _gradient_shaft_cgo(p0, p1, radius, c0, c1, alpha, quality, segs):
         for i in range(n):
             t0 = i / float(n)
             t1 = (i + 1) / float(n)
-            obj.extend(_native_cone_cgo(
+            obj.extend(_native_cylinder_cgo(
                 _lerp_xyz(p0, p1, t0),
                 _lerp_xyz(p0, p1, t1),
                 radius,
@@ -192,7 +191,7 @@ def _gradient_shaft_cgo(p0, p1, radius, c0, c1, alpha, quality, segs):
     for a, b in segs:
         ta = _project_t(p0, p1, a)
         tb = _project_t(p0, p1, b)
-        obj.extend(_native_cone_cgo(
+        obj.extend(_native_cylinder_cgo(
             a, b, radius, _lerp_rgb(c0, c1, ta), alpha=alpha,
             color_end=_lerp_rgb(c0, c1, tb),
         ))
@@ -593,10 +592,9 @@ class Arrows(Points):
         transparency = 1 - self.transparency
         cylinders = np.hstack([
             np.full(starts.shape[0], "ALPHA")[:, None], transparency[:, None],
-            np.full(starts.shape[0], "CONE")[:, None], starts, cylinder_ends,
+            np.full(starts.shape[0], "CYLINDER")[:, None], starts, cylinder_ends,
             np.full(starts.shape[0], self.linewidth)[:, None],
-            np.full(starts.shape[0], self.linewidth)[:, None],
-            start_colors, end_colors, np.full((starts.shape[0], 2), (1.0, 0.0)),
+            start_colors, end_colors,
         ]).flatten()
         cgo_list.extend(cylinders)
         cones = np.hstack([

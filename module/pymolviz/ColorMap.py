@@ -213,8 +213,8 @@ class ColorMap(Displayable):
         Returns:
             str: The script.
         """
-        from .volumetric.GridData import GridData
-        dummy_data = GridData(np.zeros(8), name="cbar_dummy", step_sizes=(1e-8,1e-8,1e-8), step_counts=(1,1,1)) 
+        from .fields.field import Field
+        dummy_data = Field(np.zeros(8), name="cbar_dummy", step_sizes=(1e-8,1e-8,1e-8), step_counts=(1,1,1)) 
         
         sample_points = np.linspace(self.clims[0], self.clims[-1], 100)
         colors = self.get_color(sample_points)[:,:3]
@@ -230,9 +230,9 @@ class ColorMap(Displayable):
         return result
 
     def load(self):
-        from .volumetric.GridData import GridData
+        from .fields.field import Field
         from pymol import cmd
-        dummy_data = GridData(np.zeros(8), name="cbar_dummy", step_sizes=(1e-8,1e-8,1e-8), step_counts=(1,1,1)) 
+        dummy_data = Field(np.zeros(8), name="cbar_dummy", step_sizes=(1e-8,1e-8,1e-8), step_counts=(1,1,1)) 
         
         sample_points = np.linspace(self.clims[0], self.clims[-1], 100)
         colors = self.get_color(sample_points)[:,:3]

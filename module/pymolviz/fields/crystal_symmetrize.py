@@ -242,7 +242,7 @@ def _cartesian_point_counts(grid, lo, hi, max_voxels=_MAX_VOXELS):
 def _expand_grid(grid, nmin, nmax, cell_matrix, ops, cell_origin, cover_lo=None, cover_hi=None):
     """Tile copies of the stored map brick (Cartesian XYZ), not wallpaper the unit cell."""
     from ..util.field_sample import grid_values_3d
-    from ..volumetric.GridData import GridData
+    from .field import Field
 
     O = np.asarray(cell_matrix, dtype=float).reshape(3, 3)
     c0 = np.asarray(cell_origin, dtype=float).reshape(3)
@@ -278,7 +278,7 @@ def _expand_grid(grid, nmin, nmax, cell_matrix, ops, cell_origin, cover_lo=None,
         sampled[valid] = values[take[:, 0], take[:, 1], take[:, 2]]
     step_world = (block_hi - block_lo) / np.maximum(n_pts - 1, 1)
     name = getattr(grid, "_name", None) or getattr(grid, "name", None) or "field"
-    dest = GridData(
+    dest = Field(
         sampled.reshape(-1),
         step_sizes=step_world,
         step_counts=n_pts.astype(int) - 1,
@@ -380,16 +380,16 @@ def bind_grid_to_field(field, grid) -> None:
     if field is None or grid is None:
         return
     from .domain import Domain
+    from .lattice import copy_lattice_onto
 
-    if type(field).__name__ == "GridData":
+    if field is grid:
         return
-    old = getattr(field, "grid_data", None)
-    field.grid_data = grid
+    copy_lattice_onto(field, grid)
     try:
-        field.domain = Domain.from_grid(grid)
+        field.domain = Domain.from_grid(field)
     except Exception:
         pass
-    field.dependencies = [grid]
+    field.dependencies = []
     gen = dict(getattr(field, "generator", None) or {})
     if str(gen.get("type") or GEN_IMPORTED) in (GEN_IMPORTED, GEN_PYMOL_MAP, ""):
         gen["origin"] = [float(v) for v in np.asarray(grid.origin, dtype=float).reshape(3)]

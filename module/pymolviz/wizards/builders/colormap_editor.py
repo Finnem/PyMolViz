@@ -634,15 +634,16 @@ class ColormapEditor:
             apply_mapping(updated, persist=False)
 
         def done(updated):
-            if updated is not None:
+            if updated is None:
+                self.set_mapping(original)
+                if not self._ui_alive():
+                    return
+                try:
+                    self._on_changed()
+                except RuntimeError:
+                    pass
                 return
-            self.set_mapping(original)
-            if not self._ui_alive():
-                return
-            try:
-                self._on_changed()
-            except RuntimeError:
-                pass
+            apply_mapping(updated, persist=True)
 
         open_colormap_editor(
             self._widget,

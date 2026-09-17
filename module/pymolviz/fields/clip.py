@@ -414,7 +414,7 @@ def crop_grid_to_aabb(grid, aabb):
     if grid is None or box is None:
         return grid
     from ..util.field_sample import grid_values_3d
-    from ..volumetric.GridData import GridData
+    from .field import Field
 
     origin = np.asarray(grid.origin, dtype=float).reshape(3)
     step = np.asarray(grid.step_sizes, dtype=float).reshape(3)
@@ -435,7 +435,7 @@ def crop_grid_to_aabb(grid, aabb):
     sl = values[i0[0]:i1[0] + 1, i0[1]:i1[1] + 1, i0[2]:i1[2] + 1]
     new_origin = origin + i0.astype(float) * step
     counts = np.array(sl.shape, dtype=int) - 1
-    cropped = GridData(
+    cropped = Field(
         sl.reshape(-1),
         step_sizes=step,
         step_counts=counts,

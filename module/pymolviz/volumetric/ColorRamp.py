@@ -20,14 +20,26 @@ class ColorRamp(Displayable):
 
         self.data = data
         if not issubclass(type(colormap), ColorMap):
-            colormap = ColorMap(self.data.values, colormap)
+            span = clims
+            if span is None:
+                vals = np.asarray(self.data.values, dtype=float).reshape(-1)
+                finite = vals[np.isfinite(vals)]
+                if finite.size:
+                    span = [float(np.min(finite)), float(np.max(finite))]
+                else:
+                    span = [0.0, 1.0]
+            colormap = ColorMap(span, colormap, values_are_single_color=False)
         else:
             if clims is None:
                 clims = colormap.clims
 
         if clims is None:
-            min_val = max([np.min(self.data.values), -np.std(self.data.values) * 5 + np.mean(self.data.values)])
-            max_val = min([np.max(self.data.values), np.std(self.data.values) * 5 + np.mean(self.data.values)])
+            vals = np.asarray(self.data.values, dtype=float).reshape(-1)
+            finite = vals[np.isfinite(vals)]
+            mean = float(np.mean(finite)) if finite.size else 0.0
+            std = float(np.std(finite)) if finite.size else 0.0
+            min_val = max([float(np.min(finite)) if finite.size else 0.0, -std * 5 + mean])
+            max_val = min([float(np.max(finite)) if finite.size else 1.0, std * 5 + mean])
             self.clims = [min_val, max_val]
         else:
             self.clims = clims
@@ -78,6 +90,9 @@ class ColorRamp(Displayable):
         if cmd is None:
             from pymol import cmd
         sample_points, colors = self._ramp_table()
-        from ..Displayable import call_load
-        call_load(self.data, cmd)
-        cmd.ramp_new(self.name, self.data.name, range = sample_points, color = colors, state = self.state)
+        from .map_load import ensure_map_loaded, grid_map_name
+
+        map_name = ensure_map_loaded(cmd, self.data)
+        if not map_name:
+            map_name = grid_map_name(self.data) or self.data.name
+        cmd.ramp_new(self.name, map_name, range=sample_points, color=colors, state=self.state)

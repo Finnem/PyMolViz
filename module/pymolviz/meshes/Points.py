@@ -161,8 +161,9 @@ class Points(Displayable):
         method (str): Interpolation method, one of 'linear' or 'nearest'. Defaults to 'linear'.
 
         Returns:
-            GridData: A GridData object.
+            pymolviz.Field: A Field with a regular voxel lattice.
         """
+        from ..fields.field import Field
         
         # Define the grid range based on the given bounding box or the given points
         margin = 1 + margin
@@ -194,7 +195,7 @@ class Points(Displayable):
         grid_values = grid_values.ravel()
         
 
-        return GridData(grid_values, grid_points, *args, **kwargs)
+        return Field(grid_values, grid_points, *args, **kwargs)
 
     def to_surface(self, distance = 1, grid_spacing = 1, name = None, *args, **kwargs):
         """ Converts the points to a surface.
@@ -203,7 +204,7 @@ class Points(Displayable):
             IsoSurface: An IsoSurface object.
         """
         from ..volumetric.IsoSurface import IsoSurface
-        from ..volumetric.GridData import GridData
+        from ..fields.field import Field
 
         from scipy.spatial import KDTree
         tree = KDTree(self.vertices)
@@ -218,10 +219,10 @@ class Points(Displayable):
         values = distances * grid_spacing
 
         if name is None:
-            gdata = GridData(values, grid_data)
+            gdata = Field(values, grid_data)
             return IsoSurface(gdata, distance, *args, **kwargs)
         else:
-            gdata = GridData(values, grid_data, name=f"{name}_grid")
+            gdata = Field(values, grid_data, name=f"{name}_grid")
             return IsoSurface(gdata, distance, name = f"{name}_surface", *args, **kwargs)
 
 

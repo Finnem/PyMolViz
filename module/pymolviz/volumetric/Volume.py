@@ -1,6 +1,6 @@
 import numpy as np
 import logging
-from .GridData import GridData
+from ..fields.field import Field
 from ..Displayable import Displayable
 from ..ColorMap import ColorMap
 from ..util.colors import _convert_string_color
@@ -76,7 +76,7 @@ def _apply_volume_ramp(cmd, volume_name, ramp_name, flat_list):
 class Volume(Displayable):
     renders_cgo = False
 
-    def __init__(self, grid_data : GridData, name = None, colormap = "RdYlBu_r", alphas = None, clims = None, selection = None, carve = None, state = 1, use_min_max = False, geometry_field_id=None, color_field_id=None, clip_aabb=None, transfer_stops=None):
+    def __init__(self, grid_data : Field, name = None, colormap = "RdYlBu_r", alphas = None, clims = None, selection = None, carve = None, state = 1, use_min_max = False, geometry_field_id=None, color_field_id=None, clip_aabb=None, transfer_stops=None):
         """ 
         Computes and collects pymol commands to load in regular data and display it volumetrically.
 
@@ -97,7 +97,12 @@ class Volume(Displayable):
         self.state = state
         self.is_loaded = False
         self.A_to = np.array([[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]])
-        self.geometry_field_id = str(geometry_field_id) if geometry_field_id else None
+        if geometry_field_id:
+            self.geometry_field_id = str(geometry_field_id)
+        elif grid_data is not None and type(grid_data).__name__ == "Field":
+            self.geometry_field_id = str(grid_data.id)
+        else:
+            self.geometry_field_id = None
         self.color_field_id = str(color_field_id) if color_field_id else None
         from ..fields.clip import normalize_clip_aabb
         self.clip_aabb = normalize_clip_aabb(clip_aabb)

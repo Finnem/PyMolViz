@@ -1,8 +1,10 @@
-"""First-class reusable spatial Field (recipe + domain + cached brick)."""
+"""First-class reusable spatial Field (recipe + domain + voxel lattice)."""
 
 from __future__ import annotations
 
 from typing import Iterable, List, Optional
+
+import numpy as np
 
 from ..Displayable import Displayable
 from .domain import Domain
@@ -17,18 +19,33 @@ from .identity import (
     normalize_kind,
     specs_equal,
 )
+from .lattice import (
+    copy_lattice_onto,
+    has_lattice,
+    init_lattice,
+    load_lattice,
+    script_string as lattice_script_string,
+    to_points as lattice_to_points,
+    get_positions as lattice_get_positions,
+    cut as lattice_cut,
+)
 
 _WRAPS = {}
 
 
 class Field(Displayable):
-    """Sampleable spatial data: generator recipe, domain, and cached GridData."""
+    """Sampleable spatial data: generator recipe, domain, and baked voxels."""
 
     renders_cgo = False
     is_visual = False
 
     def __init__(
         self,
+        values=None,
+        positions=None,
+        step_sizes=None,
+        step_counts=None,
+        origin=None,
         name=None,
         kind=KIND_SCALAR,
         units=None,
@@ -42,16 +59,34 @@ class Field(Displayable):
     ):
         self.kind = normalize_kind(kind)
         self.units = str(units) if units else None
-        self.generator = dict(generator or {"type": GEN_IMPORTED})
-        self.domain = domain if isinstance(domain, Domain) else Domain.from_dict(domain)
         self.provenance = dict(provenance or {})
-        self.grid_data = grid_data
         self.categories = list(categories) if categories else None
         fid = default_color_field_id or self.provenance.get("default_color_field_id")
         self.default_color_field_id = str(fid) if fid else None
+        self._values = None
+        self.origin = None
+        self.step_sizes = None
+        self.step_counts = None
+        self.sorted_indices = None
+        self.A_to = None
+        self.is_loaded = False
         super().__init__(name=name, obj_id=obj_id)
-        if grid_data is not None:
-            self.dependencies = [grid_data]
+        if values is not None:
+            init_lattice(self, values, positions, step_sizes, step_counts, origin)
+        elif grid_data is not None and grid_data is not self:
+            copy_lattice_onto(self, grid_data)
+        if generator is not None:
+            self.generator = dict(generator)
+        elif has_lattice(self):
+            self.generator = imported_generator_from_grid(self)
+        else:
+            self.generator = {"type": GEN_IMPORTED}
+        if domain is not None:
+            self.domain = domain if isinstance(domain, Domain) else Domain.from_dict(domain)
+        elif has_lattice(self):
+            self.domain = Domain.from_grid(self)
+        else:
+            self.domain = Domain.from_dict(None)
 
     def spec(self) -> dict:
         return canonical_field_spec(self)
@@ -60,9 +95,25 @@ class Field(Displayable):
         return field_identity_hash(self.spec())
 
     @property
+    def grid_data(self):
+        return self if has_lattice(self) else None
+
+    @grid_data.setter
+    def grid_data(self, brick):
+        if brick is None or brick is self:
+            return
+        copy_lattice_onto(self, brick)
+
+    @property
     def values(self):
-        brick = ensure_brick(self)
-        return None if brick is None else brick.values
+        if self._values is None:
+            ensure_brick(self)
+        return self._values
+
+    @values.setter
+    def values(self, values):
+        self._values = None if values is None else np.asarray(values).reshape(-1)
+        self.is_loaded = False
 
     def equivalent_to(self, other) -> bool:
         if other is None:
@@ -70,51 +121,94 @@ class Field(Displayable):
         other_spec = canonical_field_spec(other) if not isinstance(other, dict) else other
         return specs_equal(self.spec(), other_spec)
 
+    def get_positions(self):
+        ensure_brick(self)
+        return lattice_get_positions(self)
+
+    def to_points(self, filter=None, *args, **kwargs):
+        ensure_brick(self)
+        return lattice_to_points(self, filter=filter, *args, **kwargs)
+
+    def cut(self, point, normal, interpolation="NN"):
+        ensure_brick(self)
+        return lattice_cut(self, point, normal, interpolation)
+
     def _script_string(self):
         brick = ensure_brick(self)
-        if brick is not None and hasattr(brick, "_script_string"):
-            return brick._script_string()
-        return ""
+        if brick is None:
+            return ""
+        return lattice_script_string(brick)
 
     def load(self, cmd=None):
         brick = ensure_brick(self, cmd=cmd)
-        from ..Displayable import call_load
-        call_load(brick, cmd)
+        if brick is None:
+            return
+        load_lattice(brick, cmd)
+
+    @staticmethod
+    def from_xyz(path, in_bohr=True, *args, **kwargs):
+        from ..util.io import grid_from_xyz
+
+        return grid_from_xyz(path, in_bohr, *args, **kwargs)
+
+    @staticmethod
+    def from_mtz(path, factor_column="FWT", phase_column="PHWT", sample_rate=2.6, min_pos=None, max_pos=None, step_sizes=None, *args, **kwargs):
+        from ..util.io import grid_from_mtz
+
+        return grid_from_mtz(
+            path,
+            factor_column,
+            phase_column,
+            sample_rate,
+            min_pos if min_pos is not None else [0, 0, 0],
+            max_pos if max_pos is not None else [1, 1, 1],
+            step_sizes if step_sizes is not None else [1.0, 1.0, 1.0],
+            *args,
+            **kwargs
+        )
+
+    @staticmethod
+    def from_orca3d(path, *args, **kwargs):
+        from ..util.io import grid_from_orca3d
+
+        return grid_from_orca3d(path, *args, **kwargs)
+
+    @staticmethod
+    def from_ccp4(path):
+        import gemmi  # noqa: F401
 
 
 def ensure_brick(field, cmd=None):
-    """Return cached GridData, generating or wrapping it if needed."""
+    """Return the Field with a baked lattice, generating it if needed."""
     if field is None:
         return None
-    if type(field).__name__ == "GridData":
+    if has_lattice(field):
         return field
-    cached = getattr(field, "grid_data", None)
-    if cached is not None and type(cached).__name__ == "GridData":
-        return cached
     generator = getattr(field, "generator", None) or {}
     domain = getattr(field, "domain", None)
     name = getattr(field, "_name", None) or getattr(field, "name", None) or "field"
     grid, kind, categories = generate_brick(generator, domain, name=name, cmd=cmd)
     if grid is None:
         return None
-    field.grid_data = grid
+    if grid is not field:
+        copy_lattice_onto(field, grid)
     if kind:
         field.kind = kind
     if categories is not None:
         field.categories = list(categories)
-    stops = getattr(grid, "color_stops", None)
+    stops = getattr(grid, "color_stops", None) or getattr(field, "color_stops", None)
     if stops:
         field.color_stops = list(stops)
-    field.dependencies = [grid]
+    field.dependencies = []
     try:
-        grid._name = name
+        field._name = name
     except Exception:
         pass
-    return grid
+    return field
 
 
 def as_field(obj, *, intern=False) -> Optional[Field]:
-    """Wrap GridData / native maps as Field. Reuse an existing wrap when possible."""
+    """Treat a lattice or native map as a Field. Identity when ``obj`` already is one."""
     if obj is None:
         return None
     if type(obj).__name__ == "Field":
@@ -126,14 +220,15 @@ def as_field(obj, *, intern=False) -> Optional[Field]:
     grid = resolve_grid(obj)
     if grid is None:
         return None
+    if type(grid).__name__ == "Field":
+        if intern:
+            return intern_field(grid)
+        return grid
     oid = str(getattr(obj, "id", "") or getattr(grid, "id", "") or "")
     if oid:
         cached = _WRAPS.get(oid)
         if cached is not None:
-            if type(obj).__name__ == "GridData":
-                cached.grid_data = obj
-            elif getattr(cached, "grid_data", None) is None:
-                cached.grid_data = grid
+            cached.grid_data = grid
             return cached
     from ..util.field_sample import field_label
 
@@ -149,10 +244,6 @@ def as_field(obj, *, intern=False) -> Optional[Field]:
             grid_data=grid,
             obj_id=oid,
         )
-        try:
-            field._name = label
-        except Exception:
-            pass
     else:
         field = Field(
             name=label,
@@ -163,12 +254,11 @@ def as_field(obj, *, intern=False) -> Optional[Field]:
             grid_data=grid,
             obj_id=oid or None,
         )
-        try:
-            field._name = label
-        except Exception:
-            pass
-    wrap_key = str(field.id)
-    _WRAPS[wrap_key] = field
+    try:
+        field._name = label
+    except Exception:
+        pass
+    _WRAPS[str(field.id)] = field
     if intern:
         return intern_field(field)
     return field
@@ -199,8 +289,8 @@ def intern_field(field, objects=None) -> Field:
     spec = canonical_field_spec(field)
     existing = find_equivalent_field(spec, iter_fields(objects))
     if existing is not None:
-        if getattr(existing, "grid_data", None) is None and getattr(field, "grid_data", None) is not None:
-            existing.grid_data = field.grid_data
+        if not has_lattice(existing) and has_lattice(field):
+            copy_lattice_onto(existing, field)
         return existing
     try:
         from ..runtime.session import add
@@ -236,6 +326,6 @@ def iter_fields(objects: Optional[Iterable] = None) -> List[Field]:
 
 
 def register_generated_field(field, cmd=None) -> Field:
-    """Bake the brick, auto-reuse identical fields, and remember in session."""
+    """Bake the lattice, auto-reuse identical fields, and remember in session."""
     ensure_brick(field, cmd=cmd)
     return intern_field(field)

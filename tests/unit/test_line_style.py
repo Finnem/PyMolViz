@@ -148,3 +148,23 @@ def test_line_style_independent_margins_roundtrip():
     symmetric = mixed.updated(margin=1.0)
     assert symmetric.start_margin == 1.0
     assert symmetric.end_margin == 1.0
+
+
+def test_arrow_shafts_use_cylinder_not_cone():
+    """PyMOL ray tracing draws CYLINDER, not equal-radius CONE."""
+    from pymolviz.meshes.Arrows import Arrows
+    from pymolviz.util.line_style import LineStyle
+
+    arrows = Arrows(
+        starts=[(0.0, 0.0, 0.0)],
+        ends=[(2.0, 0.0, 0.0)],
+        color="red",
+        name="ray_shaft",
+        quality=3,
+        line_style=LineStyle(ends="Arrow"),
+    )
+    kinds = [t for t in arrows._create_CGO_list() if isinstance(t, str)]
+    assert "CYLINDER" in kinds
+    assert "CONE" not in kinds
+    assert "TRIANGLES" in kinds
+

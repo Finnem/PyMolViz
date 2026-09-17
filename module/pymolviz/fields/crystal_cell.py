@@ -395,7 +395,7 @@ def interpolate_unit_cell(values, cell_matrix, xyz, cell_origin=None):
 def resample_crystal_around_points(grid, points, cell_matrix, padding=4.0, cell_origin=None):
     """Cartesian XYZ brick around ``points``, sampled via unit-cell periodicity."""
     from ..util.field_sample import grid_values_3d
-    from ..volumetric.GridData import GridData
+    from .field import Field
 
     O = np.asarray(cell_matrix, dtype=float).reshape(3, 3)
     pts = np.asarray(points, dtype=float).reshape(-1, 3)
@@ -414,7 +414,7 @@ def resample_crystal_around_points(grid, points, cell_matrix, padding=4.0, cell_
     sampled = interpolate_unit_cell(values, O, sample_xyz, cell_origin=cell_origin)
     step_world = (hi - lo) / np.maximum(n_pts - 1, 1)
     name = getattr(grid, "_name", None) or getattr(grid, "name", None) or "field"
-    dest = GridData(
+    dest = Field(
         sampled.reshape(-1),
         step_sizes=step_world,
         step_counts=n_pts.astype(int) - 1,
@@ -530,13 +530,13 @@ def field_supports_symmetrize(field) -> bool:
     """True for stored maps (imported / native), not atom-generated recipes."""
     if field is None:
         return False
-    if type(field).__name__ == "GridData":
-        return True
     gen = getattr(field, "generator", None) or {}
     kind = str(gen.get("type") or GEN_IMPORTED)
     if kind in (GEN_IMPORTED, GEN_PYMOL_MAP):
         return True
-    if getattr(field, "grid_data", None) is not None and kind in ("", "imported"):
+    from .lattice import has_lattice
+
+    if has_lattice(field) and kind in ("", "imported"):
         return True
     return False
 

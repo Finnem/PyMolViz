@@ -1,11 +1,11 @@
 import numpy as np
 import logging
-from .GridData import GridData
+from ..fields.field import Field
 from .Volume import Volume
 
 
 class IsoVolume(Volume):
-    def __init__(self, grid_data : GridData, name = None, colormap = "RdYlBu_r", alphas = None, clims = None, selection = None, carve = None, margin = 0.05, state = 1, geometry_field_id=None, color_field_id=None, clip_aabb=None, transfer_stops=None):
+    def __init__(self, grid_data : Field, name = None, colormap = "RdYlBu_r", alphas = None, clims = None, selection = None, carve = None, margin = 0.05, state = 1, geometry_field_id=None, color_field_id=None, clip_aabb=None, transfer_stops=None):
         """ 
         Computes and collects pymol commands to load in regular data and display it as multiple, transparent, same colored iso-surfaces using PyMOLs volume command.
 

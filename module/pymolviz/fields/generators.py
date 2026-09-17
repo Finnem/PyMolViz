@@ -169,11 +169,11 @@ def _query_nearest(centers, positions):
 
 
 def _grid_from_values(values, origin, h, name):
-    from ..volumetric.GridData import GridData
+    from .field import Field
 
     values = np.asarray(values, dtype=float)
     counts = [int(n) - 1 for n in values.shape]
-    grid = GridData(
+    grid = Field(
         values.reshape(-1),
         step_sizes=(float(h), float(h), float(h)),
         step_counts=counts,

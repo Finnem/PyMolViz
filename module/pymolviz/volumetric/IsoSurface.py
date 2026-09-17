@@ -1,6 +1,6 @@
 import numpy as np
 import logging
-from .GridData import GridData
+from ..fields.field import Field
 from .ColorRamp import ColorRamp
 from ..Displayable import Displayable
 from ..util.colors import _convert_string_color
@@ -11,7 +11,7 @@ class IsoSurface(Displayable):
     _native_iso_cmd = "isosurface"
     _native_iso_passes_side = True
 
-    def __init__(self, grid_data : GridData, level: float, name = None, color = None, transparency = 0, selection = '', carve = None, side = 1, geometry_field_id=None, color_field_id=None, isovalues=None, clip_aabb=None):
+    def __init__(self, grid_data : Field, level: float, name = None, color = None, transparency = 0, selection = '', carve = None, side = 1, geometry_field_id=None, color_field_id=None, isovalues=None, clip_aabb=None):
         """ 
         Computes and collects pymol commands to load in regular data and display an iso mesh at the given level.
         Note that, since this is based on volumetric data it is different from the pmv.Mesh class.
@@ -39,7 +39,12 @@ class IsoSurface(Displayable):
         )
         self.level = primary_isovalue(self.isovalues, default_level=level)
         self.side = primary_side(self.isovalues, default_side=side)
-        self.geometry_field_id = str(geometry_field_id) if geometry_field_id else None
+        if geometry_field_id:
+            self.geometry_field_id = str(geometry_field_id)
+        elif grid_data is not None and type(grid_data).__name__ == "Field":
+            self.geometry_field_id = str(grid_data.id)
+        else:
+            self.geometry_field_id = None
         self.color_field_id = str(color_field_id) if color_field_id else None
         from ..fields.clip import normalize_clip_aabb
         self.clip_aabb = normalize_clip_aabb(clip_aabb)

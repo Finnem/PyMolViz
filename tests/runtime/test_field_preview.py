@@ -10,6 +10,7 @@ from pymolviz.fields.identity import GEN_DISTANCE
 from pymolviz.points import FixedPoint
 from pymolviz.runtime import session as pmv_session
 from pymolviz.wizards.builders.field_preview import (
+    PREVIEW_COLOR_RAMP_NAME,
     PREVIEW_FIELD_ISO_NAME,
     PREVIEW_FIELD_VISUAL_NAME,
     PREVIEW_GEOM_MAP_NAME,
@@ -185,6 +186,59 @@ def test_field_visual_preview_loads_isomesh_and_volume(fake_cmd):
     preview.cleanup()
     names = [str(n) for n in cmd.get_names("objects")]
     assert not any(str(n).startswith("_pmv_prev_") for n in names)
+    reset_runtime()
+
+
+def test_isosurface_color_field_builds_and_loads_ramp(fake_cmd):
+    from pymolviz.volumetric.ColorRamp import ColorRamp
+    from pymolviz.volumetric.map_load import color_ramp_for_field
+    from pymolviz.wizards.builders.field_visual import make_field_visual
+
+    reset_runtime()
+    cmd = fake_cmd
+    field = _blob_field()
+    ramp = color_ramp_for_field(field.id, colormap="viridis", color_src=field)
+    assert ramp is not None
+    assert isinstance(ramp, ColorRamp)
+    visual = make_field_visual(
+        "IsoSurface",
+        field,
+        "iso_by_field",
+        level=0.4,
+        color_field_id=field.id,
+        color_src=field,
+        colormap="viridis",
+        clims=(0.0, 1.0),
+    )
+    assert isinstance(visual.color, ColorRamp)
+    visual.load(cmd)
+    assert cmd.object_types.get(visual.name) == "object:isosurface"
+    assert cmd.object_types.get(visual.color.name) == "object:ramp"
+    assert (cmd.settings.get(visual.name) or {}).get("color") == visual.color.name
+    reset_runtime()
+
+
+def test_field_visual_preview_colors_isosurface_by_field(fake_cmd):
+    from pymolviz.volumetric.ColorRamp import ColorRamp
+
+    reset_runtime()
+    cmd = fake_cmd
+    field = _blob_field()
+    visual = build_grid_preview_visual(
+        field,
+        kind="IsoSurface",
+        iso_level=0.4,
+        name=PREVIEW_FIELD_VISUAL_NAME,
+        color_field_id=field.id,
+        color_src=field,
+        colormap="viridis",
+        clims=(0.0, 1.0),
+    )
+    assert isinstance(visual.color, ColorRamp)
+    load_preview_field_visual(cmd, visual)
+    assert cmd.object_types.get(PREVIEW_FIELD_VISUAL_NAME) == "object:isosurface"
+    assert cmd.object_types.get(PREVIEW_COLOR_RAMP_NAME) == "object:ramp"
+    assert (cmd.settings.get(PREVIEW_FIELD_VISUAL_NAME) or {}).get("color") == PREVIEW_COLOR_RAMP_NAME
     reset_runtime()
 
 

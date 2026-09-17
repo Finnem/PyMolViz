@@ -33,13 +33,15 @@ FIELD_COLORMAPS = SURFACE_COLORMAPS
 
 
 def resolve_grid(obj):
-    """Return a ``GridData`` from a field object, or None."""
+    """Return the voxel Field (or None)."""
     if obj is None:
         return None
-    if type(obj).__name__ == "GridData":
+    from ..fields.lattice import has_lattice
+
+    if has_lattice(obj):
         return obj
     nested = getattr(obj, "grid_data", None)
-    if nested is not None and type(nested).__name__ == "GridData":
+    if nested is not None and nested is not obj and has_lattice(nested):
         return nested
     if type(obj).__name__ == "Field":
         try:
@@ -275,10 +277,10 @@ def grid_from_pymol_map(name, cmd=None):
             origin = np.zeros(3, dtype=float)
     except Exception:
         pass
-    from ..volumetric.GridData import GridData
+    from ..fields.field import Field
 
     counts = np.asarray(values.shape, dtype=int) - 1
-    grid = GridData(
+    grid = Field(
         values.reshape(-1),
         step_sizes=step,
         step_counts=counts,
