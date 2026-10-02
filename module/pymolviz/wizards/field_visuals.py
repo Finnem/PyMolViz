@@ -187,7 +187,8 @@ _LIBRARY_LIST = 1
 _EDIT_BUTTON_TEXT = "..."
 SYMMETRIZE_BUTTON = "Symmetrize"
 SYMMETRIZE_TIP = (
-    "Choose an object or selection and extend this map's crystal cell around it. "
+    "Choose an object or selection and place this map's crystal cell around it. "
+    "Optionally shrink to the object (with a margin) or double the map box. "
     "Covered targets already lie inside the current map."
 )
 
@@ -1082,9 +1083,16 @@ class FieldVisualsWindow:
         if existing is not None:
             self._close_owned_dialog("_extend_dialog")
 
-        def apply_around(name):
+        def apply_around(name, shrink=False, margin=4.0, double_map=False):
             try:
-                wrapped, info = symmetrize_field_to_selection(cmd, field, selection=name)
+                wrapped, info = symmetrize_field_to_selection(
+                    cmd,
+                    field,
+                    selection=name,
+                    shrink=shrink,
+                    margin=margin,
+                    double_map=double_map,
+                )
             except CrystalError as exc:
                 overlay_warning(self._window, "PyMOLViz", str(exc))
                 return
@@ -1099,7 +1107,7 @@ class FieldVisualsWindow:
             map_lo,
             map_hi,
             current=current,
-            on_extend=apply_around,
+            on_apply=apply_around,
         )
         if opened is None:
             apply_around(current)
@@ -1108,6 +1116,12 @@ class FieldVisualsWindow:
 
     def _after_symmetrize(self, row, wrapped, info):
         copied = "copied neighboring cells" if info.get("copied") else "moved by a lattice vector"
+        if info.get("shrunk") and info.get("double_map"):
+            copied = "%s, shrunk to the object, and doubled" % copied
+        elif info.get("shrunk"):
+            copied = "%s and shrunk to the object" % copied
+        elif info.get("double_map"):
+            copied = "%s and doubled" % copied
         try:
             self.wizard.prompt = ["Map %s (%s)." % (copied, row.get("name") or "field")]
             self.wizard.cmd.refresh_wizard()

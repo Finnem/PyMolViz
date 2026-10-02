@@ -464,3 +464,108 @@ def test_visual_point_field_choice_clears_on_solid_color():
     solid = painted.with_color((1.0, 0.0, 0.0, 1.0))
     assert solid.field_id is None
     assert solid.color[0] == pytest.approx(1.0)
+
+
+def test_without_auto_zoom_disables_then_restores():
+    from tests.fakes.cmd import FakeCmd
+
+    from pymolviz.util.pymol_helpers import without_auto_zoom
+
+    cmd = FakeCmd()
+    cmd.set("auto_zoom", 1)
+    seen = []
+
+    def _probe():
+        seen.append(cmd.get("auto_zoom"))
+
+    with without_auto_zoom(cmd):
+        _probe()
+    assert seen == [0]
+    assert cmd.get("auto_zoom") == 1
+
+
+def test_load_without_zoom_passes_zoom_zero():
+    from tests.fakes.cmd import FakeCmd
+
+    from pymolviz.util.pymol_helpers import load_without_zoom
+
+    cmd = FakeCmd()
+    seen = {}
+
+    def _load(brick, name, zoom=None):
+        seen["zoom"] = zoom
+        seen["name"] = name
+
+    load_without_zoom(cmd, _load, object(), "density")
+    assert seen == {"zoom": 0, "name": "density"}
+
+
+def test_grid_from_pymol_map_does_not_set_on_map_selection():
+    _NATIVE_GRIDS.clear()
+    values = np.arange(8, dtype=float).reshape(2, 2, 2)
+    cmd = _map_cmd(values)
+    calls = []
+    orig = cmd.set
+
+    def _set(key, value, name="", quiet=1):
+        calls.append((str(key), value, str(name)))
+        return orig(key, value, name, quiet)
+
+    cmd.set = _set
+    assert grid_from_pymol_map("density", cmd=cmd) is not None
+    assert all(name == "" for _key, _value, name in calls)
+
+
+def test_grid_from_pymol_map_does_not_call_get_symmetry():
+    _NATIVE_GRIDS.clear()
+    values = np.arange(8, dtype=float).reshape(2, 2, 2)
+    cmd = _map_cmd(values)
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("get_symmetry must not run on map objects")
+
+    cmd.get_symmetry = _boom
+    assert grid_from_pymol_map("density", cmd=cmd) is not None
+
+
+def test_grid_from_pymol_map_does_not_call_get_extent():
+    _NATIVE_GRIDS.clear()
+    values = np.arange(8, dtype=float).reshape(2, 2, 2)
+    cmd = _map_cmd(values)
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("get_extent must not run on map objects")
+
+    cmd.get_extent = _boom
+    grid = grid_from_pymol_map("density", cmd=cmd)
+    assert grid is not None
+    assert sample_grid(grid, [(0.0, 0.0, 0.0)])[0] == pytest.approx(values[0, 0, 0])
+
+
+def test_stamp_cartesian_map_cell_does_not_set_symmetry_on_map():
+    from tests.fakes.cmd import FakeCmd
+
+    from pymolviz.fields.field import Field
+    from pymolviz.volumetric.map_load import _stamp_cartesian_map_cell
+
+    cmd = FakeCmd()
+    targets = []
+    orig = cmd.set_symmetry
+
+    def _set(selection, *args, **kwargs):
+        targets.append(str(selection))
+        return orig(selection, *args, **kwargs)
+
+    cmd.set_symmetry = _set
+    grid = Field(
+        np.zeros(60, dtype=float),
+        step_sizes=(2.0, 2.0, 2.0),
+        step_counts=(4, 3, 2),
+        origin=(0.0, 0.0, 0.0),
+        name="density",
+    )
+    _stamp_cartesian_map_cell(cmd, "density", grid)
+    assert "density" not in targets
+    assert cmd.symmetries["density"][:3] == pytest.approx([8.0, 6.0, 4.0])
+    notes = cmd.settings.get("", {}).get("_feedback") or []
+    assert any(action == "disable" and "selector" in module for action, module, _mask in notes)

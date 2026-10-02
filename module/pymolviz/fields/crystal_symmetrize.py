@@ -24,6 +24,7 @@ _DUMMY_CELL_LENGTH = 1.0
 
 from .crystal_cell import (
     CrystalError,
+    DEFAULT_FIT_MARGIN,
     _EPS,
     _is_dummy_cell,
     aabb_contains_points,
@@ -33,6 +34,7 @@ from .crystal_cell import (
     cell_from_aabb,
     covering_map_copy_range,
     field_supports_symmetrize,
+    fit_result_aabb,
     grid_contains_points,
     grid_is_crystal_axis,
     map_corners,
@@ -45,8 +47,22 @@ from .crystal_cell import (
 from .crystal_coverage import selection_points
 
 
+def _cmd_type(cmd, name) -> str:
+    getter = getattr(cmd, "get_type", None)
+    if not callable(getter):
+        return ""
+    try:
+        return str(getter(name) or "").lower()
+    except Exception:
+        return ""
+
+
 def _symmetry_from_cmd(cmd, name):
+    """CRYST1 from a molecule. Never ``get_symmetry`` on a map (selector error)."""
     if cmd is None or not name:
+        return None
+    typ = _cmd_type(cmd, name)
+    if typ and "molecule" not in typ:
         return None
     getter = getattr(cmd, "get_symmetry", None)
     if not callable(getter):
@@ -61,6 +77,8 @@ def cell_for_grid(grid, cmd=None, map_name=None, cell=None, spacegroup=None):
     """Prefer a real unit cell (map or molecule CRYST1); never PyMOL's 1 Å dummy."""
     lo, hi = map_corners(grid)
     parsed = parse_cell_params(cell)
+    if parsed is None:
+        parsed = parse_cell_params(getattr(grid, "_crystal_cell", None))
     if parsed is not None and _is_dummy_cell(parsed[0]):
         parsed = None
     if parsed is None and cmd is not None:
@@ -90,7 +108,7 @@ def cell_for_grid(grid, cmd=None, map_name=None, cell=None, spacegroup=None):
 
 
 def _copy_grid_meta(src, dest):
-    for attr in ("id", "_name", "_crystal_cell"):
+    for attr in ("id", "_name", "_crystal_cell", "_crystal_O"):
         val = getattr(src, attr, None)
         if val:
             try:
@@ -100,7 +118,105 @@ def _copy_grid_meta(src, dest):
     ttt = getattr(src, "A_to", None)
     if ttt is not None:
         dest.A_to = np.array(ttt, copy=True)
+    gen = getattr(src, "generator", None)
+    if isinstance(gen, dict):
+        try:
+            dest.generator = dict(gen)
+        except Exception:
+            pass
     return dest
+
+
+def double_map_sample_shape(shape):
+    """PyMOL ``map_double``: ``2n − 1`` samples along each axis."""
+    return tuple(max(int(2 * int(n) - 1), 2) for n in shape)
+
+
+def _linear_upsample_odd(values, new_shape):
+    out = np.asarray(values, dtype=float)
+    for ax, n_new in enumerate(new_shape):
+        n_old = int(out.shape[ax])
+        n_new = int(n_new)
+        if n_new == n_old:
+            continue
+        idx = np.linspace(0.0, n_old - 1, n_new)
+        i0 = np.floor(idx).astype(int)
+        i1 = np.minimum(i0 + 1, n_old - 1)
+        t = idx - i0
+        shape = [1] * out.ndim
+        shape[ax] = n_new
+        t = t.reshape(shape)
+        sl0 = [slice(None)] * out.ndim
+        sl1 = [slice(None)] * out.ndim
+        sl0[ax] = i0
+        sl1[ax] = i1
+        out = (1.0 - t) * out[tuple(sl0)] + t * out[tuple(sl1)]
+    return out
+
+
+def upsample_map_double(grid):
+    """Denser sampling of the same world box (``2n − 1`` points, half step)."""
+    from ..util.field_sample import grid_values_3d
+    from .field import Field
+
+    values = np.asarray(grid_values_3d(grid), dtype=float)
+    if values.ndim != 3 or values.size == 0:
+        raise CrystalError("Double map needs a 3D density grid.")
+    old = values.shape
+    new = double_map_sample_shape(old)
+    try:
+        from scipy.ndimage import zoom
+
+        factors = tuple(float(nn) / max(float(oo), 1.0) for nn, oo in zip(new, old))
+        denser = np.asarray(zoom(values, factors, order=1), dtype=float)
+    except Exception:
+        denser = _linear_upsample_odd(values, new)
+    denser = denser[: new[0], : new[1], : new[2]]
+    if denser.shape != new:
+        denser = _linear_upsample_odd(values, new)
+    origin = np.asarray(getattr(grid, "origin", (0.0, 0.0, 0.0)), dtype=float).reshape(3)
+    step = np.asarray(getattr(grid, "step_sizes", (1.0, 1.0, 1.0)), dtype=float).reshape(3)
+    name = getattr(grid, "_name", None) or getattr(grid, "name", None)
+    dest = Field(
+        denser.reshape(-1),
+        step_sizes=tuple(float(v) * 0.5 for v in step),
+        step_counts=tuple(int(s) - 1 for s in denser.shape),
+        origin=tuple(float(v) for v in origin),
+        name=name,
+        generator=getattr(grid, "generator", None),
+    )
+    dest = _copy_grid_meta(grid, dest)
+    if grid_is_crystal_axis(grid):
+        from .crystal_cell import attach_crystal_axis_frame
+
+        O = getattr(grid, "_crystal_O", None)
+        if O is not None:
+            attach_crystal_axis_frame(dest, O)
+    if name:
+        try:
+            dest._name = name
+        except Exception:
+            pass
+    return dest
+
+
+def apply_map_double(grid, cmd=None, name=None):
+    """Prefer PyMOL ``map_double``; otherwise upsample in process."""
+    label = str(name or getattr(grid, "_name", None) or getattr(grid, "name", None) or "map")
+    if cmd is not None and callable(getattr(cmd, "map_double", None)):
+        try:
+            from ..util.field_sample import PYMOL_MAP_ID_PREFIX, forget_native_grid, grid_from_pymol_map
+            from ..volumetric.map_load import load_grid_as_map
+
+            load_grid_as_map(grid, label, cmd)
+            cmd.map_double(label)
+            forget_native_grid(PYMOL_MAP_ID_PREFIX + label)
+            doubled = grid_from_pymol_map(label, cmd=cmd)
+            if doubled is not None:
+                return _copy_grid_meta(grid, doubled)
+        except Exception:
+            pass
+    return upsample_map_double(grid)
 
 
 def _brick_dwarfs_selection(map_lo, map_hi, points, cell_matrix, factor=0.15) -> bool:
@@ -143,7 +259,11 @@ def _shift_map_onto_points(grid, points, cell_matrix):
     shift, all_inside = best_lattice_shift(lo, hi, pts, O)
     delta = O @ shift.astype(float)
     dwarfs = _brick_dwarfs_selection(lo, hi, pts, O)
-    if (not dwarfs) and (all_inside or aabb_contains_points(lo + delta, hi + delta, pts)):
+    lattice_covers = all_inside or aabb_contains_points(lo + delta, hi + delta, pts)
+    if lattice_covers:
+        # Keep a lattice image even when the brick dwarfs the selection.
+        # Cartesian sit-on-protein would put the wrong density on a ligand
+        # that sits outside the home cell (e.g. BAN at x ≈ −22 Å).
         moved = _shift_origin(grid, delta)
         return _clear_crystal_tile_meta(moved), shift, True
     map_center = 0.5 * (lo + hi)
@@ -290,6 +410,47 @@ def _expand_grid(grid, nmin, nmax, cell_matrix, ops, cell_origin, cover_lo=None,
     return dest
 
 
+def _aabb_inside(inner_lo, inner_hi, outer_lo, outer_hi, eps=1e-5) -> bool:
+    inner_lo = np.asarray(inner_lo, dtype=float).reshape(3)
+    inner_hi = np.asarray(inner_hi, dtype=float).reshape(3)
+    outer_lo = np.asarray(outer_lo, dtype=float).reshape(3)
+    outer_hi = np.asarray(outer_hi, dtype=float).reshape(3)
+    return bool(np.all(inner_lo >= outer_lo - eps) and np.all(inner_hi <= outer_hi + eps))
+
+
+def fit_grid_to_world_aabb(grid, lo, hi, cell_matrix, ops, cell_origin, spacegroup="P1"):
+    """Crop or tile ``grid`` so the brick matches world AABB ``[lo, hi]``."""
+    from .clip import aabb_corners, crop_grid_to_aabb
+
+    if grid is None or lo is None or hi is None:
+        return grid
+    lo = np.asarray(lo, dtype=float).reshape(3)
+    hi = np.asarray(hi, dtype=float).reshape(3)
+    if np.any(hi <= lo):
+        return grid
+    map_lo, map_hi = map_world_aabb(grid)
+    dest = grid
+    if not _aabb_inside(lo, hi, map_lo, map_hi):
+        corners = aabb_corners([lo.tolist(), hi.tolist()])
+        nmin, nmax = covering_map_copy_range(map_lo, map_hi, corners, cell_matrix)
+        dest = _expand_grid(grid, nmin, nmax, cell_matrix, ops, cell_origin)
+        dest = _clear_crystal_tile_meta(dest)
+    cropped = crop_grid_to_aabb(dest, [lo.tolist(), hi.tolist()])
+    if cropped is None:
+        attach_crystal_cell(dest, cell_matrix, spacegroup)
+        return dest
+    name = getattr(dest, "_name", None) or getattr(dest, "name", None)
+    cropped = _copy_grid_meta(dest, cropped)
+    if name:
+        try:
+            cropped._name = name
+            cropped.name = name
+        except Exception:
+            pass
+    attach_crystal_cell(cropped, cell_matrix, spacegroup)
+    return cropped
+
+
 def symmetrize_grid_to_points(
     grid,
     points,
@@ -299,6 +460,9 @@ def symmetrize_grid_to_points(
     padding=0.0,
     cmd=None,
     map_name=None,
+    shrink=False,
+    margin=DEFAULT_FIT_MARGIN,
+    double_map=False,
 ):
     """Move and/or tile ``grid`` so ``points`` lie inside the brick.
 
@@ -315,57 +479,83 @@ def symmetrize_grid_to_points(
         grid, cmd=cmd, map_name=map_name, cell=cell, spacegroup=spacegroup
     )
     attach_crystal_cell(grid, O, sg)
+
+    def _finish(dest, info):
+        fit = fit_result_aabb(
+            *map_world_aabb(dest),
+            pts.min(axis=0),
+            pts.max(axis=0),
+            shrink=shrink,
+            margin=margin,
+        )
+        extra = {
+            "shrunk": bool(shrink),
+            "double_map": bool(double_map),
+            "margin": float(margin or 0.0),
+        }
+        if fit is not None:
+            ops = ops_from_spacegroup(sg)
+            dest = fit_grid_to_world_aabb(dest, fit[0], fit[1], O, ops, cell_origin, sg)
+            extra["copied"] = bool(info.get("copied"))
+            extra["moved"] = True
+        if double_map:
+            dest = apply_map_double(dest, cmd=cmd, name=map_name)
+            extra["copied"] = True
+            extra["moved"] = True
+        info.update(extra)
+        return dest, info
+
     if grid_is_crystal_axis(grid) and not brick_cell:
         dest = resample_crystal_around_points(
             grid, pts, O, padding=padding, cell_origin=cell_origin
         )
         attach_crystal_cell(dest, O, sg)
-        return dest, {
+        return _finish(dest, {
             "moved": True,
             "copied": True,
             "resampled": True,
             "shift": [0, 0, 0],
             "brick_cell": brick_cell,
             "spacegroup": sg,
-        }
+        })
     ops = ops_from_spacegroup(sg)
     already = grid_contains_points(grid, pts)
     dwarfs = _brick_dwarfs_selection(lo, hi, pts, O)
     if already and not dwarfs:
-        return _clear_crystal_tile_meta(grid), {
+        return _finish(_clear_crystal_tile_meta(grid), {
             "moved": False,
             "copied": False,
             "shift": [0, 0, 0],
             "brick_cell": brick_cell,
             "spacegroup": sg,
-        }
+        })
     moved, shift, placed = _shift_map_onto_points(grid, pts, O)
     if placed:
         attach_crystal_cell(moved, O, sg)
-        return moved, {
+        return _finish(moved, {
             "moved": True,
             "copied": False,
             "shift": np.asarray(shift, dtype=int).reshape(3).tolist(),
             "brick_cell": brick_cell,
             "spacegroup": sg,
-        }
+        })
     pad = float(padding or 0.0)
     nmin, nmax = covering_map_copy_range(lo, hi, pts, O, padding=pad)
     n_cells = np.maximum(np.asarray(nmax, dtype=int) - np.asarray(nmin, dtype=int), 1)
     if int(np.prod(n_cells)) > 8:
         moved, shift, placed = _shift_map_onto_points(grid, pts, O)
         attach_crystal_cell(moved, O, sg)
-        return moved, {
+        return _finish(moved, {
             "moved": True,
             "copied": False,
             "shift": np.asarray(shift, dtype=int).reshape(3).tolist(),
             "brick_cell": brick_cell,
             "spacegroup": sg,
-        }
+        })
     expanded = _expand_grid(grid, nmin, nmax, O, ops, cell_origin)
     expanded = _clear_crystal_tile_meta(expanded)
     attach_crystal_cell(expanded, O, sg)
-    return expanded, {
+    return _finish(expanded, {
         "moved": True,
         "copied": True,
         "shift": np.asarray(shift, dtype=int).reshape(3).tolist(),
@@ -373,7 +563,7 @@ def symmetrize_grid_to_points(
         "spacegroup": sg,
         "nmin": nmin.tolist(),
         "nmax": nmax.tolist(),
-    }
+    })
 
 
 def bind_grid_to_field(field, grid) -> None:
@@ -382,6 +572,9 @@ def bind_grid_to_field(field, grid) -> None:
     from .domain import Domain
     from .lattice import copy_lattice_onto
 
+    previous = getattr(field, "grid_data", None)
+    if previous is None:
+        previous = field
     if field is grid:
         return
     copy_lattice_onto(field, grid)
@@ -427,7 +620,8 @@ def bind_grid_to_field(field, grid) -> None:
                 pass
             continue
         held = getattr(obj, "grid_data", None)
-        if held is old or (fid and str(getattr(obj, "geometry_field_id", "") or "") == fid):
+        same_field = bool(fid) and str(getattr(obj, "geometry_field_id", "") or "") == fid
+        if held is previous or held is field or held is grid or same_field:
             obj.grid_data = grid
 
 
@@ -437,6 +631,9 @@ def apply_symmetrize_field(
     selection=None,
     padding=0.0,
     cell=None,
+    shrink=False,
+    margin=DEFAULT_FIT_MARGIN,
+    double_map=False,
 ):
     """Move/tile the field brick. Does not reload PyMOL objects."""
     from .field import as_field, ensure_brick
@@ -458,6 +655,9 @@ def apply_symmetrize_field(
         padding=padding,
         cmd=cmd,
         map_name=map_name,
+        shrink=shrink,
+        margin=margin,
+        double_map=double_map,
     )
     bind_grid_to_field(wrapped, new_grid)
     try:

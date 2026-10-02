@@ -550,7 +550,9 @@ class FromSelectionFieldPage(PointTableBuilderPage):
             object_name = self._domain_object.text().strip() or None
             if object_name:
                 try:
-                    extent = self.cmd.get_extent(object_name)
+                    from ...util.sanitize import object_sele
+
+                    extent = self.cmd.get_extent(object_sele(object_name))
                     aabb = [list(extent[0]), list(extent[1])]
                 except Exception:
                     aabb = None

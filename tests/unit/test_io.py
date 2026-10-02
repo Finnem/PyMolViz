@@ -176,7 +176,7 @@ def test_mtz_inventory_lists_maps_and_columns():
     picked = selected_mtz_maps(inv, ["DELFWT|PHDELWT", "FC|PHIC"])
     assert [row["factor"] for row in picked] == ["DELFWT", "FC"]
     assert picked[0]["title"] == "Fo-Fc"
-    assert mtz_field_basename("1abc", picked[0]) == "1abc_Fo-Fc"
+    assert mtz_field_basename("1abc", picked[0]) == "1abc_Fo_Fc"
 
 
 def test_load_mtz_fields_one_field_per_map(monkeypatch):
@@ -202,4 +202,4 @@ def test_load_mtz_fields_one_field_per_map(monkeypatch):
     )
     assert [field.generator.get("factor_column") for field in fields] == ["FWT", "DELFWT"]
     assert [field.generator.get("phase_column") for field in fields] == ["PHWT", "PHDELWT"]
-    assert names == ["1abc_2Fo-Fc", "1abc_Fo-Fc"]
+    assert names == ["1abc_2Fo_Fc", "1abc_Fo_Fc"]

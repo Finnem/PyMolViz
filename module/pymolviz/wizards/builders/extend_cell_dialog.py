@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ...fields.crystal import coverage_sketch
+from ...fields.crystal import DEFAULT_FIT_MARGIN, coverage_sketch, fit_result_aabb
 from ..pick import (
     bind_tool_window,
     configure_overlay_dialog,
@@ -11,14 +11,33 @@ from ..pick import (
     qt_widget_alive,
 )
 from ..tooltips import apply_required_tooltips
+from ..widgets.ascii_locale import apply_ascii_float_locale
+from ..widgets.spin_step import STEP_ANGSTROM, apply_spin_step
+from ..widgets.switch import make_switch
 from ..widgets.theme import apply_wizard_page_style, mark_primary_button, muted_label_css
 
 EXTEND_DIALOG_TITLE = "Extend map around"
-EXTEND_BUTTON = "Extend"
+EXTEND_BUTTON = "Apply"
 EXTEND_CANCEL = "Cancel"
 EXTEND_LIST_TIP = "Object or selection the map cell should cover."
-EXTEND_SKETCH_TIP = "Map and target in the plane of largest offset, with axis labels."
-EXTEND_APPLY_TIP = "Copy neighboring unit cells so this target lies inside the map."
+EXTEND_SKETCH_TIP = (
+    "Map (blue), target, and the shrink box (dashed) in the plane of largest offset."
+)
+EXTEND_APPLY_TIP = (
+    "Place the map on this target, then optionally shrink to the object and/or "
+    "double the sampling (same box, finer grid)."
+)
+SHRINK_LABEL = "Shrink to object"
+DOUBLE_MAP_LABEL = "Double map"
+MARGIN_LABEL = "Margin (Å)"
+SHRINK_TIP = (
+    "Crop the map to the target bounding box plus the margin after placing it."
+)
+DOUBLE_MAP_TIP = (
+    "Same as PyMOL map_double: keep the current box and insert mid-samples "
+    "(2n − 1 points, half the step) so the density is finer, not larger."
+)
+MARGIN_TIP = "Extra Ångströms kept on each side when shrinking to the object."
 STATUS_LABEL = {
     "inside": "Covered",
     "partial": "Partly covered",
@@ -28,6 +47,8 @@ STATUS_LABEL = {
 KIND_LABEL = {"object": "Object", "selection": "Selection"}
 MAP_FILL = (186, 214, 246, 160)
 MAP_EDGE = (24, 82, 158)
+FIT_FILL = (196, 176, 232, 70)
+FIT_EDGE = (92, 48, 168)
 TARGET_FILL = {
     "inside": (186, 232, 214, 140),
     "partial": (252, 226, 196, 150),
@@ -59,6 +80,8 @@ class _CoverageSketch:
         self._map_hi = map_hi
         self._target_lo = None
         self._target_hi = None
+        self._fit_lo = None
+        self._fit_hi = None
         self._status = "empty"
         widget = QtWidgets.QWidget(parent)
         widget.setObjectName("pmvExtendCoverageSketch")
@@ -70,9 +93,11 @@ class _CoverageSketch:
         self._QtCore = QtCore
         self._QtGui = QtGui
 
-    def set_target(self, lo, hi, status):
+    def set_target(self, lo, hi, status, fit_lo=None, fit_hi=None):
         self._target_lo = lo
         self._target_hi = hi
+        self._fit_lo = fit_lo
+        self._fit_hi = fit_hi
         self._status = str(status or "empty")
         try:
             self.widget.update()
@@ -89,9 +114,17 @@ class _CoverageSketch:
             inset = 22
             box = rect.adjusted(inset, 8, -8, -inset)
             sketch = coverage_sketch(
-                self._map_lo, self._map_hi, self._target_lo, self._target_hi
+                self._map_lo,
+                self._map_hi,
+                self._target_lo,
+                self._target_hi,
+                fit_lo=self._fit_lo,
+                fit_hi=self._fit_hi,
             )
             self._draw_rect(painter, QtGui, box, sketch["map"], MAP_FILL, MAP_EDGE, 2)
+            fit = sketch.get("fit")
+            if fit is not None:
+                self._draw_rect(painter, QtGui, box, fit, FIT_FILL, FIT_EDGE, 2, dashed=True)
             target = sketch.get("target")
             if target is not None:
                 fill = TARGET_FILL.get(self._status, TARGET_FILL["empty"])
@@ -102,13 +135,18 @@ class _CoverageSketch:
         finally:
             painter.end()
 
-    def _draw_rect(self, painter, QtGui, box, spec, fill, edge, width):
+    def _draw_rect(self, painter, QtGui, box, spec, fill, edge, width, dashed=False):
         x = box.x() + spec["x"] * box.width()
         y = box.y() + spec["y"] * box.height()
         w = max(spec["w"] * box.width(), 2.0)
         h = max(spec["h"] * box.height(), 2.0)
         painter.setBrush(QtGui.QColor(*fill))
-        painter.setPen(QtGui.QPen(QtGui.QColor(*edge), width))
+        pen = QtGui.QPen(QtGui.QColor(*edge), width)
+        if dashed:
+            style = getattr(getattr(self._QtCore, "Qt", None), "DashLine", None)
+            if style is not None:
+                pen.setStyle(style)
+        painter.setPen(pen)
         painter.drawRect(int(x), int(y), int(w), int(h))
 
     def _draw_axis_labels(self, painter, QtGui, box, names):
@@ -138,6 +176,7 @@ def open_extend_cell_dialog(
     *,
     current=None,
     on_extend=None,
+    on_apply=None,
     on_cancel=None,
 ):
     """Show the object/selection picker. Returns the dialog or None."""
@@ -151,7 +190,7 @@ def open_extend_cell_dialog(
     dialog.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
     configure_overlay_dialog(dialog, overlay if overlay is not None else parent)
     apply_wizard_page_style(dialog)
-    dialog.resize(480, 420)
+    dialog.resize(480, 500)
 
     rows = list(rows or [])
     sketch = _CoverageSketch(dialog, map_lo, map_hi)
@@ -163,8 +202,28 @@ def open_extend_cell_dialog(
         item.setData(getattr(QtCore.Qt, "UserRole", 256), dict(row))
         listing.addItem(item)
 
+    shrink = make_switch(SHRINK_LABEL)
+    shrink.setObjectName("pmvExtendShrink")
+    double_map = make_switch(DOUBLE_MAP_LABEL)
+    double_map.setObjectName("pmvExtendDoubleMap")
+    margin = QtWidgets.QDoubleSpinBox()
+    margin.setObjectName("pmvExtendMargin")
+    margin.setRange(0.0, 50.0)
+    margin.setDecimals(2)
+    margin.setValue(float(DEFAULT_FIT_MARGIN))
+    apply_spin_step(margin, STEP_ANGSTROM, decimals=2)
+    apply_ascii_float_locale(margin, QtCore)
+    options = QtWidgets.QHBoxLayout()
+    options.addWidget(shrink)
+    options.addWidget(double_map)
+    options.addSpacing(12)
+    options.addWidget(QtWidgets.QLabel(MARGIN_LABEL))
+    options.addWidget(margin)
+    options.addStretch(1)
+
     hint = QtWidgets.QLabel(
-        "Blue is the current map. The other box is the selected object or selection. "
+        "Blue is the current map. The solid box is the selected object. "
+        "Dashed purple is the shrink / double-map result. "
         "The view uses the two axes with the largest offset (labeled on the sketch). "
         "Covered means every atom already sits inside the map."
     )
@@ -172,7 +231,8 @@ def open_extend_cell_dialog(
     hint.setStyleSheet(muted_label_css())
 
     legend = QtWidgets.QLabel(
-        "Blue: map   ·   Green: covered   ·   Orange: needs extend   ·   Axes labeled on the sketch"
+        "Blue: map   ·   Green: covered   ·   Orange: needs extend   ·   "
+        "Dashed: shrink / double-map   ·   Axes labeled on the sketch"
     )
     legend.setStyleSheet(muted_label_css())
 
@@ -184,6 +244,9 @@ def open_extend_cell_dialog(
         [
             (listing, EXTEND_LIST_TIP, "Extend target"),
             (sketch.widget, EXTEND_SKETCH_TIP, "Coverage sketch"),
+            (shrink, SHRINK_TIP, SHRINK_LABEL),
+            (double_map, DOUBLE_MAP_TIP, DOUBLE_MAP_LABEL),
+            (margin, MARGIN_TIP, MARGIN_LABEL),
             (extend_btn, EXTEND_APPLY_TIP, EXTEND_BUTTON),
             (cancel_btn, "Close without changing the map.", EXTEND_CANCEL),
         ],
@@ -197,24 +260,57 @@ def open_extend_cell_dialog(
         data = item.data(getattr(QtCore.Qt, "UserRole", 256))
         return data if isinstance(data, dict) else None
 
+    def _fit_box(row):
+        if row is None:
+            return None
+        return fit_result_aabb(
+            map_lo,
+            map_hi,
+            row.get("lo"),
+            row.get("hi"),
+            shrink=bool(shrink.isChecked()),
+            margin=float(margin.value()),
+            double_map=bool(double_map.isChecked()),
+        )
+
     def _sync_sketch():
         row = _current_row()
         if row is None:
             sketch.set_target(None, None, "empty")
             extend_btn.setEnabled(False)
             return
-        sketch.set_target(row.get("lo"), row.get("hi"), row.get("status"))
+        fit = _fit_box(row)
+        fit_lo = fit_hi = None
+        if fit is not None:
+            fit_lo, fit_hi = fit
+        sketch.set_target(row.get("lo"), row.get("hi"), row.get("status"), fit_lo, fit_hi)
         extend_btn.setEnabled(True)
+        margin.setEnabled(bool(shrink.isChecked()))
+
+    def _emit(name, **opts):
+        if on_apply is not None:
+            on_apply(name, **opts)
+            return
+        if on_extend is not None:
+            on_extend(name)
 
     def _accept():
         row = _current_row()
-        if row is None or on_extend is None:
+        if row is None or (on_apply is None and on_extend is None):
             dialog.reject()
             return
-        on_extend(str(row.get("name") or ""))
+        _emit(
+            str(row.get("name") or ""),
+            shrink=bool(shrink.isChecked()),
+            margin=float(margin.value()),
+            double_map=bool(double_map.isChecked()),
+        )
         dialog.accept()
 
     listing.currentRowChanged.connect(lambda *_: _sync_sketch())
+    shrink.toggled.connect(lambda *_: _sync_sketch())
+    double_map.toggled.connect(lambda *_: _sync_sketch())
+    margin.valueChanged.connect(lambda *_: _sync_sketch())
     extend_btn.clicked.connect(_accept)
     cancel_btn.clicked.connect(dialog.reject)
     if on_cancel is not None:
@@ -233,6 +329,7 @@ def open_extend_cell_dialog(
     root = QtWidgets.QVBoxLayout(dialog)
     root.addWidget(listing, stretch=1)
     root.addWidget(sketch.widget)
+    root.addLayout(options)
     root.addWidget(legend)
     root.addWidget(hint)
     root.addWidget(buttons)

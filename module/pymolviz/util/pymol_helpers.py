@@ -1,6 +1,107 @@
 """Small PyMOL cmd wrappers used by wizards and interactive tools."""
 
+from contextlib import contextmanager
+
 from .view import translation_ttt
+
+
+@contextmanager
+def silence_selector_errors(cmd_):
+    """Selector-Error prints even when a map object command still succeeds."""
+    feedback = getattr(cmd_, "feedback", None)
+    if callable(feedback):
+        try:
+            feedback("disable", "selector", "errors actions results")
+        except Exception:
+            feedback = None
+    try:
+        yield
+    finally:
+        if callable(feedback):
+            try:
+                feedback("enable", "selector", "errors actions results")
+            except Exception:
+                pass
+
+
+@contextmanager
+def without_auto_zoom(cmd_):
+    """Keep ``load_brick`` / ``cmd.load`` from zooming a map as if it were atoms."""
+    prev = None
+    getter = getattr(cmd_, "get_setting_int", None)
+    if not callable(getter):
+        getter = getattr(cmd_, "get", None)
+    setter = getattr(cmd_, "set", None)
+    if callable(getter):
+        try:
+            prev = getter("auto_zoom")
+        except Exception:
+            prev = None
+    if callable(setter):
+        try:
+            setter("auto_zoom", 0)
+        except Exception:
+            pass
+    try:
+        yield
+    finally:
+        if prev is not None and callable(setter):
+            try:
+                setter("auto_zoom", prev)
+            except Exception:
+                pass
+
+
+def stamp_orthogonal_map_cell(cmd_, name, a, b, c) -> None:
+    """Assign a P1 box to a map without ``set_symmetry(map)`` (that is a selection)."""
+    if cmd_ is None or not name:
+        return
+    a = float(a)
+    b = float(b)
+    c = float(c)
+    tmp = "_pmv_map_cell"
+    setter = getattr(cmd_, "set_symmetry", None)
+    copier = getattr(cmd_, "symmetry_copy", None)
+    if not callable(setter):
+        return
+    try:
+        with without_auto_zoom(cmd_):
+            try:
+                cmd_.pseudoatom(tmp, pos=[0.0, 0.0, 0.0], zoom=0)
+            except TypeError:
+                cmd_.pseudoatom(tmp, pos=[0.0, 0.0, 0.0])
+        setter(tmp, a, b, c, 90.0, 90.0, 90.0, "P1")
+        with silence_selector_errors(cmd_):
+            if callable(copier):
+                copier(tmp, str(name))
+            else:
+                setter(str(name), a, b, c, 90.0, 90.0, 90.0, "P1")
+    except Exception:
+        try:
+            with silence_selector_errors(cmd_):
+                setter(str(name), a, b, c, 90.0, 90.0, 90.0, "P1")
+        except Exception:
+            pass
+    finally:
+        try:
+            cmd_.delete(tmp)
+        except Exception:
+            pass
+
+
+def load_without_zoom(cmd_, loader, *args, **kwargs):
+    """Call a PyMOL loader without ``zoom`` treating a map name as a selection."""
+    view = None
+    try:
+        view = cmd_.get_view()
+    except Exception:
+        view = None
+    with without_auto_zoom(cmd_), silence_selector_errors(cmd_):
+        try:
+            loader(*args, **dict(kwargs, zoom=0))
+        except TypeError:
+            loader(*args, **kwargs)
+    restore_view(cmd_, view)
 
 
 def restore_view(cmd_, view):

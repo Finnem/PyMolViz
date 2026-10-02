@@ -114,6 +114,9 @@ class FakeCmd:
 
     def _resolve_selection(self, sele_expr: str) -> List[FakeAtom]:
         expr = str(sele_expr).strip()
+        obj_match = re.match(r'^object\s+"([^"]+)"\s*$', expr, flags=re.I)
+        if obj_match:
+            expr = obj_match.group(1)
         first_match = re.match(r"^first\s+(.+)$", expr, flags=re.I)
         if first_match:
             inner = first_match.group(1).strip()
@@ -318,7 +321,7 @@ class FakeCmd:
         if ext in {".ccp4", ".mrc", ".map", ".dx", ".xplor", ".grd", ".mtz"}:
             self.object_types[name] = "object:map"
 
-    def load_brick(self, brick, name: str) -> None:
+    def load_brick(self, brick, name: str, **_kwargs) -> None:
         self.objects[str(name)] = brick
         self.object_types[str(name)] = "object:map"
         origin = getattr(brick, "origin", None)
@@ -349,6 +352,11 @@ class FakeCmd:
         self.symmetries[str(selection)] = [
             float(a), float(b), float(c), float(alpha), float(beta), float(gamma), str(spacegroup or "P1"),
         ]
+
+    def symmetry_copy(self, source_name, target_name, source_state=1, target_state=1, quiet=1):
+        stored = self.symmetries.get(str(source_name))
+        if stored:
+            self.symmetries[str(target_name)] = list(stored)
 
     def get_object_state(self, name: str) -> int:
         return int(self.state)
@@ -450,10 +458,45 @@ class FakeCmd:
         return [name for name, typ in self.object_types.items() if typ == wanted]
 
     def get_volume_field(self, name: str):
-        return self.volume_fields.get(str(name))
+        stored = self.volume_fields.get(str(name))
+        if stored is not None:
+            return stored
+        brick = self.objects.get(str(name))
+        values = getattr(brick, "values", None)
+        if values is None:
+            return None
+        import numpy as np
+
+        counts = getattr(brick, "step_counts", None)
+        if counts is None:
+            return np.asarray(values, dtype=float)
+        shape = tuple(int(c) + 1 for c in counts)
+        return np.asarray(values, dtype=float).reshape(shape)
+
+    def map_double(self, name: str, state: int = 0) -> None:
+        import numpy as np
+
+        values = self.get_volume_field(name)
+        if values is None:
+            return
+        arr = np.asarray(values, dtype=float)
+        if arr.ndim != 3:
+            return
+        n_new = tuple(max(int(2 * int(n) - 1), 2) for n in arr.shape)
+        try:
+            from scipy.ndimage import zoom
+
+            denser = zoom(arr, tuple(nn / max(oo, 1) for nn, oo in zip(n_new, arr.shape)), order=1)
+        except Exception:
+            denser = arr
+        self.volume_fields[str(name)] = np.asarray(denser, dtype=float)
 
     def get_extent(self, sele_expr: str, state: int = 1):
-        stored = self.extents.get(str(sele_expr))
+        key = str(sele_expr)
+        obj_match = re.match(r'^object\s+"([^"]+)"\s*$', key.strip(), flags=re.I)
+        if obj_match:
+            key = obj_match.group(1)
+        stored = self.extents.get(key) or self.extents.get(str(sele_expr))
         if stored:
             return stored
         atoms = self._resolve_selection(sele_expr)
@@ -514,6 +557,11 @@ class FakeCmd:
 
     def get(self, key: str, name: str = ""):
         return self.settings.get(str(name), {}).get(str(key), 0.0)
+
+    def feedback(self, action="?", module="?", mask="?"):
+        self.settings.setdefault("", {}).setdefault("_feedback", []).append(
+            (str(action), str(module), str(mask))
+        )
 
     def get_setting_int(self, key: str) -> int:
         try:

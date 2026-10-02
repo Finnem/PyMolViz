@@ -26,7 +26,8 @@ CLIM_MODE_AUTO = "auto"
 CLIM_MODE_CUSTOM = "custom"
 CLIM_MODE_SYMMETRIC = "symmetric"
 CLIM_MODE_PERCENTILE = "percentile"
-CLIM_MODES = (CLIM_MODE_AUTO, CLIM_MODE_CUSTOM, CLIM_MODE_SYMMETRIC, CLIM_MODE_PERCENTILE)
+CLIM_MODE_SIGMA = "sigma"
+CLIM_MODES = (CLIM_MODE_AUTO, CLIM_MODE_CUSTOM, CLIM_MODE_SYMMETRIC, CLIM_MODE_PERCENTILE, CLIM_MODE_SIGMA)
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,8 @@ def normalize_clim_mode(mode) -> str:
         return CLIM_MODE_SYMMETRIC
     if text in ("percentile", "pct"):
         return CLIM_MODE_PERCENTILE
+    if text in ("sigma", "sig", "std", "stdev", "rms"):
+        return CLIM_MODE_SIGMA
     return CLIM_MODE_AUTO
 
 
@@ -87,6 +90,13 @@ def resolve_color_clims(clim_mode, custom=None, field_id=None, values=None):
         from ...util.colormap_spec import Normalization, RANGE_MODE_PERCENTILE, resolve_limits
 
         resolved = resolve_limits(Normalization(mode=RANGE_MODE_PERCENTILE), values)
+        if resolved is None:
+            return None
+        return (float(resolved[0]), float(resolved[1]))
+    if mode == CLIM_MODE_SIGMA:
+        from ...util.colormap_spec import Normalization, RANGE_MODE_SIGMA, resolve_limits
+
+        resolved = resolve_limits(Normalization(mode=RANGE_MODE_SIGMA), values)
         if resolved is None:
             return None
         return (float(resolved[0]), float(resolved[1]))

@@ -300,7 +300,16 @@ def make_field_visual(
     return visual
 
 
-def symmetrize_field_to_selection(cmd, field, selection=None, padding=0.0, cell=None):
+def symmetrize_field_to_selection(
+    cmd,
+    field,
+    selection=None,
+    padding=0.0,
+    cell=None,
+    shrink=False,
+    margin=None,
+    double_map=False,
+):
     """Lattice-wrap the field so the selection lies inside, then reload maps/visuals."""
     import numpy as np
 
@@ -318,8 +327,19 @@ def symmetrize_field_to_selection(cmd, field, selection=None, padding=0.0, cell=
         from ...fields.domain import grid_local_to_world
 
         old_origin = grid_local_to_world(before, getattr(before, "origin", (0.0, 0.0, 0.0))).reshape(3)
+    from ...fields.crystal import DEFAULT_FIT_MARGIN
+
+    if margin is None:
+        margin = DEFAULT_FIT_MARGIN
     wrapped, grid, info = apply_symmetrize_field(
-        cmd, field, selection=selection, padding=padding, cell=cell
+        cmd,
+        field,
+        selection=selection,
+        padding=padding,
+        cell=cell,
+        shrink=shrink,
+        margin=margin,
+        double_map=double_map,
     )
     load_grid_as_map(grid, name=info.get("map_name"), cmd=cmd)
     new_aabb = brick_aabb(grid)
@@ -335,7 +355,10 @@ def symmetrize_field_to_selection(cmd, field, selection=None, padding=0.0, cell=
             retarget_visual_clip_after_wrap(obj, old_aabb, new_aabb, delta, copied)
     for obj in dependents_of_field(wrapped):
         if is_field_visual(obj):
-            persist_field_visual(cmd, obj)
+            try:
+                persist_field_visual(cmd, obj)
+            except Exception:
+                continue
     info = dict(info)
     info["old_aabb"] = old_aabb
     info["origin_delta"] = None if delta is None else delta.tolist()

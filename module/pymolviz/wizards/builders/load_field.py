@@ -120,6 +120,12 @@ def _register_grid(cmd, grid, *, path=None, kind=None, extra=None):
         if extra:
             gen.update(extra)
         field.generator = gen
+        try:
+            from ...util.colormap_spec import bake_field_value_stats
+
+            bake_field_value_stats(field)
+        except Exception:
+            pass
     remember_field(field if field is not None else grid)
     try:
         from .field_visual import ensure_grid_ready
@@ -135,10 +141,11 @@ def _load_pymol_map(cmd, path, name):
 
     if cmd is None:
         return None
-    cmd.load(path, name)
+    from ...util.pymol_helpers import load_without_zoom
+
+    load_without_zoom(cmd, cmd.load, path, name)
     try:
         cmd.set("map_auto_expand_sym", 0)
-        cmd.set("map_auto_expand_sym", 0, name)
     except Exception:
         pass
     try:

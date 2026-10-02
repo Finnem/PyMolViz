@@ -20,6 +20,7 @@ _MAX_VOXELS = 192 ** 3
 _SHIFT_SEARCH = 2
 # PyMOL reports this for objects with no CRYST1; it is not a real unit cell.
 _DUMMY_CELL_LENGTH = 1.0
+DEFAULT_FIT_MARGIN = 4.0
 
 
 class CrystalError(ValueError):
@@ -95,7 +96,49 @@ def point_coverage_status(grid, points, eps=_EPS) -> str:
     return "partial"
 
 
-def coverage_sketch(map_lo, map_hi, target_lo=None, target_hi=None, axes=None, pad=0.08):
+def scale_aabb_about_center(lo, hi, factor=2.0):
+    """Grow or shrink an AABB about its center by ``factor`` on each axis."""
+    lo = np.asarray(lo, dtype=float).reshape(3)
+    hi = np.asarray(hi, dtype=float).reshape(3)
+    center = 0.5 * (lo + hi)
+    half = 0.5 * (hi - lo) * float(factor)
+    return center - half, center + half
+
+
+def fit_result_aabb(
+    map_lo,
+    map_hi,
+    target_lo=None,
+    target_hi=None,
+    *,
+    shrink=False,
+    margin=DEFAULT_FIT_MARGIN,
+    double_map=False,
+):
+    """World AABB after optional shrink-to-object.
+
+    Shrink crops to the target box plus ``margin`` Å. ``double_map`` no longer
+    changes the box — it densifies samples (PyMOL ``map_double``).
+    Returns ``None`` when shrink is off.
+    """
+    if not shrink or target_lo is None or target_hi is None:
+        return None
+    pad = max(float(margin or 0.0), 0.0)
+    lo = np.asarray(target_lo, dtype=float).reshape(3) - pad
+    hi = np.asarray(target_hi, dtype=float).reshape(3) + pad
+    return lo, hi
+
+
+def coverage_sketch(
+    map_lo,
+    map_hi,
+    target_lo=None,
+    target_hi=None,
+    axes=None,
+    pad=0.08,
+    fit_lo=None,
+    fit_hi=None,
+):
     """Normalized rectangles in 0–1, +second-axis up.
 
     When ``axes`` is omitted, the plane includes the largest map–target
@@ -117,6 +160,10 @@ def coverage_sketch(map_lo, map_hi, target_lo=None, target_hi=None, axes=None, p
     if target_lo is not None and target_hi is not None:
         t0, t1 = xy(target_lo, target_hi)
         corners.extend([t0, t1])
+    f0 = f1 = None
+    if fit_lo is not None and fit_hi is not None:
+        f0, f1 = xy(fit_lo, fit_hi)
+        corners.extend([f0, f1])
     stack = np.vstack(corners)
     gmin = stack.min(axis=0)
     gmax = stack.max(axis=0)
@@ -142,11 +189,14 @@ def coverage_sketch(map_lo, map_hi, target_lo=None, target_hi=None, axes=None, p
     out = {
         "map": norm_rect(m0, m1),
         "target": None,
+        "fit": None,
         "axes": (ax, ay),
         "axis_names": names,
     }
     if t0 is not None:
         out["target"] = norm_rect(t0, t1)
+    if f0 is not None:
+        out["fit"] = norm_rect(f0, f1)
     return out
 
 

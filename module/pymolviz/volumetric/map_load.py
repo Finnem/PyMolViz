@@ -235,20 +235,14 @@ def _stamp_cartesian_map_cell(cmd, name, grid) -> None:
     import numpy as np
 
     from ..fields.domain import grid_pymol_brick_params
+    from ..util.pymol_helpers import stamp_orthogonal_map_cell
 
-    setter = getattr(cmd, "set_symmetry", None)
-    if not callable(setter):
-        return
     origin, step = grid_pymol_brick_params(grid)
     counts = np.maximum(np.asarray(getattr(grid, "step_counts", (1, 1, 1)), dtype=float).reshape(3), 1.0)
     extent = np.maximum(np.abs(step) * counts, 1e-3)
-    setter(name, float(extent[0]), float(extent[1]), float(extent[2]), 90.0, 90.0, 90.0, "P1")
+    stamp_orthogonal_map_cell(cmd, name, float(extent[0]), float(extent[1]), float(extent[2]))
     try:
         cmd.set("map_auto_expand_sym", 0)
-    except Exception:
-        pass
-    try:
-        cmd.set("map_auto_expand_sym", 0, name)
     except Exception:
         pass
 
@@ -293,10 +287,14 @@ def load_grid_as_map(grid, name=None, cmd=None):
             )
             display = _display_grid_for_pymol(grid, label)
             payload = Brick.from_numpy(values, display.step_sizes, origin=display.origin)
-            load_brick(payload, label)
+            from ..util.pymol_helpers import load_without_zoom
+
+            load_without_zoom(cmd, load_brick, payload, label)
         except Exception:
             try:
-                load_brick(_display_grid_for_pymol(grid, label), label)
+                from ..util.pymol_helpers import load_without_zoom
+
+                load_without_zoom(cmd, load_brick, _display_grid_for_pymol(grid, label), label)
             except Exception:
                 from ..Displayable import call_load
 

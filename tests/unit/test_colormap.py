@@ -74,6 +74,102 @@ def test_preview_ramp_rgba_shape():
     assert rgba.shape[1] >= 3
 
 
+def test_guess_structure_factor_map_prefers_2fo_before_fofc():
+    from pymolviz.util.colormap_spec import (
+        MAP_KIND_AMPLITUDE,
+        MAP_KIND_DIFFERENCE,
+        guess_structure_factor_map,
+    )
+
+    assert guess_structure_factor_map(title="2Fo-Fc", factor="FWT") == MAP_KIND_AMPLITUDE
+    assert guess_structure_factor_map(name="refine_2fofc") == MAP_KIND_AMPLITUDE
+    assert guess_structure_factor_map(title="Fo-Fc", factor="DELFWT") == MAP_KIND_DIFFERENCE
+    assert guess_structure_factor_map(factor="FOFCWT") == MAP_KIND_DIFFERENCE
+    assert guess_structure_factor_map(name="electrostatic") is None
+
+
+def test_resolve_limits_sigma_uses_baked_full_map_stats():
+    from pymolviz.util.colormap_spec import RANGE_MODE_SIGMA, Normalization, resolve_limits
+
+    crop = np.array([10.0, 11.0, 12.0])
+    # Crop is high; baked stats are mean 0, std/rms 2.
+    amp = Normalization(
+        mode=RANGE_MODE_SIGMA,
+        sigma_low=-2.0,
+        sigma_high=2.0,
+        link_center_zero=False,
+        stats_mean=0.0,
+        stats_std=2.0,
+        stats_rms=2.0,
+    )
+    lo, hi = resolve_limits(amp, crop)
+    assert lo == pytest.approx(-4.0)
+    assert hi == pytest.approx(4.0)
+    diff = Normalization(
+        mode=RANGE_MODE_SIGMA,
+        sigma_low=-3.0,
+        sigma_high=3.0,
+        link_center_zero=True,
+        stats_mean=1.0,
+        stats_std=2.0,
+        stats_rms=4.0,
+    )
+    lo, hi = resolve_limits(diff, crop)
+    assert lo == pytest.approx(-12.0)
+    assert hi == pytest.approx(12.0)
+
+
+def test_sigma_tick_marks_and_labels():
+    from pymolviz.util.colormap_spec import (
+        Normalization,
+        format_sigma_label,
+        sigma_annotation_frame,
+        sigma_tick_marks,
+    )
+
+    assert format_sigma_label(0.0) == "0"
+    assert format_sigma_label(-2.0) == "-2σ"
+    assert format_sigma_label(3.0) == "+3σ"
+    marks = sigma_tick_marks(0.0, 2.0, -5.0, 5.0)
+    labels = [label for _value, label in marks]
+    assert "0" in labels
+    assert "-2σ" in labels
+    assert "+2σ" in labels
+    assert all(abs(value) <= 5.0 + 1e-9 for value, _label in marks)
+    norm = Normalization(
+        mode="sigma",
+        link_center_zero=True,
+        stats_mean=1.0,
+        stats_std=2.0,
+        stats_rms=4.0,
+    )
+    center, scale = sigma_annotation_frame(norm)
+    assert center == pytest.approx(0.0)
+    assert scale == pytest.approx(4.0)
+
+
+def test_default_normalization_for_fo_fc_field():
+    from types import SimpleNamespace
+
+    from pymolviz.util.colormap_spec import (
+        RANGE_MODE_SIGMA,
+        default_normalization_for_field,
+    )
+
+    field = SimpleNamespace(
+        values=np.array([-3.0, 0.0, 3.0, 0.0], dtype=float),
+        name="map",
+        generator={"map_title": "Fo-Fc", "factor_column": "DELFWT"},
+        provenance={},
+    )
+    norm = default_normalization_for_field(field)
+    assert norm is not None
+    assert norm.mode == RANGE_MODE_SIGMA
+    assert norm.link_center_zero is True
+    assert norm.sigma_low == pytest.approx(-3.0)
+    assert norm.sigma_high == pytest.approx(3.0)
+
+
 def test_range_mode_for_endpoint_edit_promotes_auto_keeps_symmetric():
     from pymolviz.util.colormap_spec import (
         RANGE_MODE_AUTO,

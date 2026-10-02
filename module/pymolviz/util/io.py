@@ -210,7 +210,7 @@ def mtz_map_title(factor, phase) -> str:
 
 
 def mtz_field_basename(stem, product) -> str:
-    stem = str(stem or "mtz").strip().replace(" ", "_") or "mtz"
+    stem = str(stem or "mtz").strip().replace(" ", "_").replace("-", "_") or "mtz"
     title = ""
     if isinstance(product, dict):
         title = str(product.get("title") or product.get("factor") or "map")
@@ -218,7 +218,7 @@ def mtz_field_basename(stem, product) -> str:
         title = str(product or "map")
     slug = []
     for ch in title.replace(" ", "_"):
-        slug.append(ch if ch.isalnum() or ch in "-_" else "_")
+        slug.append(ch if ch.isalnum() or ch == "_" else "_")
     slug = "".join(slug).strip("_") or "map"
     return "%s_%s" % (stem, slug)
 

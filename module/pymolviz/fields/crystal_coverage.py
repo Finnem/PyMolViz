@@ -86,12 +86,22 @@ def _object_is_coordinate_target(cmd, name: str) -> bool:
         typ = str(cmd.get_type(name) or "").lower()
     except Exception:
         typ = ""
-    if any(token in typ for token in _SKIP_EXTEND_TYPE_TOKENS):
+    if not typ or any(token in typ for token in _SKIP_EXTEND_TYPE_TOKENS):
         return False
-    return True
+    return "molecule" in typ
 
 
-def _coords_for_name(cmd, name):
+def _coords_for_name(cmd, name, kind=""):
+    # Named selections are not objects — get_type is "selection" / empty, not molecule.
+    if kind != "selection":
+        try:
+            typ = str(cmd.get_type(name) or "").lower()
+        except Exception:
+            typ = ""
+        if any(token in typ for token in _SKIP_EXTEND_TYPE_TOKENS):
+            return None
+        if typ and "molecule" not in typ:
+            return None
     try:
         n = int(cmd.count_atoms(name) or 0)
     except Exception:
@@ -144,7 +154,7 @@ def extend_target_rows(cmd, grid, skip_names=()) -> List[dict]:
     for kind, name in iter_extend_target_names(cmd):
         if name in skip:
             continue
-        pts = _coords_for_name(cmd, name)
+        pts = _coords_for_name(cmd, name, kind=kind)
         if pts is None:
             continue
         lo = pts.min(axis=0)

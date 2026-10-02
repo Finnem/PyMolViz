@@ -39,6 +39,7 @@ from ...util.colormap_spec import (
     format_number,
     format_numbers_for_ticks,
     definition_from_preset,
+    sigma_tick_marks,
     tick_label_indices_without_overlap,
     tick_label_span,
     ramp_rgba,
@@ -426,6 +427,8 @@ class _DistributionEditor:
         self._press_was_already_selected = False
         self._view = None
         self._drag_last_x = 0.0
+        self._annotate_sigma = False
+        self._sigma_frame = None
         view = QtWidgets.QWidget(parent)
         view.setObjectName("pmvColormapDistribution")
         view.setMinimumHeight(220)
@@ -461,10 +464,24 @@ class _DistributionEditor:
         view.resizeEvent = _resize
         self.widget = view
 
-    def set_data(self, hist, limits=None, center=None, defn=None, selected=0):
+    def set_data(
+        self,
+        hist,
+        limits=None,
+        center=None,
+        defn=None,
+        selected=0,
+        *,
+        annotate_sigma=None,
+        sigma_frame=None,
+    ):
         self._hist = hist
         self._limits = limits or (0.0, 1.0)
         self._center = center
+        if annotate_sigma is not None:
+            self._annotate_sigma = bool(annotate_sigma)
+        if sigma_frame is not None or annotate_sigma is not None:
+            self._sigma_frame = sigma_frame
         if defn is not None:
             self._defn = defn
             self._selected = max(0, min(int(selected), len(defn.stops) - 1))
@@ -560,6 +577,7 @@ class _DistributionEditor:
             dmin, dmax = self._span()
             vmin, vmax = self._limits
             self._paint_histogram(painter, QtCore, QtGui, layout, dmin, dmax, vmin, vmax)
+            self._paint_sigma_guides(painter, QtCore, QtGui, layout, dmin, dmax)
             try:
                 painter.setPen(QtGui.QPen(QtGui.QColor(*BORDER), 1))
                 painter.setBrush(QtGui.QColor(0, 0, 0, 0))
@@ -657,14 +675,41 @@ class _DistributionEditor:
             for (x0, y0), (x1, y1) in zip(tops, tops[1:]):
                 painter.drawLine(int(x0), int(y0), int(x1), int(y1))
 
+    def _sigma_marks(self, dmin, dmax):
+        if not self._annotate_sigma or not self._sigma_frame:
+            return ()
+        center, scale = self._sigma_frame
+        return sigma_tick_marks(center, scale, dmin, dmax)
+
+    def _paint_sigma_guides(self, painter, QtCore, QtGui, layout, dmin, dmax):
+        marks = self._sigma_marks(dmin, dmax)
+        if not marks:
+            return
+        plot = layout["plot"]
+        axis = self._axis()
+        dash = getattr(QtCore.Qt, "DashLine", 2)
+        painter.setPen(QtGui.QPen(QtGui.QColor(*MUTED), 1, dash))
+        for value, _label in marks:
+            x = _x_for_value(plot, value, dmin, dmax, axis)
+            painter.drawLine(int(x), int(plot.top()), int(x), int(plot.bottom()))
+
     def _paint_axis_ticks(self, painter, QtCore, QtGui, layout, dmin, dmax):
         plot = layout["plot"]
         axis = self._axis()
-        ticks = _histogram_tick_values(dmin, dmax, axis, 5)
-        if not ticks:
-            return
-        xs = [_x_for_value(plot, value, dmin, dmax, axis) for value in ticks]
-        _, labels, keep = _tick_labels_for_paint(painter, ticks, xs)
+        marks = self._sigma_marks(dmin, dmax)
+        if marks:
+            ticks = [value for value, _label in marks]
+            labels = [label for _value, label in marks]
+            xs = [_x_for_value(plot, value, dmin, dmax, axis) for value in ticks]
+            fm = painter.fontMetrics()
+            widths = [_font_text_width(fm, text) for text in labels]
+            keep = tick_label_indices_without_overlap(widths, xs)
+        else:
+            ticks = _histogram_tick_values(dmin, dmax, axis, 5)
+            if not ticks:
+                return
+            xs = [_x_for_value(plot, value, dmin, dmax, axis) for value in ticks]
+            _, labels, keep = _tick_labels_for_paint(painter, ticks, xs)
         painter.setPen(QtGui.QColor(*INK))
         y0 = int(plot.bottom())
         _draw_horizontal_tick_labels(painter, QtCore, labels, xs, keep, y0, y0 + 4)
@@ -940,6 +985,8 @@ class _ColorbarPreview:
         self._drag_offset = (0.0, 0.0)
         self._drag_moved = False
         self._press_was_already_selected = False
+        self._annotate_sigma = False
+        self._sigma_frame = None
         bar = QtWidgets.QWidget(parent)
         bar.setObjectName("pmvColormapColorbar")
         expanding = getattr(QtWidgets.QSizePolicy, "Expanding", None)
@@ -980,13 +1027,26 @@ class _ColorbarPreview:
     def tick_pad(self) -> int:
         return int(self._TICK_PAD)
 
-    def set_preview(self, defn, limits, settings: ColorbarExportSettings, selected=0, axis=HISTOGRAM_VIEW_FULL, map_limits=None):
+    def set_preview(
+        self,
+        defn,
+        limits,
+        settings: ColorbarExportSettings,
+        selected=0,
+        axis=HISTOGRAM_VIEW_FULL,
+        map_limits=None,
+        *,
+        annotate_sigma=False,
+        sigma_frame=None,
+    ):
         self._defn = defn
         self._limits = limits or (0.0, 1.0)
         self._map_limits = tuple(map_limits) if map_limits is not None else self._limits
         self._axis = axis or HISTOGRAM_VIEW_FULL
         self._settings = settings
         self._selected = int(selected or 0)
+        self._annotate_sigma = bool(annotate_sigma)
+        self._sigma_frame = sigma_frame
         self.widget.update()
 
     def _paint(self, widget, QtCore, QtGui):
@@ -1033,10 +1093,18 @@ class _ColorbarPreview:
 
     def _paint_ticks(self, painter, QtCore, QtGui, widget, bar, caption, lo, hi):
         try:
-            ticks = colorbar_tick_values(lo, hi, self._axis, self._settings.tick_count)
+            marks = ()
+            if self._annotate_sigma and self._sigma_frame:
+                marks = sigma_tick_marks(self._sigma_frame[0], self._sigma_frame[1], lo, hi)
+            if marks:
+                ticks = [value for value, _label in marks]
+                sigma_labels = [label for _value, label in marks]
+            else:
+                ticks = colorbar_tick_values(lo, hi, self._axis, self._settings.tick_count)
+                sigma_labels = None
             painter.setPen(QtGui.QColor(*INK))
             if self._vertical:
-                labels = format_numbers_for_ticks(
+                labels = sigma_labels or format_numbers_for_ticks(
                     ticks,
                     self._settings.number_format,
                     self._settings.decimals,
@@ -1060,7 +1128,13 @@ class _ColorbarPreview:
                 bar.left() + value_to_histogram_axis(tick, lo, hi, self._axis) * span
                 for tick in ticks
             ]
-            _, labels, keep = _tick_labels_for_paint(painter, ticks, xs, self._settings)
+            if sigma_labels is not None:
+                labels = sigma_labels
+                fm = painter.fontMetrics()
+                widths = [_font_text_width(fm, text) for text in labels]
+                keep = tick_label_indices_without_overlap(widths, xs)
+            else:
+                _, labels, keep = _tick_labels_for_paint(painter, ticks, xs, self._settings)
             _draw_horizontal_tick_labels(
                 painter,
                 QtCore,

@@ -1,7 +1,12 @@
 """PyMOL object-name sanitization and selection quoting."""
 
 from pymolviz.Displayable import Displayable
-from pymolviz.util.sanitize import quote_pymol_name, sanitize_pymol_string
+from pymolviz.util.sanitize import (
+    object_sele,
+    parse_object_sele,
+    quote_pymol_name,
+    sanitize_pymol_string,
+)
 
 
 def test_sanitize_union_charset():
@@ -34,3 +39,9 @@ def test_quote_pymol_name_preserves_hyphen():
 
 def test_quote_pymol_name_already_parenthesized():
     assert quote_pymol_name("(sele)") == "(sele)"
+
+
+def test_object_sele_avoids_bare_map_name():
+    assert object_sele("input_refine_001_2Fo_Fc") == 'object "input_refine_001_2Fo_Fc"'
+    assert parse_object_sele('object "input_refine_001_2Fo_Fc"') == "input_refine_001_2Fo_Fc"
+    assert object_sele("(sele)") == "(sele)"

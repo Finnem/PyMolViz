@@ -135,7 +135,7 @@ def script_string(obj):
     return f"""
 {name}_data = np.array({np.array2string(values, threshold=1e15, separator=",")})
 {name} = Brick.from_numpy({name}_data, {np.array2string(np.asarray(obj.step_sizes), separator=",")}, origin={np.array2string(np.asarray(obj.origin), separator=",")})
-cmd.load_brick({name}, "{name}")
+cmd.load_brick({name}, "{name}", zoom=0)
 cmd.set("volume_mode", 0)
 cmd.set_object_ttt("{name}", {list(np.asarray(a_to).flatten())})
 {name}_data = None
@@ -156,7 +156,9 @@ def load_lattice(obj, cmd=None):
         brick = Brick.from_numpy(values, obj.step_sizes, origin=obj.origin)
     except Exception:
         brick = obj
-    cmd.load_brick(brick, obj.name)
+    from ..util.pymol_helpers import load_without_zoom
+
+    load_without_zoom(cmd, cmd.load_brick, brick, obj.name)
     cmd.set("volume_mode", 0)
     cmd.set_object_ttt(obj.name, list(np.asarray(getattr(obj, "A_to", np.eye(4))).flatten()))
     obj.is_loaded = True

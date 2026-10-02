@@ -21,6 +21,7 @@ from ...util.colormap_spec import (
     RANGE_MODE_AUTO,
     RANGE_MODE_CUSTOM,
     RANGE_MODE_PERCENTILE,
+    RANGE_MODE_SIGMA,
     RANGE_MODE_SYMMETRIC,
     ColorStop,
     ColorbarExportSettings,
@@ -47,6 +48,7 @@ from ...util.colormap_spec import (
     range_mode_for_endpoint_edit,
     resolve_limits,
     reverse_definition,
+    sigma_annotation_frame,
     sample_unit,
     screen_y_to_alpha,
     tick_values,
@@ -129,13 +131,15 @@ HELP_TEXT = (
     "below is the live preview. Viewer preview radios match the object or field "
     "visual page: live colormap updates only while Simple or Full is on. "
     "Update preview pushes the current colormap once (and shows a Simple preview "
-    "if preview was off)."
+    "if preview was off. Annotate σ draws integer standard-deviation ticks on the "
+    "histogram and colorbar when map statistics are known."
 )
 
 RANGE_AUTO_LABEL = "Auto"
 RANGE_CUSTOM_LABEL = "Custom"
 RANGE_SYMMETRIC_LABEL = "Symmetric around zero"
 RANGE_PERCENTILE_LABEL = "Percentile"
+RANGE_SIGMA_LABEL = "σ (map std)"
 
 INTERP_RGB_LABEL = "Linear RGB"
 INTERP_HSV_LABEL = "Linear HSV"
@@ -156,8 +160,14 @@ def colormap_editor_action_labels() -> Tuple[str, str, str, str]:
     return (ADD_CUSTOM_COLORMAP_TIP, SAVE_AS_LABEL, EDIT_LABEL, EXPORT_COLORBAR_LABEL)
 
 
-def colormap_full_range_labels() -> Tuple[str, str, str, str]:
-    return (RANGE_AUTO_LABEL, RANGE_CUSTOM_LABEL, RANGE_SYMMETRIC_LABEL, RANGE_PERCENTILE_LABEL)
+def colormap_full_range_labels() -> Tuple[str, str, str, str, str]:
+    return (
+        RANGE_AUTO_LABEL,
+        RANGE_CUSTOM_LABEL,
+        RANGE_SYMMETRIC_LABEL,
+        RANGE_PERCENTILE_LABEL,
+        RANGE_SIGMA_LABEL,
+    )
 
 
 from .colormap_plot import (
@@ -328,9 +338,19 @@ class ColormapEditorDialog:
         self._zoom_data.setToolTip("Show the full field value range.")
         self._zoom_limits.clicked.connect(self._zoom_histogram_to_limits)
         self._zoom_data.clicked.connect(self._zoom_histogram_to_data)
+        self._annotate_sigma = make_switch("Annotate σ")
+        self._annotate_sigma.setChecked(
+            mapping.normalization.mode == RANGE_MODE_SIGMA
+        )
+        self._annotate_sigma.setToolTip(
+            "Label integer σ on the histogram and colorbar. Uses the same "
+            "center and scale as σ range (0 and RMS for difference maps, "
+            "mean and std otherwise)."
+        )
         zoom_row.addWidget(self._zoom_limits)
         zoom_row.addWidget(self._zoom_data)
         zoom_row.addStretch(1)
+        zoom_row.addWidget(self._annotate_sigma)
         hist.layout.addLayout(zoom_row)
         self._colorbar = _ColorbarPreview(
             body, compact=True, show_stops=True,
@@ -370,6 +390,7 @@ class ColormapEditorDialog:
         self._range.addItem(RANGE_CUSTOM_LABEL, RANGE_MODE_CUSTOM)
         self._range.addItem(RANGE_SYMMETRIC_LABEL, RANGE_MODE_SYMMETRIC)
         self._range.addItem(RANGE_PERCENTILE_LABEL, RANGE_MODE_PERCENTILE)
+        self._range.addItem(RANGE_SIGMA_LABEL, RANGE_MODE_SIGMA)
         self._center = QtWidgets.QDoubleSpinBox()
         self._center.setDecimals(4)
         self._center.setRange(-1e8, 1e8)
@@ -506,6 +527,7 @@ class ColormapEditorDialog:
         for spin in (self._center, self._pct_lo, self._pct_hi):
             spin.valueChanged.connect(lambda *_: self._edit_range())
         self._link_zero.toggled.connect(lambda *_: self._edit_range())
+        self._annotate_sigma.toggled.connect(lambda *_: self._on_annotate_sigma())
         self._interp.currentIndexChanged.connect(lambda *_: self._edit_mapping())
         self._type_cont.toggled.connect(lambda *_: self._edit_mapping())
         self._type_disc.toggled.connect(lambda *_: self._edit_mapping())
@@ -571,7 +593,10 @@ class ColormapEditorDialog:
             if ridx >= 0:
                 self._range.setCurrentIndex(ridx)
             limits = self._resolve_limits()
-            if norm.mode in (RANGE_MODE_CUSTOM, RANGE_MODE_SYMMETRIC):
+            if norm.mode == RANGE_MODE_SIGMA:
+                self._vmin.setValue(float(norm.sigma_low))
+                self._vmax.setValue(float(norm.sigma_high))
+            elif norm.mode in (RANGE_MODE_CUSTOM, RANGE_MODE_SYMMETRIC):
                 if norm.vmin is not None:
                     self._vmin.setValue(float(norm.vmin))
                 elif limits is not None:
@@ -640,10 +665,14 @@ class ColormapEditorDialog:
         self._link_zero.setEnabled(symmetric)
         self._pct_lo.setEnabled(pct)
         self._pct_hi.setEnabled(pct)
+        if qt_widget_alive(getattr(self, "_annotate_sigma", None)):
+            self._annotate_sigma.setEnabled(self._sigma_frame() is not None)
 
     def _current_normalization(self) -> Normalization:
         mode = str(self._range.currentData() or RANGE_MODE_AUTO)
         manual = mode in (RANGE_MODE_CUSTOM, RANGE_MODE_SYMMETRIC)
+        sigma = mode == RANGE_MODE_SIGMA
+        prev = self._mapping.normalization
         return Normalization(
             mode=mode,
             vmin=float(self._vmin.value()) if manual else None,
@@ -652,6 +681,11 @@ class ColormapEditorDialog:
             percentile_low=float(self._pct_lo.value()),
             percentile_high=float(self._pct_hi.value()),
             link_center_zero=bool(self._link_zero.isChecked()),
+            sigma_low=float(self._vmin.value()) if sigma else prev.sigma_low,
+            sigma_high=float(self._vmax.value()) if sigma else prev.sigma_high,
+            stats_mean=prev.stats_mean,
+            stats_std=prev.stats_std,
+            stats_rms=prev.stats_rms,
         )
 
     def _replace_colormap(self, **kwargs):
@@ -959,6 +993,33 @@ class ColormapEditorDialog:
         finally:
             self._syncing = False
 
+    def _on_annotate_sigma(self):
+        if self._syncing:
+            return
+        self._sync_plot()
+
+    def _sigma_frame(self):
+        values = getattr(self, "_values", None)
+        frame = sigma_annotation_frame(self._mapping.normalization, values)
+        if frame is not None:
+            return frame
+        hist = getattr(getattr(self, "_histogram", None), "_hist", None) or {}
+        if hist.get("mean") is None or hist.get("std") is None:
+            return None
+        std = float(hist["std"])
+        if std < 1e-15:
+            return None
+        mid = 0.0 if self._mapping.normalization.link_center_zero else float(hist["mean"])
+        return (mid, std)
+
+    def _annotate_sigma_args(self) -> dict:
+        on = bool(
+            qt_widget_alive(getattr(self, "_annotate_sigma", None))
+            and self._annotate_sigma.isChecked()
+        )
+        frame = self._sigma_frame() if on else None
+        return {"annotate_sigma": bool(on and frame), "sigma_frame": frame}
+
     def _sync_plot(self):
         hist = getattr(self, "_histogram", None)
         if hist is None:
@@ -969,6 +1030,7 @@ class ColormapEditorDialog:
             self._center_for_plot(),
             defn=self._mapping.colormap,
             selected=self._selected,
+            **self._annotate_sigma_args(),
         )
         self._refresh_previews()
 
@@ -1322,7 +1384,12 @@ class ColormapEditorDialog:
         if self._mapping.normalization.mode == RANGE_MODE_SYMMETRIC:
             center = 0.0 if self._mapping.normalization.link_center_zero else self._mapping.normalization.center
         self._histogram.set_data(
-            hist, limits, center, defn=self._mapping.colormap, selected=self._selected,
+            hist,
+            limits,
+            center,
+            defn=self._mapping.colormap,
+            selected=self._selected,
+            **self._annotate_sigma_args(),
         )
         if not hist or not hist.get("n"):
             self._hist_stats.setText("No field")
@@ -1347,6 +1414,10 @@ class ColormapEditorDialog:
             lines.append("Zeros: %.0f%% (histogram uses positive values)" % (float(zf) * 100.0))
         if hist.get("suggest_percentile_range"):
             lines.append("Tip: try Range → Percentile for colormap limits.")
+        frame = self._sigma_frame()
+        if frame is not None:
+            mid, scale = frame
+            lines.append("σ: 0 = %s, 1σ = %s" % (format_number(mid), format_number(scale)))
         self._hist_stats.setText("\n".join(lines))
 
     def _refresh_previews(self):
@@ -1359,7 +1430,13 @@ class ColormapEditorDialog:
             units="",
             tick_count=5,
         )
-        bar.set_preview(self._mapping.colormap, limits, settings, selected=self._selected)
+        bar.set_preview(
+            self._mapping.colormap,
+            limits,
+            settings,
+            selected=self._selected,
+            **self._annotate_sigma_args(),
+        )
 
     def _export_colorbar(self):
         ExportColorbarDialog(self._dialog, self._mapping, values=self._values, cmd=self._cmd).show()

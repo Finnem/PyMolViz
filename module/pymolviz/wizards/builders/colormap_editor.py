@@ -14,6 +14,7 @@ from ...ColorMap import (
 )
 from ...util.colormap_spec import (
     RANGE_MODE_PERCENTILE,
+    RANGE_MODE_SIGMA,
     ColormapDefinition,
     FieldColorMapping,
     Normalization,
@@ -42,6 +43,7 @@ RANGE_AUTO_LABEL = "Auto"
 RANGE_CUSTOM_LABEL = "Custom"
 RANGE_SYMMETRIC_LABEL = "Symmetric"
 RANGE_PERCENTILE_LABEL = "Percentile"
+RANGE_SIGMA_LABEL = "σ"
 ADD_CUSTOM_COLORMAP_LABEL = "+"
 ADD_CUSTOM_COLORMAP_TIP = "add custom colormap"
 ADJUST_CUSTOM_COLORMAP_TIP = "Adjust this custom colormap"
@@ -51,13 +53,19 @@ KIND_CUSTOM = "custom"
 
 COLORMAP_PRESET_TIP = "Named colormap used to map field values."
 COLORMAP_REVERSE_TIP = "Flip the ramp without swapping min and max."
-COLORMAP_RANGE_TIP = "Map field values with auto, custom, symmetric, or percentile limits."
-COLORMAP_CLIM_TIP = "Manual color limits. Used when Range is Custom or Symmetric."
+COLORMAP_RANGE_TIP = "Map field values with auto, custom, symmetric, percentile, or σ limits."
+COLORMAP_CLIM_TIP = "Manual color limits (data units), or σ multipliers when Range is σ."
 COLORMAP_STRIP_TIP = "Preview of the current colormap ramp."
 
 
-def colormap_range_mode_labels() -> Tuple[str, str, str, str]:
-    return (RANGE_AUTO_LABEL, RANGE_CUSTOM_LABEL, RANGE_SYMMETRIC_LABEL, RANGE_PERCENTILE_LABEL)
+def colormap_range_mode_labels() -> Tuple[str, str, str, str, str]:
+    return (
+        RANGE_AUTO_LABEL,
+        RANGE_CUSTOM_LABEL,
+        RANGE_SYMMETRIC_LABEL,
+        RANGE_PERCENTILE_LABEL,
+        RANGE_SIGMA_LABEL,
+    )
 
 
 def colormap_add_custom_tip() -> str:
@@ -402,7 +410,7 @@ class ColormapEditor:
     def custom_clims(self):
         if not qt_widget_alive(self._lo) or not qt_widget_alive(self._hi):
             return None
-        if self.range_mode() not in (RANGE_MODE_CUSTOM, RANGE_MODE_SYMMETRIC):
+        if self.range_mode() not in (RANGE_MODE_CUSTOM, RANGE_MODE_SYMMETRIC, RANGE_MODE_SIGMA):
             return None
         return (float(self._lo.value()), float(self._hi.value()))
 
@@ -418,14 +426,20 @@ class ColormapEditor:
     def normalization(self) -> Normalization:
         clims = self.custom_clims()
         extra = self._norm_extra
+        sigma = self.range_mode() == RANGE_MODE_SIGMA
         return Normalization(
             mode=self.range_mode(),
-            vmin=None if clims is None else clims[0],
-            vmax=None if clims is None else clims[1],
+            vmin=None if clims is None or sigma else clims[0],
+            vmax=None if clims is None or sigma else clims[1],
             center=extra.center,
             percentile_low=extra.percentile_low,
             percentile_high=extra.percentile_high,
             link_center_zero=extra.link_center_zero,
+            sigma_low=float(clims[0]) if sigma and clims is not None else extra.sigma_low,
+            sigma_high=float(clims[1]) if sigma and clims is not None else extra.sigma_high,
+            stats_mean=extra.stats_mean,
+            stats_std=extra.stats_std,
+            stats_rms=extra.stats_rms,
         )
 
     def mapping(self, field_id=None) -> FieldColorMapping:
@@ -466,6 +480,8 @@ class ColormapEditor:
                 range_mode = stored_norm.mode
             if clims is None and stored_norm.vmin is not None and stored_norm.vmax is not None:
                 clims = (float(stored_norm.vmin), float(stored_norm.vmax))
+            if stored_norm.mode == RANGE_MODE_SIGMA:
+                clims = (float(stored_norm.sigma_low), float(stored_norm.sigma_high))
         self._syncing = True
         try:
             if not self._ui_alive():
@@ -495,6 +511,8 @@ class ColormapEditor:
         if norm.mode in (RANGE_MODE_CUSTOM, RANGE_MODE_SYMMETRIC):
             if norm.vmin is not None and norm.vmax is not None:
                 clims = (float(norm.vmin), float(norm.vmax))
+        elif norm.mode == RANGE_MODE_SIGMA:
+            clims = (float(norm.sigma_low), float(norm.sigma_high))
         else:
             values = None
             fid = self._field_id()
@@ -575,6 +593,19 @@ class ColormapEditor:
         self._refresh_strip()
         self._on_changed()
 
+    def _on_range_combo(self) -> None:
+        if self._syncing:
+            return
+        if self.range_mode() == RANGE_MODE_SIGMA and qt_widget_alive(self._lo) and qt_widget_alive(self._hi):
+            if abs(float(self._lo.value())) > 20.0 or abs(float(self._hi.value())) > 20.0:
+                self._syncing = True
+                try:
+                    self._lo.setValue(-2.0)
+                    self._hi.setValue(2.0)
+                finally:
+                    self._syncing = False
+        self._emit()
+
     def _emit(self) -> None:
         if self._syncing:
             return
@@ -595,7 +626,7 @@ class ColormapEditor:
 
     def _sync_enabled(self) -> None:
         mode = self.range_mode()
-        manual = mode in (RANGE_MODE_CUSTOM, RANGE_MODE_SYMMETRIC)
+        manual = mode in (RANGE_MODE_CUSTOM, RANGE_MODE_SYMMETRIC, RANGE_MODE_SIGMA)
         if qt_widget_alive(self._lo):
             self._lo.setEnabled(manual)
         if qt_widget_alive(self._hi):
@@ -736,7 +767,8 @@ class ColormapEditor:
         self._range.addItem(RANGE_CUSTOM_LABEL, RANGE_MODE_CUSTOM)
         self._range.addItem(RANGE_SYMMETRIC_LABEL, RANGE_MODE_SYMMETRIC)
         self._range.addItem(RANGE_PERCENTILE_LABEL, RANGE_MODE_PERCENTILE)
-        self._range.currentIndexChanged.connect(lambda *_: self._emit())
+        self._range.addItem(RANGE_SIGMA_LABEL, RANGE_MODE_SIGMA)
+        self._range.currentIndexChanged.connect(lambda *_: self._on_range_combo())
         self._reverse = make_switch("Reverse")
         self._reverse.setObjectName("pmvColormapReverse")
         self._reverse.toggled.connect(lambda *_: self._on_reverse())

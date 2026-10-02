@@ -40,12 +40,16 @@ OOR_CUSTOM = "custom"
 OOR_MODES = (OOR_CLAMP, OOR_TRANSPARENT, OOR_CUSTOM)
 
 RANGE_MODE_PERCENTILE = "percentile"
+RANGE_MODE_SIGMA = "sigma"
 RANGE_MODES = (
     RANGE_MODE_AUTO,
     RANGE_MODE_CUSTOM,
     RANGE_MODE_SYMMETRIC,
     RANGE_MODE_PERCENTILE,
+    RANGE_MODE_SIGMA,
 )
+MAP_KIND_AMPLITUDE = "amplitude"
+MAP_KIND_DIFFERENCE = "difference"
 
 DEFAULT_NAN_RGBA: RGBA = (0.55, 0.55, 0.55, 1.0)
 DEFAULT_LEVELS = 5
@@ -94,6 +98,8 @@ def normalize_range_mode_full(mode) -> str:
     text = str(mode or "").strip().lower().replace("-", "_")
     if text in ("percentile", "pct", "percentiles"):
         return RANGE_MODE_PERCENTILE
+    if text in ("sigma", "sig", "std", "stdev", "rms"):
+        return RANGE_MODE_SIGMA
     return normalize_range_mode(mode)
 
 
@@ -247,6 +253,11 @@ class Normalization:
     percentile_low: float = 2.0
     percentile_high: float = 98.0
     link_center_zero: bool = True
+    sigma_low: float = -2.0
+    sigma_high: float = 2.0
+    stats_mean: Optional[float] = None
+    stats_std: Optional[float] = None
+    stats_rms: Optional[float] = None
 
     def __post_init__(self):
         object.__setattr__(self, "mode", normalize_range_mode_full(self.mode))
@@ -256,6 +267,12 @@ class Normalization:
             hi = min(100.0, lo + 1.0)
         object.__setattr__(self, "percentile_low", lo)
         object.__setattr__(self, "percentile_high", hi)
+        slo = float(self.sigma_low)
+        shi = float(self.sigma_high)
+        if shi < slo:
+            slo, shi = shi, slo
+        object.__setattr__(self, "sigma_low", slo)
+        object.__setattr__(self, "sigma_high", shi)
 
     def to_dict(self) -> dict:
         return {
@@ -266,6 +283,11 @@ class Normalization:
             "percentile_low": float(self.percentile_low),
             "percentile_high": float(self.percentile_high),
             "link_center_zero": bool(self.link_center_zero),
+            "sigma_low": float(self.sigma_low),
+            "sigma_high": float(self.sigma_high),
+            "stats_mean": None if self.stats_mean is None else float(self.stats_mean),
+            "stats_std": None if self.stats_std is None else float(self.stats_std),
+            "stats_rms": None if self.stats_rms is None else float(self.stats_rms),
         }
 
     @classmethod
@@ -282,6 +304,11 @@ class Normalization:
             percentile_low=data.get("percentile_low", 2.0),
             percentile_high=data.get("percentile_high", 98.0),
             link_center_zero=bool(data.get("link_center_zero", True)),
+            sigma_low=data.get("sigma_low", -2.0),
+            sigma_high=data.get("sigma_high", 2.0),
+            stats_mean=None if data.get("stats_mean") is None else float(data["stats_mean"]),
+            stats_std=None if data.get("stats_std") is None else float(data["stats_std"]),
+            stats_rms=None if data.get("stats_rms") is None else float(data["stats_rms"]),
         )
 
 
@@ -520,6 +547,8 @@ def resolve_limits(norm: Normalization, values=None) -> Optional[Tuple[float, fl
         if abs(hi - lo) < 1e-15:
             hi = lo + 1.0
         return (lo, hi)
+    if mode == RANGE_MODE_SIGMA:
+        return _resolve_sigma_limits(norm, finite)
     if finite is None or finite.size == 0:
         if mode == RANGE_MODE_SYMMETRIC:
             if norm.vmin is not None and norm.vmax is not None:
@@ -550,6 +579,200 @@ def resolve_limits(norm: Normalization, values=None) -> Optional[Tuple[float, fl
     if abs(vmax - vmin) < 1e-15:
         vmax = vmin + 1.0
     return (vmin, vmax)
+
+
+def compute_value_stats(values) -> dict:
+    """Mean, population std, and RMS of finite samples (full map, not a crop)."""
+    arr = np.asarray(values, dtype=float).reshape(-1)
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return {"mean": 0.0, "std": 1.0, "rms": 1.0, "min": 0.0, "max": 1.0}
+    mean = float(np.mean(finite))
+    std = float(np.std(finite))
+    rms = float(np.sqrt(np.mean(np.square(finite))))
+    if std < 1e-15:
+        std = 1.0
+    if rms < 1e-15:
+        rms = std
+    return {
+        "mean": mean,
+        "std": std,
+        "rms": rms,
+        "min": float(np.min(finite)),
+        "max": float(np.max(finite)),
+    }
+
+
+def _stats_from_norm_or_values(norm: Normalization, finite) -> Optional[dict]:
+    if norm.stats_mean is not None and (norm.stats_std is not None or norm.stats_rms is not None):
+        std = float(norm.stats_std) if norm.stats_std is not None else float(norm.stats_rms or 1.0)
+        rms = float(norm.stats_rms) if norm.stats_rms is not None else std
+        return {"mean": float(norm.stats_mean), "std": max(std, 1e-12), "rms": max(rms, 1e-12)}
+    if finite is None or getattr(finite, "size", 0) == 0:
+        return None
+    return compute_value_stats(finite)
+
+
+def _resolve_sigma_limits(norm: Normalization, finite) -> Optional[Tuple[float, float]]:
+    stats = _stats_from_norm_or_values(norm, finite)
+    if stats is None:
+        return None
+    if norm.link_center_zero:
+        mid = 0.0
+        scale = stats["rms"]
+    else:
+        mid = stats["mean"]
+        scale = stats["std"]
+    lo = mid + float(norm.sigma_low) * scale
+    hi = mid + float(norm.sigma_high) * scale
+    if hi < lo:
+        lo, hi = hi, lo
+    if abs(hi - lo) < 1e-15:
+        hi = lo + 1.0
+    return (lo, hi)
+
+
+def sigma_annotation_frame(norm: Normalization, values=None) -> Optional[Tuple[float, float]]:
+    """``(center, scale)`` for σ tick labels, matching how σ range is resolved."""
+    finite = None
+    if values is not None:
+        arr = np.asarray(values, dtype=float).reshape(-1)
+        finite = arr[np.isfinite(arr)]
+    stats = _stats_from_norm_or_values(norm, finite)
+    if stats is None:
+        return None
+    if norm.link_center_zero:
+        return (0.0, float(stats["rms"]))
+    return (float(stats["mean"]), float(stats["std"]))
+
+
+def format_sigma_label(n: float) -> str:
+    """Compact tick text: ``0``, ``+2σ``, ``−1σ``."""
+    if abs(float(n)) < 1e-9:
+        return "0"
+    nearest = round(float(n))
+    if abs(float(n) - nearest) < 1e-9:
+        ni = int(nearest)
+        return "%dσ" % ni if ni < 0 else "+%dσ" % ni
+    return "%+.1fσ" % float(n)
+
+
+def sigma_tick_marks(center, scale, dmin, dmax, *, max_abs: int = 8) -> List[Tuple[float, str]]:
+    """Integer-σ marks ``(data_value, label)`` that fall inside ``[dmin, dmax]``."""
+    scale = float(scale)
+    if not math.isfinite(scale) or scale < 1e-15:
+        return []
+    lo, hi = clamp_range(dmin, dmax)
+    mid = float(center)
+    n0 = int(math.floor((lo - mid) / scale))
+    n1 = int(math.ceil((hi - mid) / scale))
+    n0 = max(n0, -int(max_abs))
+    n1 = min(n1, int(max_abs))
+    marks = []
+    for n in range(n0, n1 + 1):
+        value = mid + float(n) * scale
+        if value < lo - 1e-12 or value > hi + 1e-12:
+            continue
+        marks.append((value, format_sigma_label(float(n))))
+    return marks
+
+
+def _compact_map_text(*parts) -> str:
+    text = " ".join(str(p or "") for p in parts).lower()
+    for ch in (" ", "_", "-", "+", ".", "/"):
+        text = text.replace(ch, "")
+    return text
+
+
+def guess_structure_factor_map(*, name="", title="", factor="") -> Optional[str]:
+    """Return ``amplitude`` (2Fo-Fc / Fo) or ``difference`` (Fo-Fc), else None."""
+    compact_factor = _compact_map_text(factor)
+    text = _compact_map_text(title, factor, name)
+    if not text:
+        return None
+    if "2fo" in text or compact_factor in ("fwt", "2fofcwt", "2fofc"):
+        return MAP_KIND_AMPLITUDE
+    if compact_factor in ("delfwt", "fofcwt") or "delfwt" in text or "phdel" in text:
+        return MAP_KIND_DIFFERENCE
+    if "fofc" in text:
+        return MAP_KIND_DIFFERENCE
+    return None
+
+
+def field_map_labels(field) -> Tuple[str, str, str]:
+    gen = getattr(field, "generator", None) or {}
+    if not isinstance(gen, dict):
+        gen = {}
+    name = getattr(field, "_name", None) or getattr(field, "name", "") or ""
+    return str(name), str(gen.get("map_title") or ""), str(gen.get("factor_column") or "")
+
+
+def bake_field_value_stats(field) -> Optional[dict]:
+    if field is None:
+        return None
+    values = getattr(field, "values", None)
+    if values is None:
+        grid = getattr(field, "grid_data", None)
+        values = getattr(grid, "values", None) if grid is not None else None
+    if values is None:
+        return None
+    stats = compute_value_stats(values)
+    try:
+        prov = dict(getattr(field, "provenance", None) or {})
+        prov["value_stats"] = dict(stats)
+        field.provenance = prov
+    except Exception:
+        pass
+    return stats
+
+
+def stats_from_field(field) -> Optional[dict]:
+    if field is None:
+        return None
+    prov = getattr(field, "provenance", None) or {}
+    stored = prov.get("value_stats") if isinstance(prov, dict) else None
+    if isinstance(stored, dict) and stored.get("std") is not None:
+        return {
+            "mean": float(stored.get("mean") or 0.0),
+            "std": max(float(stored.get("std") or 1.0), 1e-12),
+            "rms": max(float(stored.get("rms") or stored.get("std") or 1.0), 1e-12),
+        }
+    return bake_field_value_stats(field)
+
+
+def default_normalization_for_field(field) -> Optional[Normalization]:
+    name, title, factor = field_map_labels(field)
+    kind = guess_structure_factor_map(name=name, title=title, factor=factor)
+    if kind is None:
+        return None
+    stats = stats_from_field(field) or {"mean": 0.0, "std": 1.0, "rms": 1.0}
+    if kind == MAP_KIND_DIFFERENCE:
+        return Normalization(
+            mode=RANGE_MODE_SIGMA,
+            sigma_low=-3.0,
+            sigma_high=3.0,
+            link_center_zero=True,
+            stats_mean=stats["mean"],
+            stats_std=stats["std"],
+            stats_rms=stats["rms"],
+        )
+    return Normalization(
+        mode=RANGE_MODE_SIGMA,
+        sigma_low=-2.0,
+        sigma_high=2.0,
+        link_center_zero=False,
+        stats_mean=stats["mean"],
+        stats_std=stats["std"],
+        stats_rms=stats["rms"],
+    )
+
+
+def default_colormap_spec_for_field(field) -> Optional[dict]:
+    norm = default_normalization_for_field(field)
+    if norm is None:
+        return None
+    defn = definition_from_preset(DEFAULT_SURFACE_COLORMAP)
+    return stored_colormap_spec(defn, norm)
 
 
 def map_scalars(values, defn: ColormapDefinition, vmin: float, vmax: float) -> np.ndarray:

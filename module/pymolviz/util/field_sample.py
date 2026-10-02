@@ -240,6 +240,43 @@ def iter_pymol_field_names(cmd=None) -> List[str]:
     return out
 
 
+def _origin_step_from_extent(extent, shape):
+    lo = np.asarray(extent[0], dtype=float).reshape(3)
+    hi = np.asarray(extent[1], dtype=float).reshape(3)
+    denom = np.maximum(np.array(shape, dtype=float) - 1.0, 1.0)
+    step = (hi - lo) / denom
+    if (not np.all(np.isfinite(step))) or np.any(np.abs(step) < 1e-18):
+        return None
+    return lo, step
+
+
+def _map_origin_step(cmd, name, values):
+    """World origin/step for a PyMOL map. Never ``get_extent`` (maps are not selections)."""
+    stored = getattr(cmd, "extents", None)
+    if isinstance(stored, dict):
+        extent = stored.get(str(name))
+        if extent:
+            parsed = _origin_step_from_extent(extent, values.shape)
+            if parsed is not None:
+                return parsed
+    try:
+        from ..runtime.session import all_objects
+
+        for obj in all_objects() or []:
+            if str(name) not in _field_names(obj):
+                continue
+            grid = resolve_grid(obj)
+            if grid is None:
+                continue
+            origin = np.asarray(getattr(grid, "origin", (0.0, 0.0, 0.0)), dtype=float).reshape(3)
+            step = np.asarray(getattr(grid, "step_sizes", (1.0, 1.0, 1.0)), dtype=float).reshape(3)
+            if np.all(np.isfinite(origin)) and np.all(np.isfinite(step)) and np.all(np.abs(step) > 1e-18):
+                return origin, step
+    except Exception:
+        pass
+    return np.zeros(3, dtype=float), np.ones(3, dtype=float)
+
+
 def grid_from_pymol_map(name, cmd=None):
     """Wrap a native PyMOL map/volume as ``GridData``, or None."""
     name = str(name or "")
@@ -260,23 +297,9 @@ def grid_from_pymol_map(name, cmd=None):
         return None
     try:
         cmd.set("map_auto_expand_sym", 0)
-        cmd.set("map_auto_expand_sym", 0, name)
     except Exception:
         pass
-    origin = np.zeros(3, dtype=float)
-    step = np.ones(3, dtype=float)
-    try:
-        extent = cmd.get_extent(name)
-        lo = np.asarray(extent[0], dtype=float).reshape(3)
-        hi = np.asarray(extent[1], dtype=float).reshape(3)
-        origin = lo
-        denom = np.maximum(np.array(values.shape, dtype=float) - 1.0, 1.0)
-        step = (hi - lo) / denom
-        if (not np.all(np.isfinite(step))) or np.any(np.abs(step) < 1e-18):
-            step = np.ones(3, dtype=float)
-            origin = np.zeros(3, dtype=float)
-    except Exception:
-        pass
+    origin, step = _map_origin_step(cmd, name, values)
     from ..fields.field import Field
 
     counts = np.asarray(values.shape, dtype=int) - 1
@@ -289,17 +312,6 @@ def grid_from_pymol_map(name, cmd=None):
     )
     grid._name = name
     grid.id = key
-    try:
-        parsed = None
-        getter = getattr(cmd, "get_symmetry", None)
-        if callable(getter):
-            from ..fields.crystal import parse_cell_params, _is_dummy_cell, _cell_is_orthogonal, attach_crystal_axis_frame
-
-            parsed = parse_cell_params(getter(name))
-            if parsed is not None and not _is_dummy_cell(parsed[0]) and not _cell_is_orthogonal(parsed[0]):
-                attach_crystal_axis_frame(grid, parsed[0])
-    except Exception:
-        pass
     _NATIVE_GRIDS[key] = grid
     return grid
 

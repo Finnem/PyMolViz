@@ -172,8 +172,16 @@ class FieldVisualBuilderPage(BuilderPage):
 
             color_id = default_color_field_id(field)
             cmap = default_color_colormap(field)
-            if cmap and self._appearance is not None:
-                self._appearance.set_colormap(str(cmap))
+            spec = None
+            try:
+                from ...util.colormap_spec import default_colormap_spec_for_field
+
+                spec = default_colormap_spec_for_field(field)
+            except Exception:
+                spec = None
+            if self._appearance is not None and (cmap or spec):
+                name = str(cmap) if cmap else ((spec or {}).get("preset") or "RdYlBu_r")
+                self._appearance.set_colormap(name, spec=spec)
         except Exception:
             color_id = getattr(field, "default_color_field_id", None) if field is not None else None
         if self._appearance is not None:

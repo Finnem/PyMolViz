@@ -38,7 +38,13 @@ RESET_COLORS_LABEL = "Reset Colors"
 COLOR_MODE_UNIFORM_LABEL = "Uniform"
 COLOR_MODE_PER_POINT_LABEL = "Per-point"
 COLOR_MODE_FIELD_LABEL = "From field"
-CLIM_MODE_AUTO_LABEL, CLIM_MODE_CUSTOM_LABEL, CLIM_MODE_SYMMETRIC_LABEL, CLIM_MODE_PERCENTILE_LABEL = colormap_range_mode_labels()
+(
+    CLIM_MODE_AUTO_LABEL,
+    CLIM_MODE_CUSTOM_LABEL,
+    CLIM_MODE_SYMMETRIC_LABEL,
+    CLIM_MODE_PERCENTILE_LABEL,
+    CLIM_MODE_SIGMA_LABEL,
+) = colormap_range_mode_labels()
 DEFAULT_LIVE_PREVIEW_TIP = (
     "No preview hides the live object. Simple preview uses a cheaper stand-in. "
     "Full preview matches what Done will create."
